@@ -78,6 +78,28 @@ clusters must encrypt Kubernetes Secrets at rest.
 Example resources are under `config/samples`. They intentionally contain only
 Vault references, never credentials.
 
+## Vault contract
+
+Every data site uses `spec.sites[].vaultAuth` to authenticate the
+`mspsql-workload` ServiceAccount through Vault's Kubernetes auth method with
+the `vault` token audience. Secret references use Vault KV v2 mount and path
+names.
+
+The referenced records have these required string fields:
+
+| Reference | Fields |
+| --- | --- |
+| `credentials.postgresVaultRef` | `superuserPassword`, `replicationPassword` |
+| `credentials.pgpoolVaultRef` | `adminUsername`, `adminPassword` |
+| `backup.repository.credentialVaultRef` | `s3AccessKey`, `s3SecretKey`, `repositoryCipherPassphrase` |
+| `PostgresUser.passwordVaultRef` | The field selected by `key` |
+
+When TDE is enabled, `tde.vault.keyPath` is an instance-unique path under the
+configured KV v2 mount. `pg_tde` creates and retrieves principal keys there;
+the path is not expected to contain a pre-created key value. Vault policies
+must grant create/read/update on its data path, read/list on its metadata path,
+and read on the mount metadata required by `pg_tde`.
+
 ## Security invariants
 
 - Plan caches accept only valid Ed25519 signatures, the bound site and

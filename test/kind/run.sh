@@ -16,6 +16,13 @@ for cluster in "${clusters[@]}"; do
   kind create cluster --name "${cluster}" --wait 120s
 done
 
+for site in vic nsw qld; do
+  site_kubeconfig="$(mktemp)"
+  kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
+  ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}"
+  rm -f "${site_kubeconfig}"
+done
+
 docker build -t "${image}" .
 kind load docker-image "${image}" --name mspsql-hub
 
