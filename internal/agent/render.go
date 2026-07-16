@@ -316,6 +316,14 @@ name: ${MEMBER_NAME}
 %srestapi:
   listen: 0.0.0.0:8008
   connect_address: ${PATRONI_CONNECT_ADDRESS}:8008
+  certfile: /postgres-tls/tls.crt
+  keyfile: /postgres-tls/tls.key
+  cafile: /postgres-tls/ca.crt
+  verify_client: optional
+ctl:
+  cacert: /postgres-tls/ca.crt
+  certfile: /postgres-tls/tls.crt
+  keyfile: /postgres-tls/tls.key
 etcd3:
   hosts: %s
   protocol: https
@@ -472,6 +480,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 								Path: "/readiness", Port: intstr.FromString("patroni"),
+								Scheme: corev1.URISchemeHTTPS,
 							}},
 							PeriodSeconds: 10, FailureThreshold: 6,
 						},

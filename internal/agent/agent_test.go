@@ -396,6 +396,7 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"shared_preload_libraries=pg_tde", "pg_tde_basebackup", "post_init: /operator/tde-bootstrap.sh",
+		"verify_client: optional", "certfile: /postgres-tls/tls.crt",
 	} {
 		if !strings.Contains(patroniConfig, expected) {
 			t.Fatalf("Patroni config is missing %q:\n%s", expected, patroniConfig)

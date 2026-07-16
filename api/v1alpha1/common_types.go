@@ -182,6 +182,9 @@ type SiteRevisionStatus struct {
 	AppliedRevision      int64              `json:"appliedRevision,omitempty"`
 	Phase                string             `json:"phase,omitempty"`
 	Addresses            map[string]string  `json:"addresses,omitempty"`
+	Primary              string             `json:"primary,omitempty"`
+	SynchronousStandbys  []string           `json:"synchronousStandbys,omitempty"`
+	TopologyObservedAt   *metav1.Time       `json:"topologyObservedAt,omitempty"`
 	LastHeartbeatTime    *metav1.Time       `json:"lastHeartbeatTime,omitempty"`
 	Conditions           []metav1.Condition `json:"conditions,omitempty"`
 }

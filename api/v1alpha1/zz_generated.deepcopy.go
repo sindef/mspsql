@@ -1075,6 +1075,15 @@ func (in *SiteRevisionStatus) DeepCopyInto(out *SiteRevisionStatus) {
 			(*out)[key] = val
 		}
 	}
+	if in.SynchronousStandbys != nil {
+		in, out := &in.SynchronousStandbys, &out.SynchronousStandbys
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.TopologyObservedAt != nil {
+		in, out := &in.TopologyObservedAt, &out.TopologyObservedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.LastHeartbeatTime != nil {
 		in, out := &in.LastHeartbeatTime, &out.LastHeartbeatTime
 		*out = (*in).DeepCopy()

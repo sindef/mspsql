@@ -527,7 +527,16 @@ spec:
                       type: string
                     phase:
                       type: string
+                    primary:
+                      type: string
                     siteRegistrationRef:
+                      type: string
+                    synchronousStandbys:
+                      items:
+                        type: string
+                      type: array
+                    topologyObservedAt:
+                      format: date-time
                       type: string
                   required:
                   - name

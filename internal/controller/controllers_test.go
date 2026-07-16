@@ -221,6 +221,41 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 	}
 }
 
+func TestAggregateTopologyRequiresCurrentConsensus(t *testing.T) {
+	now := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	observed := metav1.NewTime(now.Add(-time.Minute))
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", Role: api.SiteRoleData},
+			{Name: "qld", Role: api.SiteRoleData},
+			{Name: "nsw", Role: api.SiteRoleWitness},
+		}},
+		Status: api.MultiSitePostgresStatus{Sites: []api.SiteRevisionStatus{
+			{
+				Name: "vic", Primary: "postgres-vic-0",
+				SynchronousStandbys: []string{"postgres-qld-0"}, TopologyObservedAt: &observed,
+			},
+			{
+				Name: "qld", Primary: "postgres-vic-0",
+				SynchronousStandbys: []string{"postgres-qld-0"}, TopologyObservedAt: &observed,
+			},
+		}},
+	}
+	aggregateTopology(instance, now)
+	if instance.Status.Primary != "postgres-vic-0" ||
+		len(instance.Status.SynchronousStandbys) != 1 ||
+		!conditionTrue(instance.Status.Conditions, "TopologyReady") {
+		t.Fatalf("status = %#v", instance.Status)
+	}
+
+	instance.Status.Sites[1].Primary = "postgres-qld-0"
+	aggregateTopology(instance, now)
+	if instance.Status.Primary != "" || conditionTrue(instance.Status.Conditions, "TopologyReady") {
+		t.Fatalf("conflicting topology was accepted: %#v", instance.Status)
+	}
+}
+
 func TestInstanceSecretClaimsAreExclusive(t *testing.T) {
 	backup := func(prefix, path string) *api.BackupSpec {
 		return &api.BackupSpec{Repository: api.BackupRepositorySpec{

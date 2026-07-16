@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -243,6 +244,15 @@ func (s *Server) recordAcknowledgement(ctx context.Context, siteName string,
 
 func (s *Server) recordProgress(ctx context.Context, siteName string, progress *controlv1.PlanProgress) error {
 	hasAddresses := false
+	primary, hasTopology := progress.ResourceSummaries["topology/primary"]
+	var synchronousStandbys []string
+	for key, value := range progress.ResourceSummaries {
+		if member, ok := strings.CutPrefix(key, "topology/synchronous/"); ok && value == "healthy" {
+			synchronousStandbys = append(synchronousStandbys, member)
+			hasTopology = true
+		}
+	}
+	slices.Sort(synchronousStandbys)
 	err := s.updateInstanceSite(ctx, progress.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
 		site.Phase = progress.Phase
 		if site.Addresses == nil {
@@ -254,8 +264,14 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 				hasAddresses = true
 			}
 		}
+		if hasTopology {
+			site.Primary = primary
+			site.SynchronousStandbys = synchronousStandbys
+			now := metav1.NewTime(s.now())
+			site.TopologyObservedAt = &now
+		}
 	})
-	if err != nil || !hasAddresses {
+	if err != nil || (!hasAddresses && !hasTopology) {
 		return err
 	}
 	return s.triggerInstanceReconcile(ctx, progress.InstanceUid)

@@ -194,6 +194,12 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 		for member, address := range result.Addresses {
 			summaries["address/"+member] = address
 		}
+		if result.Primary != "" {
+			summaries["topology/primary"] = result.Primary
+		}
+		for _, member := range result.SynchronousStandbys {
+			summaries["topology/synchronous/"+member] = "healthy"
+		}
 		if applyErr != nil {
 			summaries["error"] = applyErr.Error()
 			result.Phase = "Retrying"
@@ -232,7 +238,7 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 		}
 		delay := 5 * time.Second
 		if applyErr == nil && result.Phase == "Ready" {
-			delay = 5 * time.Minute
+			delay = 30 * time.Second
 		} else if applyErr != nil {
 			delay = backoff
 			if backoff < time.Minute {

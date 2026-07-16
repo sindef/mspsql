@@ -38,15 +38,18 @@ import (
 )
 
 type ApplyResult struct {
-	Phase      string
-	Addresses  map[string]string
-	Conditions []metav1.Condition
+	Phase               string
+	Addresses           map[string]string
+	Primary             string
+	SynchronousStandbys []string
+	Conditions          []metav1.Condition
 }
 
 type Reconciler struct {
 	Client    client.Client
 	Renderer  Renderer
 	Secrets   *SecretMaterializer
+	Topology  *PatroniObserver
 	HubDomain string
 	SiteUID   string
 }
@@ -165,6 +168,9 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	if desired.Site.Role == api.SiteRoleData {
 		setLocalCondition(&result.Conditions, "PatroniReady", metav1.ConditionTrue,
 			"AllMembersHealthy", "All Patroni member readiness checks are passing")
+		if err := r.observeTopology(ctx, desired, &result); err != nil {
+			return result, err
+		}
 		if desired.TDE.Enabled {
 			setLocalCondition(&result.Conditions, "TDEVerified", metav1.ConditionTrue,
 				"EncryptedBootstrapReady", "Patroni completed the pg_tde bootstrap and all members are Ready")
@@ -177,6 +183,23 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
 	return result, nil
+}
+
+func (r *Reconciler) observeTopology(ctx context.Context, desired plan.SitePlan, result *ApplyResult) error {
+	if r.Topology == nil {
+		return nil
+	}
+	topology, err := r.Topology.Observe(ctx, desired)
+	if err != nil {
+		setLocalCondition(&result.Conditions, "TopologyReady", metav1.ConditionFalse,
+			"ObservationFailed", err.Error())
+		return err
+	}
+	result.Primary = topology.Primary
+	result.SynchronousStandbys = topology.SynchronousStandbys
+	setLocalCondition(&result.Conditions, "TopologyReady", metav1.ConditionTrue,
+		"PatroniObserved", "Patroni topology is observable")
+	return nil
 }
 
 func (r *Reconciler) deleteInstance(ctx context.Context, desired plan.SitePlan) (ApplyResult, error) {

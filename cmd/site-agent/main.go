@@ -115,6 +115,7 @@ func main() {
 			Token:           vaultServiceAccountToken(kube),
 			Vault:           vaultclient.NewClient,
 		},
+		Topology: &agent.PatroniObserver{Client: kube},
 	}
 	identity := envOrDefault("POD_NAME", fmt.Sprintf("site-agent-%d", os.Getpid()))
 	lock := &resourcelock.LeaseLock{

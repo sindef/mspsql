@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,6 +102,10 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if !allConnected {
 		setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
 			metav1.ConditionFalse, "AgentDisconnected", "One or more site agents are disconnected")
+		instance.Status.Primary = ""
+		instance.Status.SynchronousStandbys = nil
+		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
+			metav1.ConditionFalse, "AgentDisconnected", "Topology requires every data-site observer")
 		instance.Status.Phase = "Pending"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
@@ -168,6 +173,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		siteStatuses = append(siteStatuses, status)
 	}
 	instance.Status.Sites = siteStatuses
+	aggregateTopology(&instance, now())
 	instance.Status.ObservedGeneration = instance.Generation
 	instance.Status.Phase = "Reconciling"
 	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
@@ -436,6 +442,59 @@ func allSitesApplied(statuses []multisitepostgresv1alpha1.SiteRevisionStatus, re
 		}
 	}
 	return true
+}
+
+func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, now time.Time) {
+	dataSites := 0
+	for _, site := range instance.Spec.Sites {
+		if site.Role == multisitepostgresv1alpha1.SiteRoleData {
+			dataSites++
+		}
+	}
+	primaryCounts := map[string]int{}
+	var observed []multisitepostgresv1alpha1.SiteRevisionStatus
+	for _, site := range instance.Status.Sites {
+		if site.Primary == "" || site.TopologyObservedAt == nil ||
+			now.Sub(site.TopologyObservedAt.Time) > 2*time.Minute {
+			continue
+		}
+		primaryCounts[site.Primary]++
+		observed = append(observed, site)
+	}
+	if len(observed) != dataSites {
+		instance.Status.Primary = ""
+		instance.Status.SynchronousStandbys = nil
+		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
+			metav1.ConditionFalse, "InsufficientObservations",
+			fmt.Sprintf("Received %d of %d current data-site topology observations", len(observed), dataSites))
+		return
+	}
+	if len(primaryCounts) != 1 {
+		instance.Status.Primary = ""
+		instance.Status.SynchronousStandbys = nil
+		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
+			metav1.ConditionFalse, "ConflictingObservations",
+			"Data sites disagree about the current Patroni leader")
+		return
+	}
+	for primary := range primaryCounts {
+		instance.Status.Primary = primary
+	}
+	standbyCounts := map[string]int{}
+	for _, site := range observed {
+		for _, standby := range site.SynchronousStandbys {
+			standbyCounts[standby]++
+		}
+	}
+	instance.Status.SynchronousStandbys = nil
+	for standby, count := range standbyCounts {
+		if count == dataSites {
+			instance.Status.SynchronousStandbys = append(instance.Status.SynchronousStandbys, standby)
+		}
+	}
+	slices.Sort(instance.Status.SynchronousStandbys)
+	setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
+		metav1.ConditionTrue, "ObserverConsensus", "All data sites report the same Patroni leader")
 }
 
 // SetupWithManager sets up the controller with the Manager.
