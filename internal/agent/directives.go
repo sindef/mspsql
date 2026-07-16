@@ -550,6 +550,19 @@ func databaseSQL(spec api.PostgresDatabaseSpec, tdeEnabled, deleting bool) (stri
 	if owner != "" {
 		fmt.Fprintf(&sql, "ALTER DATABASE %s OWNER TO %s;\n", database, quoteIdentifier(owner))
 	}
+	if spec.Quotas.ConnectionLimit != nil {
+		fmt.Fprintf(&sql, "ALTER DATABASE %s CONNECTION LIMIT %d;\n",
+			database, *spec.Quotas.ConnectionLimit)
+	}
+	appendDatabaseSetting(&sql, database, "statement_timeout", spec.Quotas.StatementTimeout)
+	appendDatabaseSetting(&sql, database, "lock_timeout", spec.Quotas.LockTimeout)
+	appendDatabaseSetting(&sql, database, "idle_in_transaction_session_timeout",
+		spec.Quotas.IdleInTransactionSessionTimeout)
+	if spec.Quotas.TempFileLimit != nil {
+		kilobytes := (spec.Quotas.TempFileLimit.Value() + 1023) / 1024
+		fmt.Fprintf(&sql, "ALTER DATABASE %s SET temp_file_limit = %s;\n",
+			database, quoteLiteral(fmt.Sprintf("%dkB", kilobytes)))
+	}
 	fmt.Fprintf(&sql, "\\connect %s\n", database)
 	schemas := slices.Clone(spec.Schemas)
 	slices.Sort(schemas)
@@ -580,6 +593,16 @@ WHERE c.relkind IN ('r','m')
 `)
 	}
 	return sql.String(), nil
+}
+
+func appendDatabaseSetting(sql *strings.Builder, database, setting string,
+	duration *metav1.Duration,
+) {
+	if duration == nil {
+		return
+	}
+	fmt.Fprintf(sql, "ALTER DATABASE %s SET %s = %s;\n", database, setting,
+		quoteLiteral(fmt.Sprintf("%dms", duration.Milliseconds())))
 }
 
 func appendDatabaseRoleSQL(sql *strings.Builder, database string, schemas []string, owner string,

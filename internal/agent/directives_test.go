@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
@@ -29,6 +30,9 @@ import (
 )
 
 func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
+	timeout := metav1.Duration{Duration: 15 * time.Second}
+	tempLimit := resource.MustParse("4Gi")
+	connectionLimit := int32(200)
 	sql, err := databaseSQL(api.PostgresDatabaseSpec{
 		DatabaseName: "orders-api",
 		Schemas:      []string{"app"},
@@ -37,6 +41,9 @@ func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
 			{Name: "orders_rw", Profile: "ReadWrite"},
 			{Name: "orders_ro", Profile: "ReadOnly"},
 		},
+		Quotas: api.DatabaseQuotas{RoleQuotas: api.RoleQuotas{
+			ConnectionLimit: &connectionLimit, StatementTimeout: &timeout, TempFileLimit: &tempLimit,
+		}},
 	}, true, false)
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +51,9 @@ func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
 	for _, expected := range []string{
 		"WHERE NOT EXISTS (SELECT FROM pg_database", `CREATE SCHEMA IF NOT EXISTS "app"`,
 		"ALTER DEFAULT PRIVILEGES", "a.amname <> 'tde_heap'", `ALTER DATABASE "orders-api" OWNER`,
+		`ALTER DATABASE "orders-api" CONNECTION LIMIT 200`,
+		`ALTER DATABASE "orders-api" SET statement_timeout = '15000ms'`,
+		`ALTER DATABASE "orders-api" SET temp_file_limit = '4194304kB'`,
 	} {
 		if !strings.Contains(sql, expected) {
 			t.Fatalf("database SQL is missing %q:\n%s", expected, sql)
