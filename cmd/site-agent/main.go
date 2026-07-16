@@ -194,7 +194,7 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 	log := crlog.FromContext(ctx).WithName("control")
 	backoff := time.Second
 	for ctx.Err() == nil {
-		reconcileCached(ctx, cache, reconciler)
+		reconcileCached(ctx, cache, reconciler, false)
 		controlClient := &control.AgentClient{
 			Target: target,
 			DialOptions: []grpc.DialOption{
@@ -215,7 +215,11 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 				return agent.DiscoverInventory(inventoryCtx, cache.Client)
 			},
 		}
-		if err := controlClient.Run(ctx); err != nil && ctx.Err() == nil {
+		connectionCtx, cancel := context.WithCancel(ctx)
+		go reconcilePeriodically(connectionCtx, cache, reconciler)
+		err := controlClient.Run(connectionCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
 			log.Error(err, "Control stream disconnected")
 		}
 		delay := backoff + time.Duration(rand.Int64N(int64(backoff/2+1)))
@@ -230,7 +234,22 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 	}
 }
 
-func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler) {
+func reconcilePeriodically(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconcileCached(ctx, cache, reconciler, true)
+		}
+	}
+}
+
+func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler,
+	connected bool,
+) {
 	log := crlog.FromContext(ctx).WithName("cache")
 	plans, err := cache.List(ctx)
 	if err != nil {
@@ -238,7 +257,7 @@ func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.
 		return
 	}
 	for _, desired := range plans {
-		if _, err := reconciler.Apply(ctx, desired, desired, false); err != nil {
+		if _, err := reconciler.Apply(ctx, desired, desired, connected); err != nil {
 			log.Error(err, "Cached reconciliation failed", "instanceUID", desired.InstanceUID,
 				"revision", desired.Revision)
 		}

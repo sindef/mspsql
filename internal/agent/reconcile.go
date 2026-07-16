@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -62,11 +63,14 @@ type Reconciler struct {
 	Topology  *PatroniObserver
 	HubDomain string
 	SiteUID   string
+	applyLock sync.Mutex
 }
 
 func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	connected bool,
 ) (ApplyResult, error) {
+	r.applyLock.Lock()
+	defer r.applyLock.Unlock()
 	result := ApplyResult{Phase: "CreatingNamespaces", Addresses: map[string]string{}}
 	if desired.Deletion != nil {
 		if !connected {
