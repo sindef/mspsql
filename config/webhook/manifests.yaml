@@ -1,0 +1,252 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-multisitepostgres
+  failurePolicy: Fail
+  name: mmultisitepostgres-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - multisitepostgres
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresdatabase
+  failurePolicy: Fail
+  name: mpostgresdatabase-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresdatabases
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresrestore
+  failurePolicy: Fail
+  name: mpostgresrestore-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresrestores
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresupgrade
+  failurePolicy: Fail
+  name: mpostgresupgrade-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresupgrades
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresuser
+  failurePolicy: Fail
+  name: mpostgresuser-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresusers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-siteregistration
+  failurePolicy: Fail
+  name: msiteregistration-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - siteregistrations
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-multisite-postgres-multisite-postgres-dev-v1alpha1-multisitepostgres
+  failurePolicy: Fail
+  name: vmultisitepostgres-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - multisitepostgres
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresdatabase
+  failurePolicy: Fail
+  name: vpostgresdatabase-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresdatabases
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresrestore
+  failurePolicy: Fail
+  name: vpostgresrestore-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresrestores
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresupgrade
+  failurePolicy: Fail
+  name: vpostgresupgrade-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresupgrades
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresuser
+  failurePolicy: Fail
+  name: vpostgresuser-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - postgresusers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-multisite-postgres-multisite-postgres-dev-v1alpha1-siteregistration
+  failurePolicy: Fail
+  name: vsiteregistration-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - multisite-postgres.multisite-postgres.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - siteregistrations
+  sideEffects: None

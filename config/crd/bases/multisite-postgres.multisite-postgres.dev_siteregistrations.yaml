@@ -11,10 +11,22 @@ spec:
     kind: SiteRegistration
     listKind: SiteRegistrationList
     plural: siteregistrations
+    shortNames:
+    - site
     singular: siteregistration
-  scope: Namespaced
+  scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.agentVersion
+      name: Agent
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: SiteRegistration is the Schema for the siteregistrations API
@@ -39,25 +51,100 @@ spec:
           spec:
             description: spec defines the desired state of SiteRegistration
             properties:
-              foo:
-                description: foo is an example field of SiteRegistration. Edit siteregistration_types.go
-                  to remove/update
+              displayName:
                 type: string
+              metallbAddressPools:
+                items:
+                  type: string
+                type: array
+              permittedIssuers:
+                properties:
+                  etcd:
+                    items:
+                      properties:
+                        group:
+                          default: cert-manager.io
+                          type: string
+                        kind:
+                          default: ClusterIssuer
+                          enum:
+                          - Issuer
+                          - ClusterIssuer
+                          type: string
+                        name:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  pgpool:
+                    items:
+                      properties:
+                        group:
+                          default: cert-manager.io
+                          type: string
+                        kind:
+                          default: ClusterIssuer
+                          enum:
+                          - Issuer
+                          - ClusterIssuer
+                          type: string
+                        name:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  postgres:
+                    items:
+                      properties:
+                        group:
+                          default: cert-manager.io
+                          type: string
+                        kind:
+                          default: ClusterIssuer
+                          enum:
+                          - Issuer
+                          - ClusterIssuer
+                          type: string
+                        name:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                type: object
+              permittedStorageClasses:
+                properties:
+                  etcd:
+                    items:
+                      type: string
+                    type: array
+                  postgres:
+                    items:
+                      type: string
+                    type: array
+                  restoreWorkspace:
+                    items:
+                      type: string
+                    type: array
+                type: object
+            required:
+            - permittedIssuers
+            - permittedStorageClasses
             type: object
           status:
             description: status defines the observed state of SiteRegistration
             properties:
+              agentVersion:
+                type: string
+              capabilities:
+                items:
+                  type: string
+                type: array
+              clusterUID:
+                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the SiteRegistration resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +203,60 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              discoveredIssuers:
+                items:
+                  properties:
+                    group:
+                      default: cert-manager.io
+                      type: string
+                    kind:
+                      default: ClusterIssuer
+                      enum:
+                      - Issuer
+                      - ClusterIssuer
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              discoveredStorageClasses:
+                items:
+                  properties:
+                    accessModes:
+                      items:
+                        type: string
+                      type: array
+                    allowVolumeExpansion:
+                      type: boolean
+                    allowedTopologies:
+                      items:
+                        type: string
+                      type: array
+                    name:
+                      type: string
+                    provisioner:
+                      type: string
+                    reclaimPolicy:
+                      type: string
+                    volumeBindingMode:
+                      type: string
+                  required:
+                  - name
+                  - provisioner
+                  type: object
+                type: array
+              lastHeartbeatTime:
+                format: date-time
+                type: string
+              phase:
+                type: string
+              registrationExpiresAt:
+                format: date-time
+                type: string
+              registrationURL:
+                type: string
             type: object
         required:
         - spec

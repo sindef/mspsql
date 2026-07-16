@@ -14,7 +14,17 @@ spec:
     singular: postgresupgrade
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.instanceRef
+      name: Instance
+      type: string
+    - jsonPath: .spec.targetMajorVersion
+      name: Target
+      type: integer
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: PostgresUpgrade is the Schema for the postgresupgrades API
@@ -39,25 +49,26 @@ spec:
           spec:
             description: spec defines the desired state of PostgresUpgrade
             properties:
-              foo:
-                description: foo is an example field of PostgresUpgrade. Edit postgresupgrade_types.go
-                  to remove/update
+              instanceRef:
                 type: string
+              serviceRestorationTarget:
+                type: string
+              targetImage:
+                type: string
+              targetMajorVersion:
+                format: int32
+                minimum: 14
+                type: integer
+            required:
+            - instanceRef
+            - serviceRestorationTarget
+            - targetImage
+            - targetMajorVersion
             type: object
           status:
             description: status defines the observed state of PostgresUpgrade
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the PostgresUpgrade resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +127,20 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              startedAt:
+                format: date-time
+                type: string
+              writeOutageStartedAt:
+                format: date-time
+                type: string
+              writeServiceRestoredAt:
+                format: date-time
+                type: string
             type: object
         required:
         - spec

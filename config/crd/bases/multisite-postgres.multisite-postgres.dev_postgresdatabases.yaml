@@ -14,7 +14,17 @@ spec:
     singular: postgresdatabase
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.databaseName
+      name: Database
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: PostgresDatabase is the Schema for the postgresdatabases API
@@ -39,25 +49,69 @@ spec:
           spec:
             description: spec defines the desired state of PostgresDatabase
             properties:
-              foo:
-                description: foo is an example field of PostgresDatabase. Edit postgresdatabase_types.go
-                  to remove/update
+              databaseName:
                 type: string
+              deletionPolicy:
+                default: Retain
+                enum:
+                - Retain
+                - Delete
+                type: string
+              instanceRef:
+                type: string
+              quotas:
+                properties:
+                  connectionLimit:
+                    format: int32
+                    minimum: -1
+                    type: integer
+                  idleInTransactionSessionTimeout:
+                    type: string
+                  lockTimeout:
+                    type: string
+                  statementTimeout:
+                    type: string
+                  storageAlertThreshold:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  tempFileLimit:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              roles:
+                items:
+                  properties:
+                    name:
+                      type: string
+                    profile:
+                      enum:
+                      - Owner
+                      - ReadWrite
+                      - ReadOnly
+                      type: string
+                  required:
+                  - name
+                  - profile
+                  type: object
+                type: array
+              schemas:
+                items:
+                  type: string
+                type: array
+            required:
+            - databaseName
+            - instanceRef
             type: object
           status:
             description: status defines the observed state of PostgresDatabase
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the PostgresDatabase resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +170,23 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              observedSize:
+                anyOf:
+                - type: integer
+                - type: string
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              orphanedDeclarations:
+                items:
+                  type: string
+                type: array
+              phase:
+                type: string
+              tdeVerified:
+                type: boolean
             type: object
         required:
         - spec

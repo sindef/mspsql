@@ -1,0 +1,181 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	api "github.com/sindef/mspsql/api/v1alpha1"
+)
+
+var protectedRoles = map[string]struct{}{
+	"postgres": {}, "replication": {}, "patroni": {}, "pgbackrest": {}, "pgpool": {},
+}
+
+func defaultIssuer(ref *api.IssuerReference) {
+	if ref.Kind == "" {
+		ref.Kind = "ClusterIssuer"
+	}
+	if ref.Group == "" {
+		ref.Group = "cert-manager.io"
+	}
+}
+
+func defaultInstance(obj *api.MultiSitePostgres) {
+	if obj.Spec.DeletionPolicy == "" {
+		obj.Spec.DeletionPolicy = api.DeletionPolicyRetain
+	}
+	if obj.Spec.Backup != nil {
+		if obj.Spec.Backup.Retention.Duration.Duration == 0 {
+			obj.Spec.Backup.Retention.Duration.Duration = 7 * 24 * time.Hour
+		}
+		if obj.Spec.Backup.Retention.WALDuration.Duration == 0 {
+			obj.Spec.Backup.Retention.WALDuration.Duration = 7 * 24 * time.Hour
+		}
+	}
+	for i := range obj.Spec.Sites {
+		defaultIssuer(&obj.Spec.Sites[i].Certificates.EtcdIssuerRef)
+		defaultIssuer(&obj.Spec.Sites[i].Certificates.PostgresIssuerRef)
+		defaultIssuer(&obj.Spec.Sites[i].Certificates.PgpoolIssuerRef)
+	}
+}
+
+func validateInstance(obj *api.MultiSitePostgres) error {
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+	var etcd, postgres int32
+	siteNames := map[string]struct{}{}
+	siteNamespaces := map[string]struct{}{}
+
+	for i, site := range obj.Spec.Sites {
+		p := specPath.Child("sites").Index(i)
+		if _, found := siteNames[site.Name]; found {
+			errs = append(errs, field.Duplicate(p.Child("name"), site.Name))
+		}
+		siteNames[site.Name] = struct{}{}
+		namespaceKey := site.SiteRegistrationRef + "/" + site.Namespace
+		if _, found := siteNamespaces[namespaceKey]; found {
+			errs = append(errs, field.Duplicate(p.Child("namespace"), namespaceKey))
+		}
+		siteNamespaces[namespaceKey] = struct{}{}
+		for _, msg := range validation.IsDNS1123Label(site.Namespace) {
+			errs = append(errs, field.Invalid(p.Child("namespace"), site.Namespace, msg))
+		}
+		etcd += site.Components.EtcdReplicas
+		postgres += site.Components.PostgresReplicas
+		if site.Role == api.SiteRoleWitness &&
+			(site.Components.PostgresReplicas != 0 || site.Components.PgpoolReplicas != 0) {
+			errs = append(errs, field.Invalid(p.Child("components"), site.Components,
+				"witness sites cannot run PostgreSQL or Pgpool"))
+		}
+		if site.Role == api.SiteRoleData {
+			if site.Components.PostgresReplicas == 0 {
+				errs = append(errs, field.Invalid(p.Child("components", "postgresReplicas"), 0,
+					"data sites require at least one PostgreSQL replica"))
+			}
+			if site.Storage.Postgres == nil || site.Storage.Etcd == nil {
+				errs = append(errs, field.Required(p.Child("storage"),
+					"data sites require etcd and PostgreSQL storage"))
+			}
+			if site.VaultAuth == nil {
+				errs = append(errs, field.Required(p.Child("vaultAuth"), "data sites require Vault authentication"))
+			}
+		}
+	}
+	if etcd < 3 || etcd%2 == 0 {
+		errs = append(errs, field.Invalid(specPath.Child("sites"), etcd,
+			"total etcd voters must be odd and at least three"))
+	}
+	if postgres < 2 {
+		errs = append(errs, field.Invalid(specPath.Child("sites"), postgres,
+			"at least two PostgreSQL replicas are required"))
+	}
+	if obj.Spec.Postgres.SynchronousStandbyCount >= postgres {
+		errs = append(errs, field.Invalid(specPath.Child("postgres", "synchronousStandbyCount"),
+			obj.Spec.Postgres.SynchronousStandbyCount, "must be lower than total PostgreSQL replicas"))
+	}
+	if obj.Spec.TDE.Enabled && obj.Spec.TDE.Vault == nil {
+		errs = append(errs, field.Required(specPath.Child("tde", "vault"), "TDE requires a Vault key identity"))
+	}
+	if obj.Spec.Backup != nil && strings.Trim(obj.Spec.Backup.Repository.Prefix, "/") == "" {
+		errs = append(errs, field.Required(specPath.Child("backup", "repository", "prefix"),
+			"backup prefix must identify this instance"))
+	}
+	return errs.ToAggregate()
+}
+
+func validateDatabase(obj *api.PostgresDatabase) error {
+	var errs field.ErrorList
+	if obj.Spec.InstanceRef == "" {
+		errs = append(errs, field.Required(field.NewPath("spec", "instanceRef"), "instance is required"))
+	}
+	if msgs := validation.IsDNS1123Subdomain(obj.Spec.DatabaseName); len(msgs) > 0 {
+		errs = append(errs, field.Invalid(field.NewPath("spec", "databaseName"), obj.Spec.DatabaseName,
+			strings.Join(msgs, "; ")))
+	}
+	seen := map[string]struct{}{}
+	for i, role := range obj.Spec.Roles {
+		p := field.NewPath("spec", "roles").Index(i).Child("name")
+		if _, protected := protectedRoles[role.Name]; protected {
+			errs = append(errs, field.Forbidden(p, "infrastructure role is protected"))
+		}
+		if _, found := seen[role.Name]; found {
+			errs = append(errs, field.Duplicate(p, role.Name))
+		}
+		seen[role.Name] = struct{}{}
+	}
+	return errs.ToAggregate()
+}
+
+func validateUser(obj *api.PostgresUser) error {
+	if _, protected := protectedRoles[obj.Spec.RoleName]; protected {
+		return field.Forbidden(field.NewPath("spec", "roleName"), "infrastructure role is protected")
+	}
+	if obj.Spec.PasswordVaultRef.Mount == "" || obj.Spec.PasswordVaultRef.Path == "" ||
+		obj.Spec.PasswordVaultRef.Key == "" {
+		return field.Required(field.NewPath("spec", "passwordVaultRef"),
+			"mount, path and key are required")
+	}
+	return nil
+}
+
+func validateRestore(obj *api.PostgresRestore) error {
+	if obj.Spec.SourceInstanceRef == obj.Spec.TargetInstanceRef {
+		return field.Invalid(field.NewPath("spec", "targetInstanceRef"), obj.Spec.TargetInstanceRef,
+			"in-place restore is forbidden")
+	}
+	if obj.Spec.TargetTime.IsZero() {
+		return field.Required(field.NewPath("spec", "targetTime"), "time-based PITR target is required")
+	}
+	return nil
+}
+
+func validateUpgrade(obj *api.PostgresUpgrade) error {
+	if obj.Spec.InstanceRef == "" || obj.Spec.TargetImage == "" {
+		return fmt.Errorf("instanceRef and targetImage are required")
+	}
+	if obj.Spec.ServiceRestorationTarget.Duration <= 0 {
+		return field.Invalid(field.NewPath("spec", "serviceRestorationTarget"),
+			obj.Spec.ServiceRestorationTarget, "must be positive")
+	}
+	return nil
+}

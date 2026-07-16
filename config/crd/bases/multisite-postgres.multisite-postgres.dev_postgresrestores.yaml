@@ -14,7 +14,17 @@ spec:
     singular: postgresrestore
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.sourceInstanceRef
+      name: Source
+      type: string
+    - jsonPath: .spec.targetInstanceRef
+      name: Target
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: PostgresRestore is the Schema for the postgresrestores API
@@ -39,25 +49,192 @@ spec:
           spec:
             description: spec defines the desired state of PostgresRestore
             properties:
-              foo:
-                description: foo is an example field of PostgresRestore. Edit postgresrestore_types.go
-                  to remove/update
+              backupSet:
                 type: string
+              restoreTopology:
+                properties:
+                  sites:
+                    items:
+                      properties:
+                        certificates:
+                          properties:
+                            etcdIssuerRef:
+                              properties:
+                                group:
+                                  default: cert-manager.io
+                                  type: string
+                                kind:
+                                  default: ClusterIssuer
+                                  enum:
+                                  - Issuer
+                                  - ClusterIssuer
+                                  type: string
+                                name:
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            pgpoolIssuerRef:
+                              properties:
+                                group:
+                                  default: cert-manager.io
+                                  type: string
+                                kind:
+                                  default: ClusterIssuer
+                                  enum:
+                                  - Issuer
+                                  - ClusterIssuer
+                                  type: string
+                                name:
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            postgresIssuerRef:
+                              properties:
+                                group:
+                                  default: cert-manager.io
+                                  type: string
+                                kind:
+                                  default: ClusterIssuer
+                                  enum:
+                                  - Issuer
+                                  - ClusterIssuer
+                                  type: string
+                                name:
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                          required:
+                          - etcdIssuerRef
+                          type: object
+                        components:
+                          properties:
+                            etcdReplicas:
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            pgpoolReplicas:
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            postgresReplicas:
+                              format: int32
+                              minimum: 0
+                              type: integer
+                          required:
+                          - etcdReplicas
+                          - pgpoolReplicas
+                          - postgresReplicas
+                          type: object
+                        loadBalancer:
+                          properties:
+                            addressPool:
+                              type: string
+                          required:
+                          - addressPool
+                          type: object
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        primaryPreference:
+                          format: int32
+                          maximum: 100
+                          minimum: 0
+                          type: integer
+                        role:
+                          enum:
+                          - Data
+                          - Witness
+                          type: string
+                        siteRegistrationRef:
+                          type: string
+                        storage:
+                          properties:
+                            etcd:
+                              properties:
+                                size:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                storageClassName:
+                                  type: string
+                              required:
+                              - size
+                              - storageClassName
+                              type: object
+                            postgres:
+                              properties:
+                                size:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                storageClassName:
+                                  type: string
+                              required:
+                              - size
+                              - storageClassName
+                              type: object
+                            restoreWorkspace:
+                              properties:
+                                size:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                storageClassName:
+                                  type: string
+                              required:
+                              - size
+                              - storageClassName
+                              type: object
+                          type: object
+                        vaultAuth:
+                          properties:
+                            address:
+                              type: string
+                            authMount:
+                              type: string
+                            authRole:
+                              type: string
+                          required:
+                          - address
+                          - authMount
+                          - authRole
+                          type: object
+                      required:
+                      - certificates
+                      - components
+                      - name
+                      - namespace
+                      - role
+                      - siteRegistrationRef
+                      type: object
+                    type: array
+                type: object
+              sourceInstanceRef:
+                type: string
+              targetInstanceRef:
+                type: string
+              targetTime:
+                format: date-time
+                type: string
+            required:
+            - sourceInstanceRef
+            - targetInstanceRef
+            - targetTime
             type: object
           status:
             description: status defines the observed state of PostgresRestore
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the PostgresRestore resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +293,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              recoveredTo:
+                format: date-time
+                type: string
+              selectedBackupSet:
+                type: string
             type: object
         required:
         - spec

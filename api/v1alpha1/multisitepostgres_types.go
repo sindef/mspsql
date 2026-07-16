@@ -21,46 +21,48 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// MultiSitePostgresSpec defines the desired state of MultiSitePostgres
-type MultiSitePostgresSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of MultiSitePostgres. Edit multisitepostgres_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+type PostgresSpec struct {
+	// +kubebuilder:validation:Minimum=14
+	MajorVersion int32  `json:"majorVersion"`
+	Image        string `json:"image"`
+	// +kubebuilder:validation:Minimum=0
+	SynchronousStandbyCount int32             `json:"synchronousStandbyCount"`
+	Parameters              map[string]string `json:"parameters,omitempty"`
 }
 
-// MultiSitePostgresStatus defines the observed state of MultiSitePostgres.
+type MultiSitePostgresSpec struct {
+	// +kubebuilder:validation:Enum=Retain;Delete
+	// +kubebuilder:default=Retain
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+	Postgres       PostgresSpec   `json:"postgres"`
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	Sites  []PostgresSiteSpec `json:"sites"`
+	TDE    TDESpec            `json:"tde,omitempty"`
+	Backup *BackupSpec        `json:"backup,omitempty"`
+}
+
 type MultiSitePostgresStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the MultiSitePostgres resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	ObservedGeneration  int64                `json:"observedGeneration,omitempty"`
+	ActiveRevision      int64                `json:"activeRevision,omitempty"`
+	Phase               string               `json:"phase,omitempty"`
+	Primary             string               `json:"primary,omitempty"`
+	SynchronousStandbys []string             `json:"synchronousStandbys,omitempty"`
+	Sites               []SiteRevisionStatus `json:"sites,omitempty"`
+	LastBackupTime      *metav1.Time         `json:"lastBackupTime,omitempty"`
+	RecoveryWindowStart *metav1.Time         `json:"recoveryWindowStart,omitempty"`
 	// +listType=map
 	// +listMapKey=type
-	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Revision",type=integer,JSONPath=".status.activeRevision"
+// +kubebuilder:printcolumn:name="Primary",type=string,JSONPath=".status.primary"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // MultiSitePostgres is the Schema for the multisitepostgres API
 type MultiSitePostgres struct {

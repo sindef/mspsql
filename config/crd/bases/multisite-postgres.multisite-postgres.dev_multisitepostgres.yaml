@@ -14,7 +14,20 @@ spec:
     singular: multisitepostgres
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.activeRevision
+      name: Revision
+      type: integer
+    - jsonPath: .status.primary
+      name: Primary
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: MultiSitePostgres is the Schema for the multisitepostgres API
@@ -39,25 +52,287 @@ spec:
           spec:
             description: spec defines the desired state of MultiSitePostgres
             properties:
-              foo:
-                description: foo is an example field of MultiSitePostgres. Edit multisitepostgres_types.go
-                  to remove/update
+              backup:
+                properties:
+                  repository:
+                    properties:
+                      bucket:
+                        type: string
+                      credentialVaultRef:
+                        properties:
+                          key:
+                            type: string
+                          mount:
+                            type: string
+                          path:
+                            type: string
+                        required:
+                        - mount
+                        - path
+                        type: object
+                      endpoint:
+                        type: string
+                      prefix:
+                        type: string
+                      type:
+                        enum:
+                        - S3
+                        type: string
+                    required:
+                    - bucket
+                    - credentialVaultRef
+                    - prefix
+                    - type
+                    type: object
+                  retention:
+                    properties:
+                      duration:
+                        type: string
+                      walDuration:
+                        type: string
+                    type: object
+                  schedules:
+                    properties:
+                      differential:
+                        type: string
+                      full:
+                        type: string
+                      incremental:
+                        type: string
+                      timezone:
+                        type: string
+                    type: object
+                required:
+                - repository
+                type: object
+              deletionPolicy:
+                default: Retain
+                enum:
+                - Retain
+                - Delete
                 type: string
+              postgres:
+                properties:
+                  image:
+                    type: string
+                  majorVersion:
+                    format: int32
+                    minimum: 14
+                    type: integer
+                  parameters:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  synchronousStandbyCount:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                required:
+                - image
+                - majorVersion
+                - synchronousStandbyCount
+                type: object
+              sites:
+                items:
+                  properties:
+                    certificates:
+                      properties:
+                        etcdIssuerRef:
+                          properties:
+                            group:
+                              default: cert-manager.io
+                              type: string
+                            kind:
+                              default: ClusterIssuer
+                              enum:
+                              - Issuer
+                              - ClusterIssuer
+                              type: string
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        pgpoolIssuerRef:
+                          properties:
+                            group:
+                              default: cert-manager.io
+                              type: string
+                            kind:
+                              default: ClusterIssuer
+                              enum:
+                              - Issuer
+                              - ClusterIssuer
+                              type: string
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        postgresIssuerRef:
+                          properties:
+                            group:
+                              default: cert-manager.io
+                              type: string
+                            kind:
+                              default: ClusterIssuer
+                              enum:
+                              - Issuer
+                              - ClusterIssuer
+                              type: string
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                      required:
+                      - etcdIssuerRef
+                      type: object
+                    components:
+                      properties:
+                        etcdReplicas:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        pgpoolReplicas:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        postgresReplicas:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                      required:
+                      - etcdReplicas
+                      - pgpoolReplicas
+                      - postgresReplicas
+                      type: object
+                    loadBalancer:
+                      properties:
+                        addressPool:
+                          type: string
+                      required:
+                      - addressPool
+                      type: object
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    primaryPreference:
+                      format: int32
+                      maximum: 100
+                      minimum: 0
+                      type: integer
+                    role:
+                      enum:
+                      - Data
+                      - Witness
+                      type: string
+                    siteRegistrationRef:
+                      type: string
+                    storage:
+                      properties:
+                        etcd:
+                          properties:
+                            size:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            storageClassName:
+                              type: string
+                          required:
+                          - size
+                          - storageClassName
+                          type: object
+                        postgres:
+                          properties:
+                            size:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            storageClassName:
+                              type: string
+                          required:
+                          - size
+                          - storageClassName
+                          type: object
+                        restoreWorkspace:
+                          properties:
+                            size:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            storageClassName:
+                              type: string
+                          required:
+                          - size
+                          - storageClassName
+                          type: object
+                      type: object
+                    vaultAuth:
+                      properties:
+                        address:
+                          type: string
+                        authMount:
+                          type: string
+                        authRole:
+                          type: string
+                      required:
+                      - address
+                      - authMount
+                      - authRole
+                      type: object
+                  required:
+                  - certificates
+                  - components
+                  - name
+                  - namespace
+                  - role
+                  - siteRegistrationRef
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              tde:
+                properties:
+                  enabled:
+                    type: boolean
+                  vault:
+                    properties:
+                      keyPath:
+                        type: string
+                      kvMount:
+                        type: string
+                      principalKeyName:
+                        type: string
+                      providerName:
+                        type: string
+                    required:
+                    - keyPath
+                    - kvMount
+                    - principalKeyName
+                    - providerName
+                    type: object
+                type: object
+            required:
+            - postgres
+            - sites
             type: object
           status:
             description: status defines the observed state of MultiSitePostgres
             properties:
+              activeRevision:
+                format: int64
+                type: integer
               conditions:
-                description: |-
-                  conditions represent the current state of the MultiSitePostgres resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +391,110 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastBackupTime:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
+              primary:
+                type: string
+              recoveryWindowStart:
+                format: date-time
+                type: string
+              sites:
+                items:
+                  properties:
+                    acknowledgedRevision:
+                      format: int64
+                      type: integer
+                    addresses:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    appliedRevision:
+                      format: int64
+                      type: integer
+                    conditions:
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      type: array
+                    desiredRevision:
+                      format: int64
+                      type: integer
+                    lastHeartbeatTime:
+                      format: date-time
+                      type: string
+                    name:
+                      type: string
+                    phase:
+                      type: string
+                    siteRegistrationRef:
+                      type: string
+                  required:
+                  - name
+                  - siteRegistrationRef
+                  type: object
+                type: array
+              synchronousStandbys:
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

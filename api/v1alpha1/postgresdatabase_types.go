@@ -17,50 +17,44 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// PostgresDatabaseSpec defines the desired state of PostgresDatabase
-type PostgresDatabaseSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of PostgresDatabase. Edit postgresdatabase_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+type DatabaseRole struct {
+	Name string `json:"name"`
+	// +kubebuilder:validation:Enum=Owner;ReadWrite;ReadOnly
+	Profile string `json:"profile"`
 }
 
-// PostgresDatabaseStatus defines the observed state of PostgresDatabase.
+type PostgresDatabaseSpec struct {
+	InstanceRef  string `json:"instanceRef"`
+	DatabaseName string `json:"databaseName"`
+	// +kubebuilder:validation:Enum=Retain;Delete
+	// +kubebuilder:default=Retain
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+	Schemas        []string       `json:"schemas,omitempty"`
+	Roles          []DatabaseRole `json:"roles,omitempty"`
+	Quotas         DatabaseQuotas `json:"quotas,omitempty"`
+}
+
 type PostgresDatabaseStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the PostgresDatabase resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	ObservedGeneration   int64             `json:"observedGeneration,omitempty"`
+	Phase                string            `json:"phase,omitempty"`
+	TDEVerified          bool              `json:"tdeVerified,omitempty"`
+	ObservedSize         resource.Quantity `json:"observedSize,omitempty"`
+	OrphanedDeclarations []string          `json:"orphanedDeclarations,omitempty"`
 	// +listType=map
 	// +listMapKey=type
-	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Database",type=string,JSONPath=".spec.databaseName"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // PostgresDatabase is the Schema for the postgresdatabases API
 type PostgresDatabase struct {

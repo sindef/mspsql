@@ -14,7 +14,17 @@ spec:
     singular: postgresuser
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.roleName
+      name: Role
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: PostgresUser is the Schema for the postgresusers API
@@ -39,25 +49,68 @@ spec:
           spec:
             description: spec defines the desired state of PostgresUser
             properties:
-              foo:
-                description: foo is an example field of PostgresUser. Edit postgresuser_types.go
-                  to remove/update
+              deletionPolicy:
+                default: Retain
+                enum:
+                - Retain
+                - Delete
                 type: string
+              instanceRef:
+                type: string
+              memberOf:
+                items:
+                  properties:
+                    databaseRef:
+                      type: string
+                    role:
+                      type: string
+                  required:
+                  - databaseRef
+                  - role
+                  type: object
+                type: array
+              passwordVaultRef:
+                properties:
+                  key:
+                    type: string
+                  mount:
+                    type: string
+                  path:
+                    type: string
+                required:
+                - mount
+                - path
+                type: object
+              quotas:
+                properties:
+                  connectionLimit:
+                    format: int32
+                    minimum: -1
+                    type: integer
+                  idleInTransactionSessionTimeout:
+                    type: string
+                  lockTimeout:
+                    type: string
+                  statementTimeout:
+                    type: string
+                  tempFileLimit:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              roleName:
+                type: string
+            required:
+            - instanceRef
+            - passwordVaultRef
+            - roleName
             type: object
           status:
             description: status defines the observed state of PostgresUser
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the PostgresUser resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +169,14 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialVersion:
+                format: int64
+                type: integer
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                type: string
             type: object
         required:
         - spec

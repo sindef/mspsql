@@ -21,46 +21,33 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// PostgresRestoreSpec defines the desired state of PostgresRestore
-type PostgresRestoreSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of PostgresRestore. Edit postgresrestore_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+type RestoreTopology struct {
+	Sites []PostgresSiteSpec `json:"sites,omitempty"`
 }
 
-// PostgresRestoreStatus defines the observed state of PostgresRestore.
+type PostgresRestoreSpec struct {
+	SourceInstanceRef string          `json:"sourceInstanceRef"`
+	TargetInstanceRef string          `json:"targetInstanceRef"`
+	TargetTime        metav1.Time     `json:"targetTime"`
+	BackupSet         string          `json:"backupSet,omitempty"`
+	RestoreTopology   RestoreTopology `json:"restoreTopology,omitempty"`
+}
+
 type PostgresRestoreStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the PostgresRestore resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
+	Phase              string       `json:"phase,omitempty"`
+	SelectedBackupSet  string       `json:"selectedBackupSet,omitempty"`
+	RecoveredTo        *metav1.Time `json:"recoveredTo,omitempty"`
 	// +listType=map
 	// +listMapKey=type
-	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.sourceInstanceRef"
+// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=".spec.targetInstanceRef"
 
 // PostgresRestore is the Schema for the postgresrestores API
 type PostgresRestore struct {

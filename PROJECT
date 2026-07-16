@@ -18,6 +18,10 @@ resources:
   kind: SiteRegistration
   path: github.com/sindef/mspsql/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -27,6 +31,10 @@ resources:
   kind: MultiSitePostgres
   path: github.com/sindef/mspsql/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -36,6 +44,10 @@ resources:
   kind: PostgresDatabase
   path: github.com/sindef/mspsql/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -45,6 +57,10 @@ resources:
   kind: PostgresUser
   path: github.com/sindef/mspsql/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -54,6 +70,10 @@ resources:
   kind: PostgresRestore
   path: github.com/sindef/mspsql/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -63,4 +83,8 @@ resources:
   kind: PostgresUpgrade
   path: github.com/sindef/mspsql/api/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 version: "3"
