@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,6 +72,15 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
 				"DatabaseUnavailable", err.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, &user)
+		}
+		if !conditionTrue(database.Status.Conditions, "Ready") {
+			user.Status.Phase = "Pending"
+			setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
+				"DatabaseNotReady", "Waiting for database "+membership.DatabaseRef+" to be reconciled")
+			if err := r.Status().Update(ctx, &user); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
 	if err := reconcileDirective(ctx, r.Client, r.Scheme, &user,
