@@ -370,7 +370,7 @@ func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	if configMap.Data["envelope.json"] == data["envelope.json"] {
+	if planEnvelopeEqual(configMap.Data["envelope.json"], envelope) {
 		return nil
 	}
 	if !instance.DeletionTimestamp.IsZero() {
@@ -378,6 +378,26 @@ func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
 	}
 	configMap.Data = data
 	return r.Update(ctx, &configMap)
+}
+
+func planEnvelopeEqual(currentJSON string, desired plan.Envelope) bool {
+	var current plan.Envelope
+	if json.Unmarshal([]byte(currentJSON), &current) != nil {
+		return false
+	}
+	var currentPlan, desiredPlan plan.SitePlan
+	if json.Unmarshal(current.Plan, &currentPlan) != nil ||
+		json.Unmarshal(desired.Plan, &desiredPlan) != nil {
+		return false
+	}
+	currentPlan.GeneratedAt = time.Time{}
+	desiredPlan.GeneratedAt = time.Time{}
+	currentCanonical, err := plan.Canonical(currentPlan)
+	if err != nil {
+		return false
+	}
+	desiredCanonical, err := plan.Canonical(desiredPlan)
+	return err == nil && string(currentCanonical) == string(desiredCanonical)
 }
 
 func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,

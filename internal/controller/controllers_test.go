@@ -371,6 +371,39 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 	}
 }
 
+func TestPlanEnvelopeEqualityIgnoresGenerationTime(t *testing.T) {
+	desired := plan.SitePlan{
+		ProtocolVersion: plan.ProtocolVersion,
+		SiteUID:         "site", InstanceUID: "instance", Revision: 3,
+		GeneratedAt: time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC),
+	}
+	currentPlan := desired
+	currentPlan.GeneratedAt = desired.GeneratedAt.Add(-time.Minute)
+	currentRaw, err := json.Marshal(currentPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentEnvelope, err := json.Marshal(plan.Envelope{Plan: currentRaw, Signature: "old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	desiredRaw, err := json.Marshal(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planEnvelopeEqual(string(currentEnvelope), plan.Envelope{Plan: desiredRaw, Signature: "new"}) {
+		t.Fatal("equivalent plan revisions should not be rewritten solely to refresh generatedAt")
+	}
+	desired.Revision++
+	desiredRaw, err = json.Marshal(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planEnvelopeEqual(string(currentEnvelope), plan.Envelope{Plan: desiredRaw}) {
+		t.Fatal("a changed plan revision must be persisted")
+	}
+}
+
 func TestAddressPlanSerializesObservedChanges(t *testing.T) {
 	instance := &api.MultiSitePostgres{
 		ObjectMeta: metav1.ObjectMeta{
