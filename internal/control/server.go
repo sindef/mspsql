@@ -35,6 +35,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -269,7 +270,8 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		}
 		envelope, err := directive.Sign(privateKey, directive.Payload{
 			SiteUID: siteUID, InstanceUID: string(instance.UID), OperationUID: operationUID,
-			Type: directiveType, Primary: instance.Status.Primary,
+			ObjectUID: string(configMap.OwnerReferences[0].UID),
+			Type:      directiveType, Primary: instance.Status.Primary,
 			BackupSource: backupSource, BackupType: backupType,
 			Deleting: configMap.Data["deleting"] == "true", GeneratedAt: s.now().UTC(),
 			Spec: json.RawMessage(configMap.Data["spec.json"]),
@@ -660,6 +662,24 @@ func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *c
 	}
 	applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
 		configMap.Data["deleting"] == "true", result.Conditions)
+	for _, condition := range result.Conditions {
+		if condition.Status != string(metav1.ConditionTrue) {
+			continue
+		}
+		switch condition.Type {
+		case "ObservedSize":
+			if size, err := strconv.ParseInt(condition.Message, 10, 64); err == nil && size > 0 {
+				object.Status.ObservedSize = *resource.NewQuantity(size, resource.BinarySI)
+			}
+		case "TDEVerified":
+			object.Status.TDEVerified = true
+		case "OrphanedDeclarations":
+			var declarations []string
+			if json.Unmarshal([]byte(condition.Message), &declarations) == nil {
+				object.Status.OrphanedDeclarations = declarations
+			}
+		}
+	}
 	object.Status.ObservedGeneration = object.Generation
 	return s.Client.Status().Update(ctx, &object)
 }

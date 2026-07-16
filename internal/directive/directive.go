@@ -31,6 +31,7 @@ type Payload struct {
 	ProtocolVersion string          `json:"protocolVersion"`
 	SiteUID         string          `json:"siteUID"`
 	InstanceUID     string          `json:"instanceUID"`
+	ObjectUID       string          `json:"objectUID"`
 	OperationUID    string          `json:"operationUID"`
 	Type            string          `json:"type"`
 	Primary         string          `json:"primary,omitempty"`
@@ -45,7 +46,8 @@ func Sign(privateKey ed25519.PrivateKey, payload Payload) (plan.Envelope, error)
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return plan.Envelope{}, errors.New("invalid Ed25519 private key")
 	}
-	if payload.SiteUID == "" || payload.InstanceUID == "" || payload.OperationUID == "" || payload.Type == "" {
+	if payload.SiteUID == "" || payload.InstanceUID == "" || payload.ObjectUID == "" ||
+		payload.OperationUID == "" || payload.Type == "" {
 		return plan.Envelope{}, errors.New("directive identity is incomplete")
 	}
 	payload.ProtocolVersion = plan.ProtocolVersion

@@ -54,6 +54,8 @@ func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
 		`ALTER DATABASE "orders-api" CONNECTION LIMIT 200`,
 		`ALTER DATABASE "orders-api" SET statement_timeout = '15000ms'`,
 		`ALTER DATABASE "orders-api" SET temp_file_limit = '4194304kB'`,
+		`'observedSizeBytes', pg_database_size(current_database())`,
+		`'tdeVerified', true`,
 	} {
 		if !strings.Contains(sql, expected) {
 			t.Fatalf("database SQL is missing %q:\n%s", expected, sql)
@@ -63,6 +65,22 @@ func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
 	changeOwner := strings.Index(sql, `ALTER DATABASE "orders-api" OWNER TO "orders_owner"`)
 	if createOwner == -1 || changeOwner == -1 || createOwner > changeOwner {
 		t.Fatalf("owner role must be created before database ownership changes:\n%s", sql)
+	}
+}
+
+func TestRemovedDeclarationsAreReportedWithoutMutation(t *testing.T) {
+	got := removedDeclarations(
+		databaseInventory{
+			Schemas: []string{"app", "audit"},
+			Roles:   []string{"orders_owner", "orders_rw"},
+		},
+		databaseInventory{
+			Schemas: []string{"app"},
+			Roles:   []string{"orders_owner"},
+		},
+	)
+	if strings.Join(got, ",") != "role:orders_rw,schema:audit" {
+		t.Fatalf("orphaned declarations = %v", got)
 	}
 }
 

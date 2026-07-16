@@ -29,7 +29,7 @@ func TestSignedDirectiveBindsSiteAndOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	envelope, err := Sign(privateKey, Payload{
-		SiteUID: "site", InstanceUID: "instance", OperationUID: "operation",
+		SiteUID: "site", InstanceUID: "instance", ObjectUID: "database", OperationUID: "operation",
 		Type: "Database", Spec: json.RawMessage(`{"databaseName":"orders"}`),
 	})
 	if err != nil {

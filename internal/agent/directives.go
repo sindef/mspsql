@@ -342,7 +342,30 @@ func (e *DirectiveExecutor) executeDatabase(ctx context.Context, desired plan.Si
 	if err != nil {
 		return nil, err
 	}
-	return e.runSQLJob(ctx, desired, payload, sql, nil)
+	conditions, err := e.runSQLJob(ctx, desired, payload, sql, nil)
+	if err != nil || payload.Deleting {
+		return conditions, err
+	}
+	metadata, err := databaseMetadata(ctx, e.Client, desired.Site.Namespace,
+		operationName(payload.OperationUID))
+	if err != nil {
+		return conditions, err
+	}
+	conditions = append(conditions, metadata...)
+	orphaned, err := e.reconcileDatabaseInventory(ctx, desired, payload, spec)
+	if err != nil {
+		return conditions, err
+	}
+	encoded, err := json.Marshal(orphaned)
+	if err != nil {
+		return conditions, err
+	}
+	conditions = append(conditions, metav1.Condition{
+		Type: "OrphanedDeclarations", Status: metav1.ConditionTrue,
+		Reason: "RetainedObjectsAudited", Message: string(encoded),
+		LastTransitionTime: metav1.Now(),
+	})
+	return conditions, nil
 }
 
 func (e *DirectiveExecutor) executeUser(ctx context.Context, desired plan.SitePlan,
@@ -523,6 +546,130 @@ func waitForJob(ctx context.Context, kube client.Client,
 	}
 }
 
+func databaseMetadata(ctx context.Context, kube client.Client, namespace, jobName string,
+) ([]metav1.Condition, error) {
+	var pods corev1.PodList
+	if err := kube.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{
+		"job-name": jobName,
+	}); err != nil {
+		return nil, err
+	}
+	for i := range pods.Items {
+		for _, container := range pods.Items[i].Status.ContainerStatuses {
+			if container.Name != "psql" || container.State.Terminated == nil {
+				continue
+			}
+			var metadata struct {
+				ObservedSizeBytes int64 `json:"observedSizeBytes"`
+				TDEVerified       bool  `json:"tdeVerified"`
+			}
+			if err := json.Unmarshal([]byte(container.State.Terminated.Message), &metadata); err != nil {
+				return nil, fmt.Errorf("decode database audit metadata: %w", err)
+			}
+			if metadata.ObservedSizeBytes <= 0 {
+				return nil, errors.New("database audit metadata has no observed size")
+			}
+			now := metav1.Now()
+			tdeStatus := metav1.ConditionFalse
+			if metadata.TDEVerified {
+				tdeStatus = metav1.ConditionTrue
+			}
+			return []metav1.Condition{
+				{
+					Type: "ObservedSize", Status: metav1.ConditionTrue, Reason: "DatabaseAudited",
+					Message: strconv.FormatInt(metadata.ObservedSizeBytes, 10), LastTransitionTime: now,
+				},
+				{
+					Type: "TDEVerified", Status: tdeStatus,
+					Reason: "DatabaseAudited", Message: "All managed user relations were inspected",
+					LastTransitionTime: now,
+				},
+			}, nil
+		}
+	}
+	return nil, errors.New("database SQL Job has no terminated audit status")
+}
+
+type databaseInventory struct {
+	Schemas []string `json:"schemas,omitempty"`
+	Roles   []string `json:"roles,omitempty"`
+}
+
+func (e *DirectiveExecutor) reconcileDatabaseInventory(ctx context.Context, desired plan.SitePlan,
+	payload directive.Payload, spec api.PostgresDatabaseSpec,
+) ([]string, error) {
+	name := "mspsql-database-inventory-" + operationHash(payload.ObjectUID)
+	key := client.ObjectKey{Namespace: desired.Site.Namespace, Name: name}
+	var observed corev1.ConfigMap
+	previous := databaseInventory{}
+	if err := e.Client.Get(ctx, key, &observed); err == nil {
+		if err := json.Unmarshal([]byte(observed.Data["inventory.json"]), &previous); err != nil {
+			return nil, fmt.Errorf("decode database declaration inventory: %w", err)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	current := databaseInventory{Schemas: slices.Clone(spec.Schemas)}
+	for _, role := range spec.Roles {
+		current.Roles = append(current.Roles, role.Name)
+	}
+	slices.Sort(current.Schemas)
+	slices.Sort(current.Roles)
+	orphaned := removedDeclarations(previous, current)
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return nil, err
+	}
+	if observed.Name == "" {
+		observed = corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: key.Namespace, Name: key.Name,
+				Labels: map[string]string{
+					instanceUIDLabel:                      payload.InstanceUID,
+					"multisite-postgres.dev/database-uid": payload.ObjectUID,
+				},
+			},
+			Data: map[string]string{"inventory.json": string(encoded)},
+		}
+		if err := e.Client.Create(ctx, &observed); err != nil {
+			return nil, err
+		}
+		return orphaned, nil
+	}
+	if observed.Data == nil {
+		observed.Data = map[string]string{}
+	}
+	observed.Data["inventory.json"] = string(encoded)
+	if err := e.Client.Update(ctx, &observed); err != nil {
+		return nil, err
+	}
+	return orphaned, nil
+}
+
+func removedDeclarations(previous, current databaseInventory) []string {
+	currentSchemas := make(map[string]struct{}, len(current.Schemas))
+	for _, name := range current.Schemas {
+		currentSchemas[name] = struct{}{}
+	}
+	currentRoles := make(map[string]struct{}, len(current.Roles))
+	for _, name := range current.Roles {
+		currentRoles[name] = struct{}{}
+	}
+	var orphaned []string
+	for _, name := range previous.Schemas {
+		if _, found := currentSchemas[name]; !found {
+			orphaned = append(orphaned, "schema:"+name)
+		}
+	}
+	for _, name := range previous.Roles {
+		if _, found := currentRoles[name]; !found {
+			orphaned = append(orphaned, "role:"+name)
+		}
+	}
+	slices.Sort(orphaned)
+	return orphaned
+}
+
 func databaseSQL(spec api.PostgresDatabaseSpec, tdeEnabled, deleting bool) (string, error) {
 	database := quoteIdentifier(spec.DatabaseName)
 	if deleting {
@@ -592,6 +739,19 @@ WHERE c.relkind IN ('r','m')
 \endif
 `)
 	}
+	tdeVerified := "false"
+	if tdeEnabled {
+		tdeVerified = "true"
+	}
+	fmt.Fprintf(&sql, `\pset tuples_only on
+\pset format unaligned
+\o /dev/termination-log
+SELECT json_build_object(
+  'observedSizeBytes', pg_database_size(current_database()),
+  'tdeVerified', %s
+);
+\o
+`, tdeVerified)
 	return sql.String(), nil
 }
 
