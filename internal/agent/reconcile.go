@@ -236,6 +236,9 @@ func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.Si
 		if err := r.observeTopology(ctx, desired, result); err != nil {
 			return err
 		}
+		if err := r.reconcileUpgradeAction(ctx, desired, result); err != nil {
+			return err
+		}
 		if desired.TDE.Enabled {
 			setLocalCondition(&result.Conditions, "TDEVerified", metav1.ConditionTrue,
 				"DatabaseAuditPassed",
@@ -246,6 +249,38 @@ func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.Si
 			"SeedRecoveryInProgress", "PostgreSQL remains stopped until the restored seed member is promoted")
 	}
 	return nil
+}
+
+func (r *Reconciler) reconcileUpgradeAction(ctx context.Context, desired plan.SitePlan,
+	result *ApplyResult,
+) error {
+	if desired.Upgrade == nil || desired.Upgrade.Phase != plan.UpgradePhaseSwitchover ||
+		!memberBelongsToSite(desired.Upgrade.FromPrimary, desired.Site.Name) {
+		return nil
+	}
+	if result.Primary == desired.Upgrade.Candidate {
+		setLocalCondition(&result.Conditions, "SwitchoverCompleted", metav1.ConditionTrue,
+			"CandidatePromoted", "Patroni reports the upgraded candidate as primary")
+		return nil
+	}
+	if result.Primary != desired.Upgrade.FromPrimary {
+		return fmt.Errorf("patroni primary changed unexpectedly from %s to %s",
+			desired.Upgrade.FromPrimary, result.Primary)
+	}
+	if r.Topology == nil {
+		return fmt.Errorf("patroni topology client is required for switchover")
+	}
+	if err := r.Topology.Switchover(ctx, desired,
+		desired.Upgrade.FromPrimary, desired.Upgrade.Candidate); err != nil {
+		return fmt.Errorf("request Patroni switchover: %w", err)
+	}
+	setLocalCondition(&result.Conditions, "SwitchoverCompleted", metav1.ConditionFalse,
+		"RequestAccepted", "Patroni accepted the controlled switchover request")
+	return nil
+}
+
+func memberBelongsToSite(member, site string) bool {
+	return strings.HasPrefix(member, "postgres-"+site+"-")
 }
 
 func restoreExpectsPostgres(desired plan.SitePlan) bool {
@@ -423,7 +458,9 @@ func (r *Reconciler) workloadsReady(ctx context.Context, objects []client.Object
 				replicas = *expected.Spec.Replicas
 			}
 			if observed.Status.ObservedGeneration < observed.Generation ||
-				observed.Status.ReadyReplicas != replicas {
+				observed.Status.ReadyReplicas != replicas ||
+				observed.Status.UpdatedReplicas != replicas ||
+				observed.Status.CurrentRevision != observed.Status.UpdateRevision {
 				return false, fmt.Sprintf("StatefulSet %s has %d/%d Ready replicas",
 					observed.Name, observed.Status.ReadyReplicas, replicas), nil
 			}

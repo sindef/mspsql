@@ -736,6 +736,11 @@ func (in *PostgresUpgradeStatus) DeepCopyInto(out *PostgresUpgradeStatus) {
 		in, out := &in.WriteServiceRestoredAt, &out.WriteServiceRestoredAt
 		*out = (*in).DeepCopy()
 	}
+	if in.UpgradedMembers != nil {
+		in, out := &in.UpgradedMembers, &out.UpgradedMembers
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

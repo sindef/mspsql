@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -40,8 +41,9 @@ type PatroniTopology struct {
 }
 
 type PatroniObserver struct {
-	Client client.Client
-	HTTP   func(*x509.CertPool) *http.Client
+	Client     client.Client
+	HTTP       func(*x509.CertPool) *http.Client
+	ActionHTTP func(*tls.Config) *http.Client
 }
 
 func (o *PatroniObserver) Observe(ctx context.Context, desired plan.SitePlan) (PatroniTopology, error) {
@@ -124,6 +126,71 @@ func (o *PatroniObserver) observeMember(ctx context.Context, namespace, name str
 	}
 	slices.Sort(topology.SynchronousStandbys)
 	return topology, nil
+}
+
+func (o *PatroniObserver) Switchover(ctx context.Context, desired plan.SitePlan,
+	fromPrimary, candidate string,
+) error {
+	if fromPrimary == "" || candidate == "" || fromPrimary == candidate {
+		return errors.New("patroni switchover requires distinct primary and candidate members")
+	}
+	if _, found := desired.MemberAddresses[fromPrimary]; !found {
+		return fmt.Errorf("primary %q is absent from the accepted plan", fromPrimary)
+	}
+	if _, found := desired.MemberAddresses[candidate]; !found {
+		return fmt.Errorf("candidate %q is absent from the accepted plan", candidate)
+	}
+	var secret corev1.Secret
+	if err := o.Client.Get(ctx, client.ObjectKey{
+		Namespace: desired.Site.Namespace, Name: fromPrimary + "-tls",
+	}, &secret); err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
+		return errors.New("PostgreSQL issuer Secret contains no CA certificates")
+	}
+	certificate, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
+	if err != nil {
+		return fmt.Errorf("load Patroni client certificate: %w", err)
+	}
+	body, err := json.Marshal(map[string]string{"leader": fromPrimary, "candidate": candidate})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("https://%s.%s.svc:8008/switchover", fromPrimary, desired.Site.Namespace),
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{certificate},
+	}
+	httpClient := o.actionHTTP(tlsConfig)
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted &&
+		response.StatusCode != http.StatusConflict {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("patroni switchover returned HTTP %d: %s",
+			response.StatusCode, string(message))
+	}
+	return nil
+}
+
+func (o *PatroniObserver) actionHTTP(config *tls.Config) *http.Client {
+	if o.ActionHTTP != nil {
+		return o.ActionHTTP(config)
+	}
+	return &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: config},
+	}
 }
 
 func (o *PatroniObserver) httpClient(roots *x509.CertPool) *http.Client {

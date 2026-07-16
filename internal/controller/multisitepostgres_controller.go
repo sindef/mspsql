@@ -120,6 +120,13 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "Restoring"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
+	upgradePlan, err := r.upgradePlan(ctx, &instance)
+	if err != nil {
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "UpgradeContractInvalid", err.Error())
+		instance.Status.Phase = "Upgrading"
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
+	}
 	fingerprint, err := planFingerprint(&instance)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -164,6 +171,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			Credentials:     instance.Spec.Credentials,
 			MemberAddresses: memberAddresses,
 			Restore:         restorePlan,
+			Upgrade:         upgradePlan,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
@@ -191,11 +199,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		setAppliedInstanceReady(&instance, restorePlan)
 	}
 	backupRequeue, err := r.reconcileBackupSchedules(ctx, &instance, now(),
-		conditionTrue(instance.Status.Conditions, "Ready") &&
-			conditionTrue(instance.Status.Conditions, "TopologyReady") &&
-			(instance.Spec.Backup == nil ||
-				conditionTrue(instance.Status.Conditions, "BackupTLSReady")) &&
-			restorePlan == nil)
+		backupSchedulingReady(&instance, restorePlan, upgradePlan))
 	if err != nil {
 		setCondition(&instance.Status.Conditions, instance.Generation, "BackupReady",
 			metav1.ConditionFalse, "ScheduleInvalid", err.Error())
@@ -206,6 +210,16 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	return ctrl.Result{RequeueAfter: backupRequeue}, nil
+}
+
+func backupSchedulingReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	restorePlan *plan.RestorePlan, upgradePlan *plan.UpgradePlan,
+) bool {
+	return conditionTrue(instance.Status.Conditions, "Ready") &&
+		conditionTrue(instance.Status.Conditions, "TopologyReady") &&
+		(instance.Spec.Backup == nil ||
+			conditionTrue(instance.Status.Conditions, "BackupTLSReady")) &&
+		restorePlan == nil && upgradePlan == nil
 }
 
 func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
@@ -562,14 +576,22 @@ func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (string, error) {
 	payload, err := json.Marshal(struct {
-		Generation   int64
-		Addresses    map[string]map[string]string
-		RestoreUID   string
-		RestorePhase string
+		Generation      int64
+		Addresses       map[string]map[string]string
+		RestoreUID      string
+		RestorePhase    string
+		UpgradeUID      string
+		UpgradePhase    string
+		UpgradeMember   string
+		UpgradedMembers string
 	}{
-		Generation:   instance.Generation,
-		RestoreUID:   instance.Annotations[restoreUIDAnnotation],
-		RestorePhase: instance.Annotations[restorePhaseAnnotation],
+		Generation:      instance.Generation,
+		RestoreUID:      instance.Annotations[restoreUIDAnnotation],
+		RestorePhase:    instance.Annotations[restorePhaseAnnotation],
+		UpgradeUID:      instance.Annotations[upgradeUIDAnnotation],
+		UpgradePhase:    instance.Annotations[upgradePhaseAnnotation],
+		UpgradeMember:   instance.Annotations[upgradeMemberAnnotation],
+		UpgradedMembers: instance.Annotations[upgradeMembersAnnotation],
 		Addresses: func() map[string]map[string]string {
 			addresses := make(map[string]map[string]string, len(instance.Spec.Sites))
 			for _, desiredSite := range instance.Spec.Sites {
@@ -588,6 +610,39 @@ func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (str
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func (r *MultiSitePostgresReconciler) upgradePlan(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) (*plan.UpgradePlan, error) {
+	upgradeName := instance.Annotations[upgradeNameAnnotation]
+	if upgradeName == "" {
+		return nil, nil
+	}
+	var upgrade multisitepostgresv1alpha1.PostgresUpgrade
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: instance.Namespace, Name: upgradeName,
+	}, &upgrade); err != nil {
+		return nil, fmt.Errorf("read owning upgrade: %w", err)
+	}
+	if upgrade.Spec.TargetMajorVersion != instance.Spec.Postgres.MajorVersion {
+		return nil, fmt.Errorf("major upgrades use the disruptive upgrade state machine")
+	}
+	phase := plan.UpgradePhase(instance.Annotations[upgradePhaseAnnotation])
+	switch phase {
+	case plan.UpgradePhaseMember, plan.UpgradePhaseSwitchover, plan.UpgradePhaseFinalize:
+	default:
+		return nil, fmt.Errorf("unsupported minor-upgrade phase %q", phase)
+	}
+	return &plan.UpgradePlan{
+		OperationUID:    string(upgrade.UID),
+		TargetImage:     upgrade.Spec.TargetImage,
+		TargetMember:    instance.Annotations[upgradeMemberAnnotation],
+		UpgradedMembers: splitMembers(instance.Annotations[upgradeMembersAnnotation]),
+		FromPrimary:     instance.Annotations[upgradeFromAnnotation],
+		Candidate:       instance.Annotations[upgradeCandidateAnnotation],
+		Phase:           phase,
+	}, nil
 }
 
 func (r *MultiSitePostgresReconciler) restorePlan(ctx context.Context,

@@ -139,6 +139,10 @@ spec:
               startedAt:
                 format: date-time
                 type: string
+              upgradedMembers:
+                items:
+                  type: string
+                type: array
               writeOutageStartedAt:
                 format: date-time
                 type: string

@@ -148,6 +148,9 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if *statefulSet.Spec.Replicas != 1 {
 			t.Fatalf("member replicas = %d", *statefulSet.Spec.Replicas)
 		}
+		if _, found := statefulSet.Spec.Selector.MatchLabels["multisite-postgres.dev/desired-revision"]; found {
+			t.Fatal("revision label was included in immutable StatefulSet selector")
+		}
 		command := statefulSet.Spec.Template.Spec.Containers[0].Command[2]
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
@@ -582,6 +585,43 @@ func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
 	}
 	if !foundClient || !foundServer {
 		t.Fatal("dedicated pgBackRest certificates were not rendered")
+	}
+}
+
+func TestRendererRollsOnlySelectedPostgresMember(t *testing.T) {
+	desired := plan.SitePlan{
+		SiteUID: "site", InstanceUID: "instance", Revision: 2,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 2},
+			Storage: api.SiteStorage{
+				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
+			},
+		},
+		Postgres: api.PostgresSpec{Image: "postgres:17.1"},
+		Upgrade: &plan.UpgradePlan{
+			OperationUID: "upgrade", TargetImage: "postgres:17.2",
+			TargetMember: "postgres-vic-1", Phase: plan.UpgradePhaseMember,
+		},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-qld-0": "10.0.1.1", "etcd-nsw-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.10", "postgres-vic-1": "10.0.0.11",
+		},
+	}
+	objects, err := (Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}).Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := map[string]string{}
+	for _, object := range objects {
+		statefulSet, ok := object.(*appsv1.StatefulSet)
+		if ok && strings.HasPrefix(statefulSet.Name, "postgres-") {
+			images[statefulSet.Name] = statefulSet.Spec.Template.Spec.Containers[0].Image
+		}
+	}
+	if images["postgres-vic-0"] != "postgres:17.1" ||
+		images["postgres-vic-1"] != "postgres:17.2" {
+		t.Fatalf("member images = %#v", images)
 	}
 }
 

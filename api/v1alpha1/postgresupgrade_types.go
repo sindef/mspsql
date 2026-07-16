@@ -37,6 +37,7 @@ type PostgresUpgradeStatus struct {
 	StartedAt              *metav1.Time `json:"startedAt,omitempty"`
 	WriteOutageStartedAt   *metav1.Time `json:"writeOutageStartedAt,omitempty"`
 	WriteServiceRestoredAt *metav1.Time `json:"writeServiceRestoredAt,omitempty"`
+	UpgradedMembers        []string     `json:"upgradedMembers,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

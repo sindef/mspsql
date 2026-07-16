@@ -45,6 +45,7 @@ type SitePlan struct {
 	Credentials     api.InstanceCredentialsSpec `json:"credentials"`
 	MemberAddresses map[string]string           `json:"memberAddresses,omitempty"`
 	Restore         *RestorePlan                `json:"restore,omitempty"`
+	Upgrade         *UpgradePlan                `json:"upgrade,omitempty"`
 	Deletion        *DeletionPlan               `json:"deletion,omitempty"`
 }
 
@@ -65,6 +66,24 @@ type RestorePlan struct {
 	SeedSite          string         `json:"seedSite"`
 	SeedMember        string         `json:"seedMember"`
 	Phase             RestorePhase   `json:"phase"`
+}
+
+type UpgradePhase string
+
+const (
+	UpgradePhaseMember     UpgradePhase = "Member"
+	UpgradePhaseSwitchover UpgradePhase = "Switchover"
+	UpgradePhaseFinalize   UpgradePhase = "Finalize"
+)
+
+type UpgradePlan struct {
+	OperationUID    string       `json:"operationUID"`
+	TargetImage     string       `json:"targetImage"`
+	TargetMember    string       `json:"targetMember,omitempty"`
+	UpgradedMembers []string     `json:"upgradedMembers,omitempty"`
+	FromPrimary     string       `json:"fromPrimary,omitempty"`
+	Candidate       string       `json:"candidate,omitempty"`
+	Phase           UpgradePhase `json:"phase"`
 }
 
 type DeletionPlan struct {
@@ -164,6 +183,7 @@ func Classify(previous, next SitePlan) MutationClass {
 		!bytes.Equal(mustCanonical(previous.TDE), mustCanonical(next.TDE)) ||
 		!bytes.Equal(mustCanonical(previous.Credentials), mustCanonical(next.Credentials)) ||
 		!bytes.Equal(mustCanonical(previous.Restore), mustCanonical(next.Restore)) ||
+		!bytes.Equal(mustCanonical(previous.Upgrade), mustCanonical(next.Upgrade)) ||
 		!bytes.Equal(mustCanonical(previous.Deletion), mustCanonical(next.Deletion)) {
 		return MutationCoordinated
 	}

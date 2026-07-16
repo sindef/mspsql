@@ -122,6 +122,12 @@ data-site PostgreSQL StorageClass must also have a
 `SiteRegistration.spec.storageRollbackPolicies` entry using either a discovered
 CSI `VolumeSnapshotClass` or an administrator-asserted PVC clone capability.
 
+Minor upgrades roll one PostgreSQL member at a time. The first target must be
+an observed synchronous standby; after its StatefulSet rollout is fully
+converged, the agent requests an mTLS-authenticated Patroni switchover and
+verifies the new primary before replacing every remaining member. Scheduled
+backups pause until the stable target-image plan is applied everywhere.
+
 ## Restore contract
 
 `PostgresRestore` performs time-based PITR into a new instance. Patroni starts

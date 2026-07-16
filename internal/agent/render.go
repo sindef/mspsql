@@ -270,7 +270,7 @@ func certificate(namespace, name, secretName string, issuer api.IssuerReference,
 func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialCluster string,
 	labels map[string]string,
 ) *appsv1.StatefulSet {
-	memberLabels := copyMap(labels)
+	memberLabels := stableWorkloadLabels(labels)
 	memberLabels["multisite-postgres.dev/member"] = name
 	replicas := int32(1)
 	storage := desired.Site.Storage.Etcd
@@ -325,7 +325,7 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 					}},
 				},
 			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{pvcTemplate(storage, labels)},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{pvcTemplate(storage, memberLabels)},
 		},
 	}
 }
@@ -699,7 +699,8 @@ done
 func (r Renderer) postgresStatefulSet(desired plan.SitePlan, name, address string,
 	labels map[string]string,
 ) *appsv1.StatefulSet {
-	workloadLabels := copyMap(labels)
+	image := postgresMemberImage(desired, name)
+	workloadLabels := stableWorkloadLabels(labels)
 	workloadLabels["multisite-postgres.dev/component"] = "postgres"
 	workloadLabels["multisite-postgres.dev/member"] = name
 	replicas := int32(1)
@@ -763,7 +764,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 		)
 	}
 	containers := []corev1.Container{{
-		Name: "postgres-patroni", Image: desired.Postgres.Image,
+		Name: "postgres-patroni", Image: image,
 		Command: []string{"/bin/bash", "-ec", command},
 		Ports: []corev1.ContainerPort{
 			{Name: "postgres", ContainerPort: 5432},
@@ -812,7 +813,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 				"pgbackrest-repository", "repo-cipher-passphrase")},
 		}
 		initContainers = append(initContainers, corev1.Container{
-			Name: "pgbackrest-config", Image: desired.Postgres.Image,
+			Name: "pgbackrest-config", Image: image,
 			Command: []string{"/bin/bash", "-ec",
 				"umask 077; envsubst < /template/pgbackrest.conf > /runtime/pgbackrest.conf"},
 			Env:             secretEnv,
@@ -823,7 +824,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 			},
 		})
 		containers = append(containers, corev1.Container{
-			Name: "pgbackrest", Image: desired.Postgres.Image,
+			Name: "pgbackrest", Image: image,
 			Command: []string{"pgbackrest", "--config=/etc/pgbackrest/pgbackrest.conf", "server"},
 			Ports:   []corev1.ContainerPort{{Name: "pgbackrest", ContainerPort: 8432}},
 			ReadinessProbe: &corev1.Probe{
@@ -866,10 +867,21 @@ exec patroni /tmp/patroni.yml`, name, address)
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
-				pvcTemplate(desired.Site.Storage.Postgres, labels),
+				pvcTemplate(desired.Site.Storage.Postgres, workloadLabels),
 			},
 		},
 	}
+}
+
+func postgresMemberImage(desired plan.SitePlan, member string) string {
+	if desired.Upgrade == nil {
+		return desired.Postgres.Image
+	}
+	if member == desired.Upgrade.TargetMember ||
+		slices.Contains(desired.Upgrade.UpgradedMembers, member) {
+		return desired.Upgrade.TargetImage
+	}
+	return desired.Postgres.Image
 }
 
 func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) *corev1.ConfigMap {
@@ -897,7 +909,7 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 }
 
 func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]string) *appsv1.Deployment {
-	workloadLabels := copyMap(labels)
+	workloadLabels := stableWorkloadLabels(labels)
 	workloadLabels["multisite-postgres.dev/component"] = "pgpool"
 	replicas := desired.Site.Components.PgpoolReplicas
 	return &appsv1.Deployment{
@@ -1023,6 +1035,12 @@ func resourceLabels(desired plan.SitePlan) map[string]string {
 
 func copyMap(input map[string]string) map[string]string {
 	return maps.Clone(input)
+}
+
+func stableWorkloadLabels(input map[string]string) map[string]string {
+	labels := copyMap(input)
+	delete(labels, "multisite-postgres.dev/desired-revision")
+	return labels
 }
 
 func stringMapAny(input map[string]string) map[string]any {

@@ -18,7 +18,9 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +80,56 @@ func TestPatroniObserverReportsHealthyTopology(t *testing.T) {
 		len(topology.SynchronousStandbys) != 1 ||
 		topology.SynchronousStandbys[0] != "postgres-qld-0" {
 		t.Fatalf("topology = %#v", topology)
+	}
+}
+
+func TestPatroniSwitchoverUsesAuthenticatedRequest(t *testing.T) {
+	var payload map[string]string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/switchover" {
+			http.NotFound(response, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		response.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	certificate := server.Certificate()
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+	privateKey, err := x509.MarshalPKCS8PrivateKey(server.TLS.Certificates[0].PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKey})
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres-vic-0-tls"},
+		Data: map[string][]byte{
+			"ca.crt": caPEM, "tls.crt": caPEM, "tls.key": keyPEM,
+		},
+	}).Build()
+	observer := PatroniObserver{Client: kube}
+	transport := server.Client().Transport
+	observer.ActionHTTP = func(_ *tls.Config) *http.Client {
+		return &http.Client{Transport: rewriteTransport{target: server.URL, delegate: transport}}
+	}
+	err = observer.Switchover(context.Background(), plan.SitePlan{
+		Site: api.PostgresSiteSpec{Namespace: "orders"},
+		MemberAddresses: map[string]string{
+			"postgres-vic-0": "10.0.0.1", "postgres-qld-0": "10.0.1.1",
+		},
+	}, "postgres-vic-0", "postgres-qld-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["leader"] != "postgres-vic-0" || payload["candidate"] != "postgres-qld-0" {
+		t.Fatalf("switchover payload = %#v", payload)
 	}
 }
 

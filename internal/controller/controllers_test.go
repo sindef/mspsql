@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -460,5 +461,126 @@ func TestMajorUpgradeRequiresDiscoveredRollbackStorage(t *testing.T) {
 	}
 	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance); err == nil {
 		t.Fatal("undiscovered VolumeSnapshotClass was accepted")
+	}
+}
+
+func TestMinorUpgradeRollsReplicaThenSwitchesPrimary(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance"), Generation: 1,
+		},
+		Spec: api.MultiSitePostgresSpec{
+			Postgres: api.PostgresSpec{MajorVersion: 17, Image: "postgres:17.1"},
+			Sites: []api.PostgresSiteSpec{
+				{Name: "vic", Role: api.SiteRoleData, Components: api.SiteComponents{PostgresReplicas: 1}},
+				{Name: "qld", Role: api.SiteRoleData, Components: api.SiteComponents{PostgresReplicas: 1}},
+			},
+		},
+		Status: api.MultiSitePostgresStatus{
+			ObservedGeneration: 1, Primary: "postgres-vic-0",
+			SynchronousStandbys: []string{"postgres-qld-0"},
+			Conditions: []metav1.Condition{
+				{Type: "Ready", Status: metav1.ConditionTrue},
+				{Type: "TopologyReady", Status: metav1.ConditionTrue},
+			},
+		},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-17-2", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{
+			InstanceRef: "orders", TargetImage: "postgres:17.2", TargetMajorVersion: 17,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}, &api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	now := time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC)
+
+	reconcile := func() {
+		t.Helper()
+		var currentInstance api.MultiSitePostgres
+		var currentUpgrade api.PostgresUpgrade
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &currentInstance); err != nil {
+			t.Fatal(err)
+		}
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reconciler.reconcileMinorUpgrade(
+			context.Background(), &currentUpgrade, &currentInstance, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reconcile()
+	var current api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradeMemberAnnotation] != "postgres-qld-0" {
+		t.Fatalf("first member = %q", current.Annotations[upgradeMemberAnnotation])
+	}
+	markApplied := func(primary string) {
+		t.Helper()
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+			t.Fatal(err)
+		}
+		revision, err := strconv.ParseInt(current.Annotations[upgradeRevisionAnnotation], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current.Status.ActiveRevision = revision
+		current.Status.Primary = primary
+		current.Status.Sites = []api.SiteRevisionStatus{
+			{Name: "vic", AppliedRevision: revision},
+			{Name: "qld", AppliedRevision: revision},
+		}
+		if err := kube.Status().Update(context.Background(), &current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	markApplied("postgres-vic-0")
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.UpgradePhaseSwitchover) {
+		t.Fatalf("phase = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+	markApplied("postgres-qld-0")
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradeMemberAnnotation] != "postgres-vic-0" {
+		t.Fatalf("remaining member = %q", current.Annotations[upgradeMemberAnnotation])
+	}
+	markApplied("postgres-qld-0")
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.UpgradePhaseFinalize) {
+		t.Fatalf("final phase = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+	markApplied("postgres-qld-0")
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Spec.Postgres.Image != "postgres:17.2" ||
+		current.Annotations[upgradeUIDAnnotation] != "" {
+		t.Fatalf("completed instance = %#v", current)
+	}
+	var completed api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status.Phase != "Completed" || len(completed.Status.UpgradedMembers) != 2 {
+		t.Fatalf("upgrade status = %#v", completed.Status)
 	}
 }
