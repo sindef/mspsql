@@ -53,7 +53,8 @@ for cluster in "${clusters[@]}"; do
   kind create cluster --name "${cluster}" --wait 120s
 done
 
-kind_subnet="$(docker network inspect kind --format '{{(index .IPAM.Config 0).Subnet}}')"
+kind_subnet="$(docker network inspect kind \
+  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' | awk '!/:/ {print; exit}')"
 subnet_address="${kind_subnet%/*}"
 prefix_length="${kind_subnet#*/}"
 IFS=. read -r subnet_a subnet_b _ _ <<<"${subnet_address}"
