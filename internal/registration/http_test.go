@@ -228,4 +228,18 @@ func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
 			t.Fatalf("agent workload contains hostPath volume %q", volume.Name)
 		}
 	}
+	agent := deployment.Spec.Template.Spec.Containers[0]
+	env := map[string]corev1.EnvVar{}
+	for _, variable := range agent.Env {
+		env[variable.Name] = variable
+	}
+	for name, fieldPath := range map[string]string{
+		"POD_NAME": "metadata.name", "POD_NAMESPACE": "metadata.namespace",
+	} {
+		variable, found := env[name]
+		if !found || variable.ValueFrom == nil || variable.ValueFrom.FieldRef == nil ||
+			variable.ValueFrom.FieldRef.FieldPath != fieldPath {
+			t.Fatalf("%s downward API environment = %#v", name, variable)
+		}
+	}
 }

@@ -416,6 +416,10 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 			"--registration-uid=" + string(site.UID),
 		},
 		"env": []any{
+			map[string]any{"name": "POD_NAME", "valueFrom": map[string]any{
+				"fieldRef": map[string]any{"fieldPath": "metadata.name"}}},
+			map[string]any{"name": "POD_NAMESPACE", "valueFrom": map[string]any{
+				"fieldRef": map[string]any{"fieldPath": "metadata.namespace"}}},
 			map[string]any{"name": "HUB_ADDRESS", "valueFrom": map[string]any{
 				"secretKeyRef": map[string]any{"name": "mspsql-agent-bootstrap", "key": "hub-address"}}},
 			map[string]any{"name": "HUB_DOMAIN", "valueFrom": map[string]any{
