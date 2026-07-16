@@ -367,7 +367,7 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
 			},
 		},
-		Postgres: api.PostgresSpec{Image: "percona-postgres:17"},
+		Postgres: api.PostgresSpec{Image: "percona-postgres:17", SynchronousStandbyCount: 1},
 		TDE: api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
 			KVMount: "tde", KeyPath: "postgres/orders",
 		}},
@@ -397,6 +397,7 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 	for _, expected := range []string{
 		"shared_preload_libraries=pg_tde", "pg_tde_basebackup", "post_init: /operator/tde-bootstrap.sh",
 		"verify_client: optional", "certfile: /postgres-tls/tls.crt",
+		"synchronous_mode_strict: true", "hostssl all all 0.0.0.0/0 scram-sha-256",
 	} {
 		if !strings.Contains(patroniConfig, expected) {
 			t.Fatalf("Patroni config is missing %q:\n%s", expected, patroniConfig)

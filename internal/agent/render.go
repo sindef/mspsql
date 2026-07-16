@@ -311,17 +311,11 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 		}
 	}
 	slices.Sort(endpoints)
-	tdeBootstrap := ""
+	postInit := ""
 	tdeParameters := ""
 	tdeBinaries := ""
 	if desired.TDE.Enabled {
-		tdeBootstrap = `bootstrap:
-  initdb:
-    - encoding: UTF8
-    - data-checksums
-    - set: shared_preload_libraries=pg_tde
-  post_init: /operator/tde-bootstrap.sh
-`
+		postInit = "  post_init: /operator/tde-bootstrap.sh\n"
 		tdeParameters = `    shared_preload_libraries: pg_tde
 `
 		tdeBinaries = `  bin_name:
@@ -337,6 +331,35 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
     archive_timeout: 60s
 `, stanza)
 	}
+	initdbTDE := ""
+	if desired.TDE.Enabled {
+		initdbTDE = "    - set: shared_preload_libraries=pg_tde\n"
+	}
+	synchronousConfig := `    synchronous_mode: "off"
+`
+	if desired.Postgres.SynchronousStandbyCount > 0 {
+		synchronousConfig = fmt.Sprintf(`    synchronous_mode: "on"
+    synchronous_mode_strict: true
+    synchronous_node_count: %d
+`, desired.Postgres.SynchronousStandbyCount)
+	}
+	bootstrap := fmt.Sprintf(`bootstrap:
+  dcs:
+%s
+    failsafe_mode: true
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        password_encryption: scram-sha-256
+      pg_hba:
+        - local all all peer
+        - hostssl replication replication 0.0.0.0/0 scram-sha-256
+        - hostssl all all 0.0.0.0/0 scram-sha-256
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+%s%s`, synchronousConfig, initdbTDE, postInit)
 	config := fmt.Sprintf(`scope: %s
 name: ${MEMBER_NAME}
 %srestapi:
@@ -374,7 +397,7 @@ postgresql:
       password: ${POSTGRES_REPLICATION_PASSWORD}
 tags:
   failover_priority: %d
-`, desired.InstanceUID, tdeBootstrap, strings.Join(endpoints, ","), tdeBinaries,
+`, desired.InstanceUID, bootstrap, strings.Join(endpoints, ","), tdeBinaries,
 		tdeParameters, backupParameters, desired.Site.PrimaryPreference)
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
