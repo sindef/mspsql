@@ -58,6 +58,15 @@ spec:
                     properties:
                       bucket:
                         type: string
+                      caBundleSecretRef:
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
                       credentialVaultRef:
                         properties:
                           key:
@@ -74,9 +83,16 @@ spec:
                         type: string
                       prefix:
                         type: string
+                      region:
+                        type: string
                       type:
                         enum:
                         - S3
+                        type: string
+                      uriStyle:
+                        enum:
+                        - host
+                        - path
                         type: string
                     required:
                     - bucket

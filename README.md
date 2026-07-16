@@ -105,6 +105,11 @@ the path is not expected to contain a pre-created key value. Vault policies
 must grant create/read/update on its data path, read/list on its metadata path,
 and read on the mount metadata required by `pg_tde`.
 
+Backup repositories are always encrypted by pgBackRest with the Vault-provided
+passphrase. Private S3-compatible endpoints use
+`backup.repository.caBundleSecretRef`, which follows the same site-agent
+namespace Secret contract as the Vault CA reference.
+
 ## Security invariants
 
 - Plan caches accept only valid Ed25519 signatures, the bound site and

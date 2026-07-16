@@ -91,6 +91,7 @@ func TestSecretMaterializerUsesDocumentedVaultSchema(t *testing.T) {
 		},
 		Backup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
 			CredentialVaultRef: api.VaultSecretReference{Mount: "secret", Path: "backup/orders"},
+			CABundleSecretRef:  &api.SecretKeyReference{Name: "vault-ca"},
 		}},
 		TDE: api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
 			KVMount: "tde", KeyPath: "postgres/orders", ProviderName: "orders",
@@ -103,6 +104,7 @@ func TestSecretMaterializerUsesDocumentedVaultSchema(t *testing.T) {
 	assertSecretValue(t, kube, "postgres-auth", "replication-password", "repl")
 	assertSecretValue(t, kube, "pgpool-auth", "admin-password", "pool")
 	assertSecretValue(t, kube, "pgbackrest-repository", "repo-cipher-passphrase", "cipher")
+	assertSecretValue(t, kube, "pgbackrest-repository", "ca.crt", "site-ca")
 	assertSecretValue(t, kube, "pg-tde-vault", "token", "short-lived")
 	assertSecretValue(t, kube, "pg-tde-vault", "ca.crt", "site-ca")
 }

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -67,11 +68,17 @@ func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
+		ports := []corev1.ServicePort{
+			{Name: "postgres", Port: 5432, TargetPort: intstr.FromInt32(5432)},
+			{Name: "patroni", Port: 8008, TargetPort: intstr.FromInt32(8008)},
+		}
+		if desired.Backup != nil {
+			ports = append(ports, corev1.ServicePort{
+				Name: "pgbackrest", Port: 8432, TargetPort: intstr.FromInt32(8432),
+			})
+		}
 		objects = append(objects, memberService(desired.Site.Namespace, name, name+"-0", labels,
-			desired.Site.LoadBalancer, []corev1.ServicePort{
-				{Name: "postgres", Port: 5432, TargetPort: intstr.FromInt32(5432)},
-				{Name: "patroni", Port: 8008, TargetPort: intstr.FromInt32(8008)},
-			}))
+			desired.Site.LoadBalancer, ports))
 	}
 	if desired.Site.Components.PgpoolReplicas > 0 {
 		name := "pgpool-" + desired.Site.Name
@@ -98,6 +105,10 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	if desired.Site.Role == api.SiteRoleData {
 		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-etcd-client",
 			"patroni-etcd-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels))
+		if desired.Backup != nil {
+			objects = append(objects, clientCertificate(desired.Site.Namespace, "pgbackrest-client",
+				"pgbackrest-client-tls", desired.Site.Certificates.PostgresIssuerRef, labels))
+		}
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
@@ -134,6 +145,13 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	}
 	patroniConfig := r.patroniConfig(desired, labels)
 	objects = append(objects, patroniConfig)
+	if desired.Backup != nil {
+		pgBackRestConfig, configErr := r.pgBackRestConfig(desired, labels)
+		if configErr != nil {
+			return nil, configErr
+		}
+		objects = append(objects, pgBackRestConfig)
+	}
 	if desired.TDE.Enabled {
 		objects = append(objects, r.tdeBootstrapConfig(desired, labels))
 	}
@@ -311,6 +329,14 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
     pg_rewind: pg_tde_rewind
 `
 	}
+	backupParameters := ""
+	if desired.Backup != nil {
+		stanza := "mspsql-" + desired.InstanceUID
+		backupParameters = fmt.Sprintf(`    archive_mode: "on"
+    archive_command: 'pgbackrest --config=/etc/pgbackrest/pgbackrest.conf --stanza=%s archive-push %%p'
+    archive_timeout: 60s
+`, stanza)
+	}
 	config := fmt.Sprintf(`scope: %s
 name: ${MEMBER_NAME}
 %srestapi:
@@ -335,7 +361,7 @@ postgresql:
   connect_address: ${PATRONI_CONNECT_ADDRESS}:5432
   data_dir: /var/lib/postgresql/data
 %s  parameters:
-%s    ssl: "on"
+%s%s    ssl: "on"
     ssl_cert_file: /postgres-tls/tls.crt
     ssl_key_file: /postgres-tls/tls.key
     ssl_ca_file: /postgres-tls/ca.crt
@@ -349,13 +375,81 @@ postgresql:
 tags:
   failover_priority: %d
 `, desired.InstanceUID, tdeBootstrap, strings.Join(endpoints, ","), tdeBinaries,
-		tdeParameters, desired.Site.PrimaryPreference)
+		tdeParameters, backupParameters, desired.Site.PrimaryPreference)
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "patroni-" + desired.Site.Name, Labels: copyMap(labels),
 		},
 		Data: map[string]string{"patroni.yml": config},
 	}
+}
+
+func (r Renderer) pgBackRestConfig(desired plan.SitePlan, labels map[string]string) (*corev1.ConfigMap, error) {
+	repository := desired.Backup.Repository
+	if repository.Region == "" {
+		repository.Region = "us-east-1"
+	}
+	if repository.URIStyle == "" {
+		repository.URIStyle = "host"
+	}
+	for name, value := range map[string]string{
+		"bucket": repository.Bucket, "prefix": repository.Prefix, "region": repository.Region,
+	} {
+		if strings.ContainsAny(value, "\r\n") {
+			return nil, fmt.Errorf("pgBackRest repository %s must be a single line", name)
+		}
+	}
+	endpoint := repository.Endpoint
+	if endpoint == "" {
+		endpoint = "https://s3." + repository.Region + ".amazonaws.com"
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return nil, fmt.Errorf("pgBackRest endpoint must be an absolute HTTPS URL")
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = "443"
+	}
+	stanza := "mspsql-" + desired.InstanceUID
+	caConfig := ""
+	if repository.CABundleSecretRef != nil {
+		caConfig = "repo1-storage-ca-file=/repository/ca.crt\n"
+	}
+	config := fmt.Sprintf(`[global]
+repo1-type=s3
+repo1-path=/%s
+repo1-s3-bucket=%s
+repo1-s3-endpoint=%s
+repo1-s3-region=%s
+repo1-s3-uri-style=%s
+repo1-storage-port=%s
+repo1-storage-verify-tls=y
+%srepo1-s3-key=${S3_ACCESS_KEY}
+repo1-s3-key-secret=${S3_SECRET_KEY}
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass=${REPO_CIPHER_PASSPHRASE}
+archive-async=y
+spool-path=/var/spool/pgbackrest
+process-max=4
+start-fast=y
+tls-server-address=*
+tls-server-port=8432
+tls-server-ca-file=/postgres-tls/ca.crt
+tls-server-cert-file=/postgres-tls/tls.crt
+tls-server-key-file=/postgres-tls/tls.key
+tls-server-auth=pgbackrest-client=%s
+
+[%s]
+pg1-path=/var/lib/postgresql/data
+`, strings.Trim(repository.Prefix, "/"), repository.Bucket, parsed.Hostname(), repository.Region,
+		repository.URIStyle, port, caConfig, stanza, stanza)
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: desired.Site.Namespace, Name: "pgbackrest-" + desired.Site.Name, Labels: copyMap(labels),
+		},
+		Data: map[string]string{"pgbackrest.conf": config},
+	}, nil
 }
 
 func (r Renderer) tdeBootstrapConfig(desired plan.SitePlan, labels map[string]string) *corev1.ConfigMap {
@@ -455,6 +549,83 @@ exec patroni /tmp/patroni.yml`, name, address)
 			}},
 		)
 	}
+	containers := []corev1.Container{{
+		Name: "postgres-patroni", Image: desired.Postgres.Image,
+		Command: []string{"/bin/bash", "-ec", command},
+		Ports: []corev1.ContainerPort{
+			{Name: "postgres", ContainerPort: 5432},
+			{Name: "patroni", ContainerPort: 8008},
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/readiness", Port: intstr.FromString("patroni"),
+				Scheme: corev1.URISchemeHTTPS,
+			}},
+			PeriodSeconds: 10, FailureThreshold: 6,
+		},
+		SecurityContext: restrictedContainer(),
+		VolumeMounts:    volumeMounts,
+	}}
+	var initContainers []corev1.Container
+	if desired.Backup != nil {
+		volumes = append(volumes,
+			corev1.Volume{Name: "pgbackrest-template", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{
+					Name: "pgbackrest-" + desired.Site.Name,
+				}},
+			}},
+			corev1.Volume{Name: "pgbackrest-runtime", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			}},
+			corev1.Volume{Name: "pgbackrest-repository", VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: "pgbackrest-repository"},
+			}},
+			corev1.Volume{Name: "pgbackrest-spool", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			}},
+		)
+		containers[0].VolumeMounts = append(containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
+			corev1.VolumeMount{Name: "pgbackrest-repository", MountPath: "/repository", ReadOnly: true},
+			corev1.VolumeMount{Name: "pgbackrest-spool", MountPath: "/var/spool/pgbackrest"},
+		)
+		secretEnv := []corev1.EnvVar{
+			{Name: "S3_ACCESS_KEY", ValueFrom: secretKeySelector("pgbackrest-repository", "s3-access-key")},
+			{Name: "S3_SECRET_KEY", ValueFrom: secretKeySelector("pgbackrest-repository", "s3-secret-key")},
+			{Name: "REPO_CIPHER_PASSPHRASE", ValueFrom: secretKeySelector(
+				"pgbackrest-repository", "repo-cipher-passphrase")},
+		}
+		initContainers = append(initContainers, corev1.Container{
+			Name: "pgbackrest-config", Image: desired.Postgres.Image,
+			Command: []string{"/bin/bash", "-ec",
+				"umask 077; envsubst < /template/pgbackrest.conf > /runtime/pgbackrest.conf"},
+			Env:             secretEnv,
+			SecurityContext: restrictedContainer(),
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "pgbackrest-template", MountPath: "/template", ReadOnly: true},
+				{Name: "pgbackrest-runtime", MountPath: "/runtime"},
+			},
+		})
+		containers = append(containers, corev1.Container{
+			Name: "pgbackrest", Image: desired.Postgres.Image,
+			Command: []string{"pgbackrest", "--config=/etc/pgbackrest/pgbackrest.conf", "server"},
+			Ports:   []corev1.ContainerPort{{Name: "pgbackrest", ContainerPort: 8432}},
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
+					Port: intstr.FromString("pgbackrest"),
+				}},
+				PeriodSeconds: 10, FailureThreshold: 6,
+			},
+			SecurityContext: restrictedContainer(),
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "data", MountPath: "/var/lib/postgresql/data", ReadOnly: true},
+				{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
+				{Name: "pgbackrest-repository", MountPath: "/repository", ReadOnly: true},
+				{Name: "pgbackrest-spool", MountPath: "/var/spool/pgbackrest"},
+				{Name: "postgres-tls", MountPath: "/postgres-tls", ReadOnly: true},
+			},
+		})
+	}
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: name, Labels: copyMap(labels),
@@ -472,22 +643,10 @@ exec patroni /tmp/patroni.yml`, name, address)
 						RunAsNonRoot: ptr(true), FSGroup: ptr(int64(26)),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Affinity: antiAffinity(workloadLabels),
-					Containers: []corev1.Container{{
-						Name: "postgres-patroni", Image: desired.Postgres.Image,
-						Command: []string{"/bin/bash", "-ec", command},
-						Ports:   []corev1.ContainerPort{{Name: "postgres", ContainerPort: 5432}, {Name: "patroni", ContainerPort: 8008}},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-								Path: "/readiness", Port: intstr.FromString("patroni"),
-								Scheme: corev1.URISchemeHTTPS,
-							}},
-							PeriodSeconds: 10, FailureThreshold: 6,
-						},
-						SecurityContext: restrictedContainer(),
-						VolumeMounts:    volumeMounts,
-					}},
-					Volumes: volumes,
+					Affinity:       antiAffinity(workloadLabels),
+					InitContainers: initContainers,
+					Containers:     containers,
+					Volumes:        volumes,
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
@@ -614,6 +773,13 @@ func restrictedContainer() *corev1.SecurityContext {
 			Drop: []corev1.Capability{"ALL"},
 		},
 	}
+}
+
+func secretKeySelector(name, key string) *corev1.EnvVarSource {
+	return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: name},
+		Key:                  key,
+	}}
 }
 
 func antiAffinity(labels map[string]string) *corev1.Affinity {

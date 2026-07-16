@@ -103,12 +103,20 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 			"s3AccessKey", "s3SecretKey", "repositoryCipherPassphrase"); err != nil {
 			return fmt.Errorf("pgBackRest repository credentials: %w", err)
 		}
+		repositoryData := map[string][]byte{
+			"s3-access-key":          []byte(repository.Data["s3AccessKey"]),
+			"s3-secret-key":          []byte(repository.Data["s3SecretKey"]),
+			"repo-cipher-passphrase": []byte(repository.Data["repositoryCipherPassphrase"]),
+		}
+		if desired.Backup.Repository.CABundleSecretRef != nil {
+			repositoryCA, caErr := m.secretValue(ctx, desired.Backup.Repository.CABundleSecretRef)
+			if caErr != nil {
+				return fmt.Errorf("read backup repository CA Secret: %w", caErr)
+			}
+			repositoryData["ca.crt"] = repositoryCA
+		}
 		if err := m.reconcileSecret(ctx, desired, "pgbackrest-repository", repository.Version,
-			map[string][]byte{
-				"s3-access-key":          []byte(repository.Data["s3AccessKey"]),
-				"s3-secret-key":          []byte(repository.Data["s3SecretKey"]),
-				"repo-cipher-passphrase": []byte(repository.Data["repositoryCipherPassphrase"]),
-			}); err != nil {
+			repositoryData); err != nil {
 			return err
 		}
 	}
@@ -140,20 +148,28 @@ func (m *SecretMaterializer) vaultCABundle(ctx context.Context, auth api.VaultAu
 	if auth.CABundleSecretRef == nil {
 		return nil, nil
 	}
-	key := auth.CABundleSecretRef.Key
+	value, err := m.secretValue(ctx, auth.CABundleSecretRef)
+	if err != nil {
+		return nil, fmt.Errorf("read Vault CA Secret: %w", err)
+	}
+	return value, nil
+}
+
+func (m *SecretMaterializer) secretValue(ctx context.Context, reference *api.SecretKeyReference) ([]byte, error) {
+	key := reference.Key
 	if key == "" {
 		key = "ca.crt"
 	}
 	var secret corev1.Secret
 	if err := m.Client.Get(ctx, client.ObjectKey{
-		Namespace: m.SourceNamespace, Name: auth.CABundleSecretRef.Name,
+		Namespace: m.SourceNamespace, Name: reference.Name,
 	}, &secret); err != nil {
-		return nil, fmt.Errorf("read Vault CA Secret: %w", err)
+		return nil, err
 	}
 	caBundle := secret.Data[key]
 	if len(caBundle) == 0 {
-		return nil, fmt.Errorf("vault CA Secret %s/%s has no non-empty key %q",
-			m.SourceNamespace, auth.CABundleSecretRef.Name, key)
+		return nil, fmt.Errorf("secret %s/%s has no non-empty key %q",
+			m.SourceNamespace, reference.Name, key)
 	}
 	return caBundle, nil
 }

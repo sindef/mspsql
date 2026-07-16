@@ -52,6 +52,12 @@ func defaultInstance(obj *api.MultiSitePostgres) {
 		if obj.Spec.Backup.Retention.WALDuration.Duration == 0 {
 			obj.Spec.Backup.Retention.WALDuration.Duration = 7 * 24 * time.Hour
 		}
+		if obj.Spec.Backup.Repository.Region == "" {
+			obj.Spec.Backup.Repository.Region = "us-east-1"
+		}
+		if obj.Spec.Backup.Repository.URIStyle == "" {
+			obj.Spec.Backup.Repository.URIStyle = "host"
+		}
 	}
 	for i := range obj.Spec.Sites {
 		defaultIssuer(&obj.Spec.Sites[i].Certificates.EtcdIssuerRef)
@@ -118,7 +124,33 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 		errs = append(errs, field.Required(specPath.Child("backup", "repository", "prefix"),
 			"backup prefix must identify this instance"))
 	}
+	if obj.Spec.Backup != nil {
+		errs = append(errs, validateBackupRepository(obj.Spec.Backup.Repository,
+			specPath.Child("backup", "repository"))...)
+	}
 	return errs.ToAggregate()
+}
+
+func validateBackupRepository(repository api.BackupRepositorySpec, repositoryPath *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	for name, value := range map[string]string{
+		"bucket": repository.Bucket, "prefix": repository.Prefix, "region": repository.Region,
+	} {
+		if strings.ContainsAny(value, "\r\n") {
+			errs = append(errs, field.Invalid(repositoryPath.Child(name), value, "must be a single line"))
+		}
+	}
+	if repository.Endpoint != "" {
+		endpoint, err := url.Parse(repository.Endpoint)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" {
+			errs = append(errs, field.Invalid(repositoryPath.Child("endpoint"),
+				repository.Endpoint, "must be an absolute HTTPS URL"))
+		}
+	}
+	if ref := repository.CABundleSecretRef; ref != nil && ref.Name == "" {
+		errs = append(errs, field.Required(repositoryPath.Child("caBundleSecretRef", "name"), "required"))
+	}
+	return errs
 }
 
 func validateDataSite(site api.PostgresSiteSpec, sitePath *field.Path) field.ErrorList {

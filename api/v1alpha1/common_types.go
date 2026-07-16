@@ -149,10 +149,14 @@ type InstanceCredentialsSpec struct {
 
 type BackupRepositorySpec struct {
 	// +kubebuilder:validation:Enum=S3
-	Type               string               `json:"type"`
-	Bucket             string               `json:"bucket"`
-	Prefix             string               `json:"prefix"`
-	Endpoint           string               `json:"endpoint,omitempty"`
+	Type     string `json:"type"`
+	Bucket   string `json:"bucket"`
+	Prefix   string `json:"prefix"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Region   string `json:"region,omitempty"`
+	// +kubebuilder:validation:Enum=host;path
+	URIStyle           string               `json:"uriStyle,omitempty"`
+	CABundleSecretRef  *SecretKeyReference  `json:"caBundleSecretRef,omitempty"`
 	CredentialVaultRef VaultSecretReference `json:"credentialVaultRef"`
 }
 

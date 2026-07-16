@@ -39,3 +39,19 @@ spec:
       etcdIssuerRef: {name: etcd-vault, kind: ClusterIssuer}
       postgresIssuerRef: {name: postgres-vault, kind: ClusterIssuer}
       pgpoolIssuerRef: {name: client-vault, kind: ClusterIssuer}
+  backup:
+    repository:
+      type: S3
+      bucket: database-backups
+      prefix: orders
+      endpoint: https://s3.example.internal
+      region: ap-southeast-2
+      uriStyle: path
+      caBundleSecretRef: {name: object-storage-ca, key: ca.crt}
+      credentialVaultRef:
+        mount: secret
+        path: postgres/orders/pgbackrest
+    schedules:
+      full: "30 6 * * 0"
+      differential: "30 6 * * 1-6"
+      incremental: "30 */6 * * *"

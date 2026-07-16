@@ -414,6 +414,82 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 	}
 }
 
+func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
+	desired := plan.SitePlan{
+		SiteUID: "site", InstanceUID: "instance", Revision: 1,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 1},
+			Storage: api.SiteStorage{
+				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
+			},
+			Certificates: api.SiteCertificateSpec{
+				PostgresIssuerRef: api.IssuerReference{Name: "postgres-ca"},
+			},
+		},
+		Postgres: api.PostgresSpec{Image: "percona-postgres:17"},
+		Backup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
+			Type: "S3", Bucket: "backups", Prefix: "orders", Region: "ap-southeast-2",
+			Endpoint: "https://minio.example:9443", URIStyle: "path",
+			CABundleSecretRef: &api.SecretKeyReference{Name: "minio-ca"},
+		}},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-nsw-0": "10.0.1.1", "etcd-qld-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.10",
+		},
+	}
+	renderer := Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}
+	objects, err := renderer.Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config strings.Builder
+	var postgres *appsv1.StatefulSet
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *corev1.ConfigMap:
+			config.WriteString(object.Data["pgbackrest.conf"])
+			config.WriteString(object.Data["patroni.yml"])
+		case *appsv1.StatefulSet:
+			if strings.HasPrefix(object.Name, "postgres-") {
+				postgres = object
+			}
+		}
+	}
+	for _, expected := range []string{
+		"repo1-cipher-type=aes-256-cbc", "repo1-storage-ca-file=/repository/ca.crt",
+		"repo1-s3-endpoint=minio.example", "repo1-storage-port=9443", "archive-push %p",
+	} {
+		if !strings.Contains(config.String(), expected) {
+			t.Fatalf("pgBackRest config is missing %q:\n%s", expected, config.String())
+		}
+	}
+	if strings.Contains(config.String(), "s3-secret-key") {
+		t.Fatal("repository credentials were rendered into a ConfigMap")
+	}
+	if postgres == nil || len(postgres.Spec.Template.Spec.InitContainers) != 1 ||
+		!hasContainer(postgres.Spec.Template.Spec.Containers, "pgbackrest") {
+		t.Fatalf("PostgreSQL pgBackRest pod layout = %#v", postgres)
+	}
+	certificates := renderer.Certificates(desired)
+	foundClient := false
+	for _, certificate := range certificates {
+		foundClient = foundClient || certificate.GetName() == "pgbackrest-client"
+	}
+	if !foundClient {
+		t.Fatal("pgBackRest coordinator client certificate was not rendered")
+	}
+}
+
+func hasContainer(containers []corev1.Container, name string) bool {
+	for _, container := range containers {
+		if container.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func hasVolume(volumes []corev1.Volume, name string) bool {
 	for _, volume := range volumes {
 		if volume.Name == name {
