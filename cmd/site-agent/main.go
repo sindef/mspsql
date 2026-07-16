@@ -129,7 +129,6 @@ func main() {
 					return
 				}
 				defer func() { _ = os.Remove(activationPath) }()
-				reconcileCached(leaderCtx, cache, reconciler)
 				runControlLoop(leaderCtx, target, tlsConfig, cache, reconciler, registrationUID,
 					string(clusterUID))
 			},
@@ -158,6 +157,7 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 	log := crlog.FromContext(ctx).WithName("control")
 	backoff := time.Second
 	for ctx.Err() == nil {
+		reconcileCached(ctx, cache, reconciler)
 		controlClient := &control.AgentClient{
 			Target: target,
 			DialOptions: []grpc.DialOption{

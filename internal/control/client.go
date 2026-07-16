@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"sync"
@@ -47,6 +46,17 @@ type AgentClient struct {
 	heartbeatNow func() time.Time
 }
 
+type receivedHubMessage struct {
+	message *controlv1.HubMessage
+	err     error
+}
+
+type planWorkerResult struct {
+	instanceUID string
+	revision    int64
+	err         error
+}
+
 func (c *AgentClient) Run(ctx context.Context) error {
 	connection, err := grpc.NewClient(c.Target, c.DialOptions...)
 	if err != nil {
@@ -70,24 +80,82 @@ func (c *AgentClient) Run(ctx context.Context) error {
 	heartbeatErr := make(chan error, 1)
 	go func() { heartbeatErr <- c.heartbeats(heartbeatCtx, stream) }()
 
+	received := make(chan receivedHubMessage, 1)
+	go func() {
+		for {
+			message, receiveErr := stream.Recv()
+			select {
+			case received <- receivedHubMessage{message: message, err: receiveErr}:
+			case <-ctx.Done():
+				return
+			}
+			if receiveErr != nil {
+				return
+			}
+		}
+	}()
+	workers := map[string]struct {
+		revision int64
+		cancel   context.CancelFunc
+	}{}
+	workerResults := make(chan planWorkerResult)
+	defer func() {
+		for _, worker := range workers {
+			worker.cancel()
+		}
+	}()
+
 	for {
-		message, err := stream.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		select {
+		case receive := <-received:
+			if receive.err != nil {
+				if errors.Is(receive.err, io.EOF) {
+					return nil
+				}
+				return receive.err
+			}
+			message := receive.message
+			if message.GetPlan() == nil {
+				continue
+			}
+			desired := message.GetPlan()
+			if worker, exists := workers[desired.InstanceUid]; exists {
+				if worker.revision >= desired.Revision {
+					continue
+				}
+				worker.cancel()
+			}
+			workerCtx, cancelWorker := context.WithCancel(ctx)
+			workers[desired.InstanceUid] = struct {
+				revision int64
+				cancel   context.CancelFunc
+			}{revision: desired.Revision, cancel: cancelWorker}
+			go func(desiredPlan *controlv1.DesiredSitePlan) {
+				result := planWorkerResult{
+					instanceUID: desiredPlan.InstanceUid,
+					revision:    desiredPlan.Revision,
+					err:         c.applyPlan(workerCtx, stream, desiredPlan),
+				}
+				select {
+				case workerResults <- result:
+				case <-ctx.Done():
+				}
+			}(desired)
+		case result := <-workerResults:
+			worker, exists := workers[result.instanceUID]
+			if exists && worker.revision == result.revision {
+				delete(workers, result.instanceUID)
+			}
+			if result.err != nil && !errors.Is(result.err, context.Canceled) {
+				return result.err
+			}
+		case err := <-heartbeatErr:
+			if errors.Is(err, context.Canceled) {
 				return nil
 			}
 			return err
-		}
-		if message.GetPlan() == nil {
-			continue
-		}
-		if err := c.applyPlan(ctx, stream, message.GetPlan()); err != nil {
-			return err
-		}
-		select {
-		case err := <-heartbeatErr:
-			return err
-		default:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
@@ -114,50 +182,60 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 	}); err != nil {
 		return err
 	}
-	if err := c.send(stream, &controlv1.AgentMessage{
-		Message: &controlv1.AgentMessage_Progress{Progress: &controlv1.PlanProgress{
-			InstanceUid: message.InstanceUid, Revision: message.Revision, Phase: "Applying",
-		}},
-	}); err != nil {
-		return err
+	backoff := time.Second
+	for {
+		result, applyErr := c.Reconciler.Apply(ctx, desired, previous, true)
+		summaries := make(map[string]string, len(result.Addresses)+1)
+		for member, address := range result.Addresses {
+			summaries["address/"+member] = address
+		}
+		if applyErr != nil {
+			summaries["error"] = applyErr.Error()
+			result.Phase = "Retrying"
+		}
+		if err := c.send(stream, &controlv1.AgentMessage{
+			Message: &controlv1.AgentMessage_Progress{Progress: &controlv1.PlanProgress{
+				InstanceUid: message.InstanceUid, Revision: message.Revision,
+				Phase: result.Phase, ResourceSummaries: summaries,
+			}},
+		}); err != nil {
+			return err
+		}
+		if applyErr == nil && result.Phase == "Ready" {
+			conditions := make([]*controlv1.Condition, 0, len(result.Conditions))
+			for _, condition := range result.Conditions {
+				conditions = append(conditions, &controlv1.Condition{
+					Type: condition.Type, Status: string(condition.Status), Reason: condition.Reason,
+					Message: condition.Message, LastTransitionTime: timestamppb.New(condition.LastTransitionTime.Time),
+				})
+			}
+			if err := c.send(stream, &controlv1.AgentMessage{
+				Message: &controlv1.AgentMessage_Result{Result: &controlv1.PlanResult{
+					InstanceUid: message.InstanceUid, AppliedRevision: message.Revision, Conditions: conditions,
+				}},
+			}); err != nil {
+				return err
+			}
+			c.activeMu.Lock()
+			c.active[message.InstanceUid] = message.Revision
+			c.activeMu.Unlock()
+			return nil
+		}
+		delay := 5 * time.Second
+		if applyErr != nil {
+			delay = backoff
+			if backoff < time.Minute {
+				backoff *= 2
+			}
+		} else {
+			backoff = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 	}
-	result, err := c.Reconciler.Apply(ctx, desired, previous, true)
-	if err != nil {
-		return err
-	}
-	summaries := make(map[string]string, len(result.Addresses))
-	for member, address := range result.Addresses {
-		summaries["address/"+member] = address
-	}
-	if err := c.send(stream, &controlv1.AgentMessage{
-		Message: &controlv1.AgentMessage_Progress{Progress: &controlv1.PlanProgress{
-			InstanceUid: message.InstanceUid, Revision: message.Revision,
-			Phase: result.Phase, ResourceSummaries: summaries,
-		}},
-	}); err != nil {
-		return err
-	}
-	if result.Phase != "Ready" {
-		return nil
-	}
-	conditions := make([]*controlv1.Condition, 0, len(result.Conditions))
-	for _, condition := range result.Conditions {
-		conditions = append(conditions, &controlv1.Condition{
-			Type: condition.Type, Status: string(condition.Status), Reason: condition.Reason,
-			Message: condition.Message, LastTransitionTime: timestamppb.New(condition.LastTransitionTime.Time),
-		})
-	}
-	if err := c.send(stream, &controlv1.AgentMessage{
-		Message: &controlv1.AgentMessage_Result{Result: &controlv1.PlanResult{
-			InstanceUid: message.InstanceUid, AppliedRevision: message.Revision, Conditions: conditions,
-		}},
-	}); err != nil {
-		return err
-	}
-	c.activeMu.Lock()
-	c.active[message.InstanceUid] = message.Revision
-	c.activeMu.Unlock()
-	return nil
 }
 
 func (c *AgentClient) reject(stream controlv1.AgentControl_ConnectClient,
@@ -171,7 +249,7 @@ func (c *AgentClient) reject(stream controlv1.AgentControl_ConnectClient,
 	}); err != nil {
 		return err
 	}
-	return fmt.Errorf("reject plan revision %d: %w", message.Revision, validationErr)
+	return nil
 }
 
 func (c *AgentClient) heartbeats(ctx context.Context, stream controlv1.AgentControl_ConnectClient) error {
