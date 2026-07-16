@@ -1,0 +1,9 @@
+apiVersion: multisite-postgres.multisite-postgres.dev/v1alpha1
+kind: SiteRegistration
+metadata:
+  labels:
+    app.kubernetes.io/name: mspsql
+    app.kubernetes.io/managed-by: kustomize
+  name: siteregistration-sample
+spec:
+  # TODO(user): Add fields here

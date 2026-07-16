@@ -1,0 +1,9 @@
+## Append samples of your project ##
+resources:
+- multisite-postgres_v1alpha1_siteregistration.yaml
+- multisite-postgres_v1alpha1_multisitepostgres.yaml
+- multisite-postgres_v1alpha1_postgresdatabase.yaml
+- multisite-postgres_v1alpha1_postgresuser.yaml
+- multisite-postgres_v1alpha1_postgresrestore.yaml
+- multisite-postgres_v1alpha1_postgresupgrade.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

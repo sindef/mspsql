@@ -1,0 +1,47 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - multisite-postgres.multisite-postgres.dev
+  resources:
+  - multisitepostgres
+  - postgresdatabases
+  - postgresrestores
+  - postgresupgrades
+  - postgresusers
+  - siteregistrations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - multisite-postgres.multisite-postgres.dev
+  resources:
+  - multisitepostgres/finalizers
+  - postgresdatabases/finalizers
+  - postgresrestores/finalizers
+  - postgresupgrades/finalizers
+  - postgresusers/finalizers
+  - siteregistrations/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - multisite-postgres.multisite-postgres.dev
+  resources:
+  - multisitepostgres/status
+  - postgresdatabases/status
+  - postgresrestores/status
+  - postgresupgrades/status
+  - postgresusers/status
+  - siteregistrations/status
+  verbs:
+  - get
+  - patch
+  - update
