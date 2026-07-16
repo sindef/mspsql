@@ -22,10 +22,12 @@ import (
 	"fmt"
 	"maps"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -98,6 +100,17 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 				return result, err
 			}
 		}
+		ready, message, err := r.certificatesReady(ctx, r.Renderer.Certificates(desired))
+		if err != nil {
+			return result, err
+		}
+		if !ready {
+			setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionFalse,
+				"IssuancePending", message)
+			return result, nil
+		}
+		setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionTrue,
+			"CertificatesIssued", "All workload certificates are Ready")
 	}
 
 	result.Phase = "ReconcilingWorkloads"
@@ -112,6 +125,15 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 			return result, err
 		}
 	}
+	ready, message, err := r.workloadsReady(ctx, objects)
+	if err != nil {
+		return result, err
+	}
+	if !ready {
+		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse,
+			"WorkloadsProgressing", message)
+		return result, nil
+	}
 	result.Phase = "Ready"
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
@@ -125,6 +147,77 @@ func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 	}
 	return r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
 		client.FieldOwner("mspsql-agent"))
+}
+
+func (r *Reconciler) certificatesReady(ctx context.Context, certificates []client.Object) (bool, string, error) {
+	for _, expected := range certificates {
+		certificate, ok := expected.(*unstructured.Unstructured)
+		if !ok {
+			return false, "", fmt.Errorf("certificate renderer returned %T", expected)
+		}
+		observed := &unstructured.Unstructured{}
+		observed.SetGroupVersionKind(certificate.GroupVersionKind())
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(certificate), observed); err != nil {
+			return false, "", err
+		}
+		conditions, found, err := unstructured.NestedSlice(observed.Object, "status", "conditions")
+		if err != nil {
+			return false, "", err
+		}
+		isReady := false
+		for _, raw := range conditions {
+			condition, conditionOK := raw.(map[string]any)
+			if conditionOK && condition["type"] == "Ready" && condition["status"] == "True" {
+				isReady = true
+				break
+			}
+		}
+		if isReady {
+			continue
+		}
+		if !found {
+			return false, fmt.Sprintf("Certificate %s has not reported status", observed.GetName()), nil
+		}
+		return false, fmt.Sprintf("Certificate %s is not Ready", observed.GetName()), nil
+	}
+	return true, "", nil
+}
+
+func (r *Reconciler) workloadsReady(ctx context.Context, objects []client.Object) (bool, string, error) {
+	for _, expected := range objects {
+		switch expected := expected.(type) {
+		case *appsv1.StatefulSet:
+			var observed appsv1.StatefulSet
+			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(expected), &observed); err != nil {
+				return false, "", err
+			}
+			replicas := int32(1)
+			if expected.Spec.Replicas != nil {
+				replicas = *expected.Spec.Replicas
+			}
+			if observed.Status.ObservedGeneration < observed.Generation ||
+				observed.Status.ReadyReplicas != replicas {
+				return false, fmt.Sprintf("StatefulSet %s has %d/%d Ready replicas",
+					observed.Name, observed.Status.ReadyReplicas, replicas), nil
+			}
+		case *appsv1.Deployment:
+			var observed appsv1.Deployment
+			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(expected), &observed); err != nil {
+				return false, "", err
+			}
+			replicas := int32(1)
+			if expected.Spec.Replicas != nil {
+				replicas = *expected.Spec.Replicas
+			}
+			if observed.Status.ObservedGeneration < observed.Generation ||
+				observed.Status.AvailableReplicas != replicas ||
+				observed.Status.UpdatedReplicas != replicas {
+				return false, fmt.Sprintf("Deployment %s has %d/%d Available replicas",
+					observed.Name, observed.Status.AvailableReplicas, replicas), nil
+			}
+		}
+	}
+	return true, "", nil
 }
 
 func loadBalancerAddress(service *corev1.Service) (string, error) {

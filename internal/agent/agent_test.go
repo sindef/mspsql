@@ -27,7 +27,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
@@ -115,5 +118,52 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	}
 	if statefulSets != 3 || deployments != 1 {
 		t.Fatalf("statefulSets=%d deployments=%d", statefulSets, deployments)
+	}
+}
+
+func TestReadinessUsesObservedControllerStatus(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	certificateGVK := schema.GroupVersionKind{
+		Group: "cert-manager.io", Version: "v1", Kind: "Certificate",
+	}
+	scheme.AddKnownTypeWithName(certificateGVK, &unstructured.Unstructured{})
+	certificate := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "cert-manager.io/v1",
+		"kind":       "Certificate",
+		"metadata": map[string]any{
+			"namespace": "orders",
+			"name":      "postgres-vic-0",
+		},
+		"status": map[string]any{"conditions": []any{map[string]any{
+			"type": "Ready", "status": "True",
+		}}},
+	}}
+	replicas := int32(2)
+	statefulSet := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres-vic", Generation: 3},
+		Spec:       appsv1.StatefulSetSpec{Replicas: &replicas},
+		Status: appsv1.StatefulSetStatus{
+			ObservedGeneration: 3,
+			ReadyReplicas:      1,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(certificate, statefulSet).Build()
+	reconciler := Reconciler{Client: kube}
+	ready, message, err := reconciler.certificatesReady(context.Background(), []client.Object{certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready {
+		t.Fatalf("certificate was not Ready: %s", message)
+	}
+	ready, message, err = reconciler.workloadsReady(context.Background(), []client.Object{statefulSet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready || message == "" {
+		t.Fatalf("partially available StatefulSet was reported Ready: %q", message)
 	}
 }
