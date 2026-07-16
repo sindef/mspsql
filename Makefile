@@ -2,6 +2,7 @@
 IMG ?= controller:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
+BUF_VERSION ?= v1.71.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -50,6 +51,10 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./..."
+
+.PHONY: proto
+proto: ## Generate versioned gRPC control-channel code.
+	go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) generate
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
