@@ -221,9 +221,10 @@ func reserveAddress(ctx context.Context, kube client.Client, namespace string, p
 		key := types.NamespacedName{Namespace: namespace, Name: allocationsName}
 		var configMap corev1.ConfigMap
 		if err := kube.Get(ctx, key, &configMap); apierrors.IsNotFound(err) {
+			candidate := prefix.Addr().Next().Next()
 			configMap = corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: allocationsName},
-				Data:       map[string]string{},
+				Data:       map[string]string{uid: candidate.String()},
 			}
 			if err := kube.Create(ctx, &configMap); err != nil {
 				if apierrors.IsAlreadyExists(err) {
@@ -231,6 +232,8 @@ func reserveAddress(ctx context.Context, kube client.Client, namespace string, p
 				}
 				return err
 			}
+			reserved = candidate
+			return nil
 		} else if err != nil {
 			return err
 		}
@@ -245,6 +248,9 @@ func reserveAddress(ctx context.Context, kube client.Client, namespace string, p
 		used := make(map[string]struct{}, len(configMap.Data))
 		for _, value := range configMap.Data {
 			used[value] = struct{}{}
+		}
+		if configMap.Data == nil {
+			configMap.Data = map[string]string{}
 		}
 		for candidate := prefix.Addr().Next().Next(); prefix.Contains(candidate.Next()); candidate = candidate.Next() {
 			if _, found := used[candidate.String()]; found {

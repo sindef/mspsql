@@ -91,3 +91,33 @@ func TestNetworkContractRejectsUnsafeRanges(t *testing.T) {
 		}
 	}
 }
+
+func TestReserveAddressRepairsMissingDataMap(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: allocationsName},
+	}).Build()
+	prefix, err := parseNetwork("10.254.0.0/29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := reserveAddress(context.Background(), kube, "system", prefix, "site-vic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address.String() != "10.254.0.2" {
+		t.Fatalf("reserved address = %s", address)
+	}
+	var allocations corev1.ConfigMap
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "system", Name: allocationsName,
+	}, &allocations); err != nil {
+		t.Fatal(err)
+	}
+	if allocations.Data["site-vic"] != address.String() {
+		t.Fatalf("stored allocations = %#v", allocations.Data)
+	}
+}
