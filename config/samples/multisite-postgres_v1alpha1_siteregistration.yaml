@@ -1,9 +1,21 @@
-apiVersion: multisite-postgres.multisite-postgres.dev/v1alpha1
+apiVersion: multisite-postgres.dev/v1alpha1
 kind: SiteRegistration
 metadata:
   labels:
     app.kubernetes.io/name: mspsql
     app.kubernetes.io/managed-by: kustomize
-  name: siteregistration-sample
+  name: production-vic
 spec:
-  # TODO(user): Add fields here
+  displayName: Production VIC
+  permittedStorageClasses:
+    etcd: [premium-rwo]
+    postgres: [premium-rwo]
+    restoreWorkspace: [premium-rwo]
+  permittedIssuers:
+    etcd:
+    - {name: etcd-vault, kind: ClusterIssuer, group: cert-manager.io}
+    postgres:
+    - {name: postgres-vault, kind: ClusterIssuer, group: cert-manager.io}
+    pgpool:
+    - {name: client-vault, kind: ClusterIssuer, group: cert-manager.io}
+  metallbAddressPools: [database-services]

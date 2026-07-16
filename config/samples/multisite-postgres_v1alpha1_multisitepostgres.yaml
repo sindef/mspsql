@@ -1,9 +1,33 @@
-apiVersion: multisite-postgres.multisite-postgres.dev/v1alpha1
+apiVersion: multisite-postgres.dev/v1alpha1
 kind: MultiSitePostgres
 metadata:
   labels:
     app.kubernetes.io/name: mspsql
     app.kubernetes.io/managed-by: kustomize
-  name: multisitepostgres-sample
+  name: orders
+  namespace: database-platform
 spec:
-  # TODO(user): Add fields here
+  deletionPolicy: Retain
+  postgres:
+    majorVersion: 17
+    image: percona/percona-distribution-postgresql:17.10-4
+    synchronousStandbyCount: 1
+  sites:
+  - name: vic
+    siteRegistrationRef: production-vic
+    namespace: orders-postgres
+    role: Data
+    primaryPreference: 100
+    components: {etcdReplicas: 3, postgresReplicas: 2, pgpoolReplicas: 2}
+    storage:
+      etcd: {storageClassName: premium-rwo, size: 20Gi}
+      postgres: {storageClassName: premium-rwo, size: 500Gi}
+    loadBalancer: {addressPool: database-services}
+    vaultAuth:
+      address: https://vault.example.internal:8200
+      authMount: kubernetes-vic
+      authRole: orders-postgres-vic
+    certificates:
+      etcdIssuerRef: {name: etcd-vault, kind: ClusterIssuer}
+      postgresIssuerRef: {name: postgres-vault, kind: ClusterIssuer}
+      pgpoolIssuerRef: {name: client-vault, kind: ClusterIssuer}

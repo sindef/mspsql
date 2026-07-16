@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mspsql-agent
+  namespace: mspsql-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mspsql-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mspsql-agent
+    spec:
+      serviceAccountName: mspsql-agent
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: mspsql-agent
+      containers:
+      - name: site-agent
+        image: site-agent
+        args:
+        - --hub-address=$(HUB_ADDRESS)
+        - --hub-domain=$(HUB_DOMAIN)
+        - --registration-uid=$(REGISTRATION_UID)
+        env:
+        - name: POD_NAME
+          valueFrom: {fieldRef: {fieldPath: metadata.name}}
+        - name: POD_NAMESPACE
+          valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+        - name: HUB_ADDRESS
+          valueFrom: {secretKeyRef: {name: mspsql-agent-bootstrap, key: hub-address}}
+        - name: HUB_DOMAIN
+          valueFrom: {secretKeyRef: {name: mspsql-agent-bootstrap, key: hub-domain}}
+        - name: REGISTRATION_UID
+          valueFrom: {secretKeyRef: {name: mspsql-agent-bootstrap, key: registration-uid}}
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: "1", memory: 512Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: bootstrap, mountPath: /etc/mspsql/bootstrap, readOnly: true}
+        - {name: identity, mountPath: /etc/mspsql/identity, readOnly: true}
+        - {name: runtime, mountPath: /run/mspsql}
+      - name: wireguard
+        image: wireguard-go
+        command:
+        - /bin/sh
+        - -ec
+        - |
+          while [ ! -f /run/mspsql/leader ]; do sleep 1; done
+          wireguard-go wg0
+          wg-quick up /etc/wireguard/wg0.conf
+          while true; do sleep 3600; done
+        resources:
+          requests: {cpu: 25m, memory: 32Mi}
+          limits: {cpu: 250m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+            add: [NET_ADMIN]
+        volumeMounts:
+        - {name: identity, mountPath: /etc/wireguard, readOnly: true}
+        - {name: runtime, mountPath: /run/mspsql}
+        - {name: tun, mountPath: /dev/net/tun}
+      volumes:
+      - name: bootstrap
+        secret:
+          secretName: mspsql-agent-bootstrap
+      - name: identity
+        secret:
+          secretName: mspsql-agent-identity
+          optional: true
+          defaultMode: 0400
+      - {name: runtime, emptyDir: {medium: Memory}}
+      - name: tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice

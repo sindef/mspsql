@@ -1,0 +1,14 @@
+FROM golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /workspace
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o lease-gate ./cmd/lease-gate
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=builder /workspace/lease-gate /lease-gate
+USER 65532:65532
+ENTRYPOINT ["/lease-gate"]

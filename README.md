@@ -1,135 +1,102 @@
 # mspsql
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+`mspsql` is a hub-and-agent Kubernetes operator for independent,
+Patroni-managed PostgreSQL installations spanning isolated Kubernetes
+clusters.
 
-## Getting Started
+The hub reconciles `multisite-postgres.dev/v1alpha1` resources in a management
+cluster. Site agents make outbound mTLS gRPC connections through a
+site-initiated WireGuard tunnel, verify signed desired-state plans, and perform
+all target-cluster API operations locally. The hub never receives target
+Kubernetes credentials or workload Secret values.
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+## Components
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+- `manager`: leader-elected hub controllers, admission webhooks, plan signing,
+  registration state, lifecycle serialization, and the agent control service.
+- `site-agent`: locally leader-elected plan cache and reconciler.
+- `wireguard-go`: a sidecar deployed with each site agent; only the locally
+  elected pod activates the tunnel.
+
+The site agent creates member-specific LoadBalancer Services before workloads,
+reports allocated addresses to the hub, and waits for a new signed global plan
+before configuring etcd membership, certificate SANs, Patroni endpoints, or
+Pgpool backends.
+
+## APIs
+
+- `SiteRegistration` is cluster scoped and represents one reusable target
+  cluster identity and its permitted platform policy.
+- `MultiSitePostgres` declares topology, storage, TLS, TDE, backup, and
+  deletion policy.
+- `PostgresDatabase` and `PostgresUser` declare non-destructive tenant objects.
+- `PostgresRestore` and `PostgresUpgrade` are durable, mutually exclusive
+  lifecycle operations.
+
+Deletion defaults to `Retain`. Remote cleanup waits for every connected site;
+`multisite-postgres.dev/force-orphan=true` is the explicit escape hatch when an
+unreachable site must be orphaned.
+
+## Development
+
+Prerequisites are Go 1.26, Docker, kubectl, and KIND.
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/mspsql:tag
+make test
+make build
+make agent-build
+make test-e2e
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+`make test-e2e` creates a management cluster plus VIC, NSW, and QLD site
+clusters. It validates site identity binding using each real `kube-system`
+namespace UID, policy validation, one signed plan per site, address-driven
+revision changes, and blocked/forced finalization.
 
-**Install the CRDs into the cluster:**
+Build the images with:
+
+```sh
+docker build -t registry.example/mspsql:VERSION .
+docker build -f Dockerfile.agent -t registry.example/mspsql-agent:VERSION .
+```
+
+## Installation
+
+Install cert-manager first, provide the hub workload certificates and
+WireGuard gateway configuration, then deploy:
 
 ```sh
 make install
+make deploy IMG=registry.example/mspsql:VERSION
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+Production installations must set `--registration-public-url`, mount the hub
+control certificate, key, and client CA under `/etc/mspsql/control`, and
+configure the UDP WireGuard LoadBalancer hostname. The target and management
+clusters must encrypt Kubernetes Secrets at rest.
 
-```sh
-make deploy IMG=<some-registry>/mspsql:tag
-```
+Example resources are under `config/samples`. They intentionally contain only
+Vault references, never credentials.
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+## Security invariants
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+- Plan caches accept only valid Ed25519 signatures, the bound site and
+  instance identities, and non-decreasing revisions.
+- gRPC requires TLS 1.3 and a client certificate identity matching the
+  immutable `SiteRegistration` UID.
+- Existing namespaces are never adopted. All four ownership labels must
+  already match exactly.
+- Disconnected agents do not recreate LoadBalancer Services or apply
+  coordinated changes.
+- Server-side apply does not force fields owned by Kubernetes, MetalLB,
+  cert-manager, or users.
+- Secret values are neither included in plans nor returned to the hub.
 
-```sh
-kubectl apply -k config/samples/
-```
+## Production gates
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/mspsql:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/mspsql/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
-
-## License
-
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+The repository contains executable control-plane and multi-cluster tests.
+Platform-dependent acceptance remains mandatory before rollout: userspace
+WireGuard and UDP failover, cross-site etcd trust-chain rotation, MetalLB
+address migration under failure, Vault/KMS integration, pgBackRest recovery,
+and representative `pg_upgrade`/`pg_tde_upgrade` outage benchmarks. These
+cannot be certified by a generic KIND environment.

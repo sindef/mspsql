@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mspsql-wireguard
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: mspsql-wireguard}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: mspsql-wireguard}
+    spec:
+      serviceAccountName: mspsql-wireguard
+      containers:
+      - name: lease-gate
+        image: lease-gate
+        env:
+        - name: POD_NAME
+          valueFrom: {fieldRef: {fieldPath: metadata.name}}
+        - name: POD_NAMESPACE
+          valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: runtime, mountPath: /run/mspsql}
+      - name: wireguard
+        image: wireguard-go
+        command:
+        - /bin/sh
+        - -ec
+        - |
+          while [ ! -f /run/mspsql/leader ]; do sleep 1; done
+          wireguard-go wg0
+          wg-quick up /etc/wireguard/wg0.conf
+          while true; do sleep 3600; done
+        ports:
+        - {name: wireguard, containerPort: 51820, protocol: UDP}
+        readinessProbe:
+          exec: {command: [/bin/sh, -ec, "test -f /run/mspsql/leader"]}
+          periodSeconds: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+            add: [NET_ADMIN]
+        volumeMounts:
+        - {name: runtime, mountPath: /run/mspsql}
+        - {name: tun, mountPath: /dev/net/tun}
+        - {name: identity, mountPath: /etc/wireguard, readOnly: true}
+      volumes:
+      - {name: runtime, emptyDir: {medium: Memory}}
+      - name: tun
+        hostPath: {path: /dev/net/tun, type: CharDevice}
+      - name: identity
+        secret: {secretName: mspsql-wireguard-identity, defaultMode: 0400}

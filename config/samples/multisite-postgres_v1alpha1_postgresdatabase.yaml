@@ -1,9 +1,20 @@
-apiVersion: multisite-postgres.multisite-postgres.dev/v1alpha1
+apiVersion: multisite-postgres.dev/v1alpha1
 kind: PostgresDatabase
 metadata:
   labels:
     app.kubernetes.io/name: mspsql
     app.kubernetes.io/managed-by: kustomize
-  name: postgresdatabase-sample
+  name: orders-api
+  namespace: database-platform
 spec:
-  # TODO(user): Add fields here
+  instanceRef: orders
+  databaseName: orders
+  deletionPolicy: Retain
+  schemas: [orders, audit]
+  roles:
+  - {name: orders_owner, profile: Owner}
+  - {name: orders_rw, profile: ReadWrite}
+  - {name: orders_ro, profile: ReadOnly}
+  quotas:
+    connectionLimit: 200
+    storageAlertThreshold: 400Gi

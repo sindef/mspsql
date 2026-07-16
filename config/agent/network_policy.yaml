@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mspsql-agent
+  namespace: mspsql-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mspsql-agent
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - {protocol: TCP, port: 443}
+    - {protocol: TCP, port: 6443}
+  - ports:
+    - {protocol: UDP, port: 51820}
+    - {protocol: TCP, port: 53}
+    - {protocol: UDP, port: 53}

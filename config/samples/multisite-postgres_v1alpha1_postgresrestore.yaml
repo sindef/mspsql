@@ -1,9 +1,12 @@
-apiVersion: multisite-postgres.multisite-postgres.dev/v1alpha1
+apiVersion: multisite-postgres.dev/v1alpha1
 kind: PostgresRestore
 metadata:
   labels:
     app.kubernetes.io/name: mspsql
     app.kubernetes.io/managed-by: kustomize
-  name: postgresrestore-sample
+  name: orders-restore
+  namespace: database-platform
 spec:
-  # TODO(user): Add fields here
+  sourceInstanceRef: orders
+  targetInstanceRef: orders-recovered
+  targetTime: "2026-07-16T02:15:00Z"
