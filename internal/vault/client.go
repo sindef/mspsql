@@ -62,7 +62,7 @@ func NewClient(auth api.VaultAuthSpec, caBundle []byte) (*Client, error) {
 			return nil, fmt.Errorf("load system CA pool: %w", err)
 		}
 		if !roots.AppendCertsFromPEM(caBundle) {
-			return nil, errors.New("Vault CA bundle contains no certificates")
+			return nil, errors.New("vault CA bundle contains no certificates")
 		}
 		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,

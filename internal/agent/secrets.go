@@ -152,7 +152,7 @@ func (m *SecretMaterializer) vaultCABundle(ctx context.Context, auth api.VaultAu
 	}
 	caBundle := secret.Data[key]
 	if len(caBundle) == 0 {
-		return nil, fmt.Errorf("Vault CA Secret %s/%s has no non-empty key %q",
+		return nil, fmt.Errorf("vault CA Secret %s/%s has no non-empty key %q",
 			m.SourceNamespace, auth.CABundleSecretRef.Name, key)
 	}
 	return caBundle, nil

@@ -83,40 +83,7 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 		}
 		etcd += site.Components.EtcdReplicas
 		postgres += site.Components.PostgresReplicas
-		if site.Role == api.SiteRoleWitness &&
-			(site.Components.PostgresReplicas != 0 || site.Components.PgpoolReplicas != 0) {
-			errs = append(errs, field.Invalid(p.Child("components"), site.Components,
-				"witness sites cannot run PostgreSQL or Pgpool"))
-		}
-		if site.Role == api.SiteRoleData {
-			if site.Components.PostgresReplicas == 0 {
-				errs = append(errs, field.Invalid(p.Child("components", "postgresReplicas"), 0,
-					"data sites require at least one PostgreSQL replica"))
-			}
-			if site.Storage.Postgres == nil || site.Storage.Etcd == nil {
-				errs = append(errs, field.Required(p.Child("storage"),
-					"data sites require etcd and PostgreSQL storage"))
-			}
-			if site.VaultAuth == nil {
-				errs = append(errs, field.Required(p.Child("vaultAuth"), "data sites require Vault authentication"))
-			} else {
-				vaultPath := p.Child("vaultAuth")
-				address, err := url.Parse(site.VaultAuth.Address)
-				if err != nil || address.Scheme == "" || address.Host == "" {
-					errs = append(errs, field.Invalid(vaultPath.Child("address"),
-						site.VaultAuth.Address, "must be an absolute URL"))
-				}
-				if site.VaultAuth.AuthMount == "" {
-					errs = append(errs, field.Required(vaultPath.Child("authMount"), "required"))
-				}
-				if site.VaultAuth.AuthRole == "" {
-					errs = append(errs, field.Required(vaultPath.Child("authRole"), "required"))
-				}
-				if ref := site.VaultAuth.CABundleSecretRef; ref != nil && ref.Name == "" {
-					errs = append(errs, field.Required(vaultPath.Child("caBundleSecretRef", "name"), "required"))
-				}
-			}
-		}
+		errs = append(errs, validateDataSite(site, p)...)
 	}
 	if etcd < 3 || etcd%2 == 0 {
 		errs = append(errs, field.Invalid(specPath.Child("sites"), etcd,
@@ -152,6 +119,45 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 			"backup prefix must identify this instance"))
 	}
 	return errs.ToAggregate()
+}
+
+func validateDataSite(site api.PostgresSiteSpec, sitePath *field.Path) field.ErrorList {
+	if site.Role == api.SiteRoleWitness {
+		if site.Components.PostgresReplicas != 0 || site.Components.PgpoolReplicas != 0 {
+			return field.ErrorList{field.Invalid(sitePath.Child("components"), site.Components,
+				"witness sites cannot run PostgreSQL or Pgpool")}
+		}
+		return nil
+	}
+	var errs field.ErrorList
+	if site.Components.PostgresReplicas == 0 {
+		errs = append(errs, field.Invalid(sitePath.Child("components", "postgresReplicas"), 0,
+			"data sites require at least one PostgreSQL replica"))
+	}
+	if site.Storage.Postgres == nil || site.Storage.Etcd == nil {
+		errs = append(errs, field.Required(sitePath.Child("storage"),
+			"data sites require etcd and PostgreSQL storage"))
+	}
+	if site.VaultAuth == nil {
+		return append(errs, field.Required(sitePath.Child("vaultAuth"),
+			"data sites require Vault authentication"))
+	}
+	vaultPath := sitePath.Child("vaultAuth")
+	address, err := url.Parse(site.VaultAuth.Address)
+	if err != nil || address.Scheme == "" || address.Host == "" {
+		errs = append(errs, field.Invalid(vaultPath.Child("address"),
+			site.VaultAuth.Address, "must be an absolute URL"))
+	}
+	if site.VaultAuth.AuthMount == "" {
+		errs = append(errs, field.Required(vaultPath.Child("authMount"), "required"))
+	}
+	if site.VaultAuth.AuthRole == "" {
+		errs = append(errs, field.Required(vaultPath.Child("authRole"), "required"))
+	}
+	if ref := site.VaultAuth.CABundleSecretRef; ref != nil && ref.Name == "" {
+		errs = append(errs, field.Required(vaultPath.Child("caBundleSecretRef", "name"), "required"))
+	}
+	return errs
 }
 
 func validateDatabase(obj *api.PostgresDatabase) error {
