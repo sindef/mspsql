@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -419,5 +420,45 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 	}
 	if target.Annotations[restorePhaseAnnotation] != string(plan.RestorePhaseReplicas) {
 		t.Fatalf("restore phase = %q", target.Annotations[restorePhaseAnnotation])
+	}
+}
+
+func TestMajorUpgradeRequiresDiscoveredRollbackStorage(t *testing.T) {
+	scheme := testScheme(t)
+	registration := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "vic"},
+		Spec: api.SiteRegistrationSpec{StorageRollbackPolicies: []api.StorageRollbackPolicy{{
+			StorageClassName: "premium", Strategy: "VolumeSnapshot",
+			VolumeSnapshotClassName: "premium-snapshots",
+		}}},
+		Status: api.SiteRegistrationStatus{
+			DiscoveredVolumeSnapshotClasses: []api.VolumeSnapshotClassInventory{{
+				Name: "premium-snapshots", Driver: "csi.example", DeletionPolicy: "Retain",
+			}},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(registration).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	instance := &api.MultiSitePostgres{Spec: api.MultiSitePostgresSpec{
+		Postgres: api.PostgresSpec{MajorVersion: 17},
+		Sites: []api.PostgresSiteSpec{{
+			Name: "vic", SiteRegistrationRef: "vic", Role: api.SiteRoleData,
+			Storage: api.SiteStorage{Postgres: &api.StorageRequest{StorageClassName: "premium"}},
+		}},
+	}}
+	upgrade := &api.PostgresUpgrade{Spec: api.PostgresUpgradeSpec{
+		TargetMajorVersion: 18,
+		UpgradeImage:       "registry.example/mspsql-upgrade@sha256:" + strings.Repeat("a", 64),
+		RollbackRetention:  metav1.Duration{Duration: 24 * time.Hour},
+	}}
+	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance); err != nil {
+		t.Fatalf("valid upgrade contract rejected: %v", err)
+	}
+	registration.Status.DiscoveredVolumeSnapshotClasses = nil
+	if err := kube.Update(context.Background(), registration); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance); err == nil {
+		t.Fatal("undiscovered VolumeSnapshotClass was accepted")
 	}
 }

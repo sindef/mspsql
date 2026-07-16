@@ -68,7 +68,7 @@ type SiteRegistrationCustomValidator struct{}
 func (v *SiteRegistrationCustomValidator) ValidateCreate(_ context.Context, obj *multisitepostgresv1alpha1.SiteRegistration) (admission.Warnings, error) {
 	siteregistrationlog.Info("Validation for SiteRegistration upon creation", "name", obj.GetName())
 
-	return nil, nil
+	return nil, validateSiteRegistration(obj)
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type SiteRegistration.
@@ -78,7 +78,7 @@ func (v *SiteRegistrationCustomValidator) ValidateUpdate(_ context.Context, oldO
 	if oldObj.Status.ClusterUID != "" && newObj.Status.ClusterUID != oldObj.Status.ClusterUID {
 		return nil, field.Forbidden(field.NewPath("status", "clusterUID"), "cluster binding is immutable")
 	}
-	return nil, nil
+	return nil, validateSiteRegistration(newObj)
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type SiteRegistration.

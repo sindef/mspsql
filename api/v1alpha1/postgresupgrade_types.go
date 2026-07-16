@@ -26,7 +26,9 @@ type PostgresUpgradeSpec struct {
 	TargetImage string `json:"targetImage"`
 	// +kubebuilder:validation:Minimum=14
 	TargetMajorVersion       int32           `json:"targetMajorVersion"`
+	UpgradeImage             string          `json:"upgradeImage,omitempty"`
 	ServiceRestorationTarget metav1.Duration `json:"serviceRestorationTarget"`
+	RollbackRetention        metav1.Duration `json:"rollbackRetention,omitempty"`
 }
 
 type PostgresUpgradeStatus struct {

@@ -11,6 +11,10 @@ spec:
     etcd: [premium-rwo]
     postgres: [premium-rwo]
     restoreWorkspace: [premium-rwo]
+  storageRollbackPolicies:
+  - storageClassName: premium-rwo
+    strategy: VolumeSnapshot
+    volumeSnapshotClassName: premium-rwo-retain
   permittedIssuers:
     etcd:
     - {name: etcd-vault, kind: ClusterIssuer, group: cert-manager.io}

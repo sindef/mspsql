@@ -24,20 +24,24 @@ import (
 type SiteRegistrationSpec struct {
 	DisplayName             string             `json:"displayName,omitempty"`
 	PermittedStorageClasses StorageClassPolicy `json:"permittedStorageClasses"`
-	PermittedIssuers        IssuerPolicy       `json:"permittedIssuers"`
-	MetallbAddressPools     []string           `json:"metallbAddressPools,omitempty"`
+	// +listType=map
+	// +listMapKey=storageClassName
+	StorageRollbackPolicies []StorageRollbackPolicy `json:"storageRollbackPolicies,omitempty"`
+	PermittedIssuers        IssuerPolicy            `json:"permittedIssuers"`
+	MetallbAddressPools     []string                `json:"metallbAddressPools,omitempty"`
 }
 
 type SiteRegistrationStatus struct {
-	ClusterUID               string                  `json:"clusterUID,omitempty"`
-	Phase                    string                  `json:"phase,omitempty"`
-	RegistrationURL          string                  `json:"registrationURL,omitempty"`
-	RegistrationExpiresAt    *metav1.Time            `json:"registrationExpiresAt,omitempty"`
-	LastHeartbeatTime        *metav1.Time            `json:"lastHeartbeatTime,omitempty"`
-	AgentVersion             string                  `json:"agentVersion,omitempty"`
-	DiscoveredStorageClasses []StorageClassInventory `json:"discoveredStorageClasses,omitempty"`
-	DiscoveredIssuers        []IssuerReference       `json:"discoveredIssuers,omitempty"`
-	Capabilities             []string                `json:"capabilities,omitempty"`
+	ClusterUID                      string                         `json:"clusterUID,omitempty"`
+	Phase                           string                         `json:"phase,omitempty"`
+	RegistrationURL                 string                         `json:"registrationURL,omitempty"`
+	RegistrationExpiresAt           *metav1.Time                   `json:"registrationExpiresAt,omitempty"`
+	LastHeartbeatTime               *metav1.Time                   `json:"lastHeartbeatTime,omitempty"`
+	AgentVersion                    string                         `json:"agentVersion,omitempty"`
+	DiscoveredStorageClasses        []StorageClassInventory        `json:"discoveredStorageClasses,omitempty"`
+	DiscoveredVolumeSnapshotClasses []VolumeSnapshotClassInventory `json:"discoveredVolumeSnapshotClasses,omitempty"`
+	DiscoveredIssuers               []IssuerReference              `json:"discoveredIssuers,omitempty"`
+	Capabilities                    []string                       `json:"capabilities,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

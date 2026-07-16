@@ -370,8 +370,9 @@ func (s *Server) recordInventory(ctx context.Context, siteName string,
 		return status.Error(codes.ResourceExhausted, "inventory exceeds one MiB")
 	}
 	var inventory struct {
-		StorageClasses []api.StorageClassInventory `json:"storageClasses"`
-		Issuers        []api.IssuerReference       `json:"issuers"`
+		StorageClasses        []api.StorageClassInventory        `json:"storageClasses"`
+		VolumeSnapshotClasses []api.VolumeSnapshotClassInventory `json:"volumeSnapshotClasses"`
+		Issuers               []api.IssuerReference              `json:"issuers"`
 	}
 	if err := json.Unmarshal(update.InventoryJson, &inventory); err != nil {
 		return status.Error(codes.InvalidArgument, "inventory JSON is invalid")
@@ -381,6 +382,7 @@ func (s *Server) recordInventory(ctx context.Context, siteName string,
 		return err
 	}
 	site.Status.DiscoveredStorageClasses = inventory.StorageClasses
+	site.Status.DiscoveredVolumeSnapshotClasses = inventory.VolumeSnapshotClasses
 	site.Status.DiscoveredIssuers = inventory.Issuers
 	return s.Client.Status().Update(ctx, &site)
 }

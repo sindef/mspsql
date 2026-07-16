@@ -114,6 +114,14 @@ coordinator identities. Every data site's issuer must publish the same CA
 bundle; the hub compares bundle fingerprints and blocks readiness and backup
 scheduling on a mismatch.
 
+Major upgrades require `PostgresUpgrade.spec.upgradeImage` pinned by digest.
+The image contract provides old binaries under `/opt/mspsql/old/bin`, new
+binaries under `/opt/mspsql/new/bin`, their matching library trees under the
+corresponding `lib` directories, and `pg_tde_upgrade` on `PATH`. Every
+data-site PostgreSQL StorageClass must also have a
+`SiteRegistration.spec.storageRollbackPolicies` entry using either a discovered
+CSI `VolumeSnapshotClass` or an administrator-asserted PVC clone capability.
+
 ## Restore contract
 
 `PostgresRestore` performs time-based PITR into a new instance. Patroni starts

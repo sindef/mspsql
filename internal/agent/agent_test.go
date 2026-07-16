@@ -277,10 +277,16 @@ func TestDiscoverInventoryReportsStorageAndIssuers(t *testing.T) {
 	}
 	issuerGVK := schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}
 	clusterIssuerGVK := schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "ClusterIssuer"}
+	snapshotClassGVK := schema.GroupVersionKind{
+		Group: "snapshot.storage.k8s.io", Version: "v1", Kind: "VolumeSnapshotClass",
+	}
 	scheme.AddKnownTypeWithName(issuerGVK, &unstructured.Unstructured{})
 	scheme.AddKnownTypeWithName(issuerGVK.GroupVersion().WithKind("IssuerList"), &unstructured.UnstructuredList{})
 	scheme.AddKnownTypeWithName(clusterIssuerGVK, &unstructured.Unstructured{})
 	scheme.AddKnownTypeWithName(clusterIssuerGVK.GroupVersion().WithKind("ClusterIssuerList"),
+		&unstructured.UnstructuredList{})
+	scheme.AddKnownTypeWithName(snapshotClassGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(snapshotClassGVK.GroupVersion().WithKind("VolumeSnapshotClassList"),
 		&unstructured.UnstructuredList{})
 	allowExpansion := true
 	reclaimPolicy := corev1.PersistentVolumeReclaimRetain
@@ -298,7 +304,13 @@ func TestDiscoverInventoryReportsStorageAndIssuers(t *testing.T) {
 	issuer := &unstructured.Unstructured{}
 	issuer.SetGroupVersionKind(clusterIssuerGVK)
 	issuer.SetName("etcd-root")
-	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(storageClass, issuer).Build()
+	snapshotClass := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "snapshot.storage.k8s.io/v1", "kind": "VolumeSnapshotClass",
+		"metadata": map[string]any{"name": "nvme-snapshots"},
+		"driver":   "csi.example", "deletionPolicy": "Retain",
+	}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(storageClass, issuer, snapshotClass).Build()
 	encoded, err := DiscoverInventory(context.Background(), kube)
 	if err != nil {
 		t.Fatal(err)
@@ -312,6 +324,10 @@ func TestDiscoverInventoryReportsStorageAndIssuers(t *testing.T) {
 	}
 	if len(inventory.Issuers) != 1 || inventory.Issuers[0].Name != "etcd-root" {
 		t.Fatalf("issuer inventory = %#v", inventory.Issuers)
+	}
+	if len(inventory.VolumeSnapshotClasses) != 1 ||
+		inventory.VolumeSnapshotClasses[0].Driver != "csi.example" {
+		t.Fatalf("snapshot inventory = %#v", inventory.VolumeSnapshotClasses)
 	}
 }
 

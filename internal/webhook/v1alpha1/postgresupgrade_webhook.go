@@ -20,6 +20,8 @@ import (
 	"context"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -55,6 +57,9 @@ func (d *PostgresUpgradeCustomDefaulter) Default(_ context.Context, obj *multisi
 	if obj.Spec.ServiceRestorationTarget.Duration == 0 {
 		obj.Spec.ServiceRestorationTarget.Duration = 15 * time.Minute
 	}
+	if obj.Spec.RollbackRetention.Duration == 0 {
+		obj.Spec.RollbackRetention.Duration = 24 * time.Hour
+	}
 	return nil
 }
 
@@ -78,6 +83,9 @@ func (v *PostgresUpgradeCustomValidator) ValidateCreate(_ context.Context, obj *
 func (v *PostgresUpgradeCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj *multisitepostgresv1alpha1.PostgresUpgrade) (admission.Warnings, error) {
 	postgresupgradelog.Info("Validation for PostgresUpgrade upon update", "name", newObj.GetName())
 
+	if !apiequality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
+		return nil, apierrors.NewBadRequest("PostgresUpgrade spec is immutable")
+	}
 	return nil, validateUpgrade(newObj)
 }
 

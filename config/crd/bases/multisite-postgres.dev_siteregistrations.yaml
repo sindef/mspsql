@@ -147,6 +147,28 @@ spec:
                       type: string
                     type: array
                 type: object
+              storageRollbackPolicies:
+                items:
+                  properties:
+                    storageClassName:
+                      type: string
+                    strategy:
+                      enum:
+                      - VolumeSnapshot
+                      - PVCClone
+                      type: string
+                    volumeSnapshotClassName:
+                      description: Required for VolumeSnapshot. PVCClone uses the
+                        source PVC as a dataSource.
+                      type: string
+                  required:
+                  - storageClassName
+                  - strategy
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - storageClassName
+                x-kubernetes-list-type: map
             required:
             - permittedIssuers
             - permittedStorageClasses
@@ -263,6 +285,21 @@ spec:
                   required:
                   - name
                   - provisioner
+                  type: object
+                type: array
+              discoveredVolumeSnapshotClasses:
+                items:
+                  properties:
+                    deletionPolicy:
+                      type: string
+                    driver:
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - deletionPolicy
+                  - driver
+                  - name
                   type: object
                 type: array
               lastHeartbeatTime:

@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -33,6 +34,33 @@ import (
 
 var protectedRoles = map[string]struct{}{
 	"postgres": {}, "replication": {}, "patroni": {}, "pgbackrest": {}, "pgpool": {},
+}
+
+func validateSiteRegistration(obj *api.SiteRegistration) error {
+	var errs field.ErrorList
+	path := field.NewPath("spec", "storageRollbackPolicies")
+	seen := map[string]struct{}{}
+	for i, policy := range obj.Spec.StorageRollbackPolicies {
+		policyPath := path.Index(i)
+		if _, found := seen[policy.StorageClassName]; found {
+			errs = append(errs, field.Duplicate(policyPath.Child("storageClassName"),
+				policy.StorageClassName))
+		}
+		seen[policy.StorageClassName] = struct{}{}
+		if !slices.Contains(obj.Spec.PermittedStorageClasses.Postgres, policy.StorageClassName) {
+			errs = append(errs, field.Invalid(policyPath.Child("storageClassName"),
+				policy.StorageClassName, "must be a permitted PostgreSQL StorageClass"))
+		}
+		if policy.Strategy == "VolumeSnapshot" && policy.VolumeSnapshotClassName == "" {
+			errs = append(errs, field.Required(policyPath.Child("volumeSnapshotClassName"),
+				"required for VolumeSnapshot rollback"))
+		}
+		if policy.Strategy == "PVCClone" && policy.VolumeSnapshotClassName != "" {
+			errs = append(errs, field.Forbidden(policyPath.Child("volumeSnapshotClassName"),
+				"PVCClone does not use a VolumeSnapshotClass"))
+		}
+	}
+	return errs.ToAggregate()
 }
 
 func defaultIssuer(ref *api.IssuerReference) {
@@ -343,6 +371,10 @@ func validateUpgrade(obj *api.PostgresUpgrade) error {
 	if obj.Spec.ServiceRestorationTarget.Duration <= 0 {
 		return field.Invalid(field.NewPath("spec", "serviceRestorationTarget"),
 			obj.Spec.ServiceRestorationTarget, "must be positive")
+	}
+	if obj.Spec.RollbackRetention.Duration <= 0 {
+		return field.Invalid(field.NewPath("spec", "rollbackRetention"),
+			obj.Spec.RollbackRetention, "must be positive")
 	}
 	return nil
 }

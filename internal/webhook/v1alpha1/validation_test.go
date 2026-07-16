@@ -119,3 +119,20 @@ func TestRestoreSpecIsValidatedAndImmutable(t *testing.T) {
 		t.Fatal("insecure target backup endpoint was accepted")
 	}
 }
+
+func TestRollbackPolicyRequiresPermittedStorage(t *testing.T) {
+	registration := &api.SiteRegistration{Spec: api.SiteRegistrationSpec{
+		PermittedStorageClasses: api.StorageClassPolicy{Postgres: []string{"premium"}},
+		StorageRollbackPolicies: []api.StorageRollbackPolicy{{
+			StorageClassName: "premium", Strategy: "VolumeSnapshot",
+			VolumeSnapshotClassName: "premium-snapshots",
+		}},
+	}}
+	if err := validateSiteRegistration(registration); err != nil {
+		t.Fatalf("valid rollback policy rejected: %v", err)
+	}
+	registration.Spec.StorageRollbackPolicies[0].StorageClassName = "unapproved"
+	if err := validateSiteRegistration(registration); err == nil {
+		t.Fatal("rollback policy for unapproved storage was accepted")
+	}
+}

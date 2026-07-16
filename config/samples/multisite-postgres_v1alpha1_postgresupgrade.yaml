@@ -10,4 +10,6 @@ spec:
   instanceRef: orders
   targetImage: percona/percona-distribution-postgresql:18
   targetMajorVersion: 18
+  upgradeImage: registry.example/mspsql-pg-upgrade@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   serviceRestorationTarget: 15m
+  rollbackRetention: 24h

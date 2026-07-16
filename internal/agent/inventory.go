@@ -34,8 +34,9 @@ import (
 )
 
 type SiteInventory struct {
-	StorageClasses []api.StorageClassInventory `json:"storageClasses"`
-	Issuers        []api.IssuerReference       `json:"issuers"`
+	StorageClasses        []api.StorageClassInventory        `json:"storageClasses"`
+	VolumeSnapshotClasses []api.VolumeSnapshotClassInventory `json:"volumeSnapshotClasses"`
+	Issuers               []api.IssuerReference              `json:"issuers"`
 }
 
 func DiscoverInventory(ctx context.Context, kube client.Client) ([]byte, error) {
@@ -69,7 +70,12 @@ func DiscoverInventory(ctx context.Context, kube client.Client) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	snapshotClasses, err := discoverVolumeSnapshotClasses(ctx, kube)
+	if err != nil {
+		return nil, err
+	}
 	inventory.Issuers = issuers
+	inventory.VolumeSnapshotClasses = snapshotClasses
 	return json.Marshal(inventory)
 }
 
@@ -114,4 +120,32 @@ func discoverIssuers(ctx context.Context, kube client.Client) ([]api.IssuerRefer
 	return slices.CompactFunc(issuers, func(left, right api.IssuerReference) bool {
 		return left == right
 	}), nil
+}
+
+func discoverVolumeSnapshotClasses(ctx context.Context,
+	kube client.Client,
+) ([]api.VolumeSnapshotClassInventory, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "snapshot.storage.k8s.io", Version: "v1", Kind: "VolumeSnapshotClassList",
+	})
+	if err := kube.List(ctx, list); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list VolumeSnapshotClasses: %w", err)
+	}
+	classes := make([]api.VolumeSnapshotClassInventory, 0, len(list.Items))
+	for i := range list.Items {
+		item := &list.Items[i]
+		driver, _, _ := unstructured.NestedString(item.Object, "driver")
+		deletionPolicy, _, _ := unstructured.NestedString(item.Object, "deletionPolicy")
+		classes = append(classes, api.VolumeSnapshotClassInventory{
+			Name: item.GetName(), Driver: driver, DeletionPolicy: deletionPolicy,
+		})
+	}
+	slices.SortFunc(classes, func(left, right api.VolumeSnapshotClassInventory) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+	return classes, nil
 }

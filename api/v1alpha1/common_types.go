@@ -67,6 +67,20 @@ type StorageClassInventory struct {
 	AccessModes          []string `json:"accessModes,omitempty"`
 }
 
+type VolumeSnapshotClassInventory struct {
+	Name           string `json:"name"`
+	Driver         string `json:"driver"`
+	DeletionPolicy string `json:"deletionPolicy"`
+}
+
+type StorageRollbackPolicy struct {
+	StorageClassName string `json:"storageClassName"`
+	// +kubebuilder:validation:Enum=VolumeSnapshot;PVCClone
+	Strategy string `json:"strategy"`
+	// Required for VolumeSnapshot. PVCClone uses the source PVC as a dataSource.
+	VolumeSnapshotClassName string `json:"volumeSnapshotClassName,omitempty"`
+}
+
 type SiteComponents struct {
 	// +kubebuilder:validation:Minimum=0
 	EtcdReplicas int32 `json:"etcdReplicas"`

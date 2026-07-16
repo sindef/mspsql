@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,7 +41,7 @@ type PostgresUpgradeReconciler struct {
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresupgrades,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresupgrades/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresupgrades/finalizers,verbs=update
-// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres;postgresrestores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres;postgresrestores;siteregistrations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -94,6 +96,9 @@ func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	directiveType := "MinorUpgrade"
 	if upgrade.Spec.TargetMajorVersion != instance.Spec.Postgres.MajorVersion {
+		if err := r.validateMajorUpgradeContract(ctx, &upgrade, &instance); err != nil {
+			return ctrl.Result{}, r.upgradeBlocked(ctx, &upgrade, "PlatformContractRejected", err.Error())
+		}
 		directiveType = "MajorUpgrade"
 		setCondition(&upgrade.Status.Conditions, upgrade.Generation, "ServiceRestorationTargetAtRisk",
 			metav1.ConditionUnknown, "AwaitingBenchmark",
@@ -117,6 +122,71 @@ func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *PostgresUpgradeReconciler) validateMajorUpgradeContract(ctx context.Context,
+	upgrade *multisitepostgresv1alpha1.PostgresUpgrade,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) error {
+	if upgrade.Spec.TargetMajorVersion < instance.Spec.Postgres.MajorVersion {
+		return fmt.Errorf("major-version downgrade is not supported")
+	}
+	if upgrade.Spec.UpgradeImage == "" {
+		return fmt.Errorf("major upgrade requires a purpose-built upgradeImage")
+	}
+	if !strings.Contains(upgrade.Spec.UpgradeImage, "@sha256:") {
+		return fmt.Errorf("upgradeImage must be pinned by sha256 digest")
+	}
+	if upgrade.Spec.RollbackRetention.Duration <= 0 {
+		return fmt.Errorf("rollbackRetention must be positive")
+	}
+	for _, site := range instance.Spec.Sites {
+		if site.Role != multisitepostgresv1alpha1.SiteRoleData || site.Storage.Postgres == nil {
+			continue
+		}
+		var registration multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKey{Name: site.SiteRegistrationRef}, &registration); err != nil {
+			return fmt.Errorf("read site %s registration: %w", site.Name, err)
+		}
+		policy, found := rollbackPolicy(registration.Spec.StorageRollbackPolicies,
+			site.Storage.Postgres.StorageClassName)
+		if !found {
+			return fmt.Errorf("site %s has no rollback policy for StorageClass %s",
+				site.Name, site.Storage.Postgres.StorageClassName)
+		}
+		if policy.Strategy == "VolumeSnapshot" &&
+			!snapshotClassDiscovered(registration.Status.DiscoveredVolumeSnapshotClasses,
+				policy.VolumeSnapshotClassName) {
+			return fmt.Errorf("site %s VolumeSnapshotClass %s is not discovered",
+				site.Name, policy.VolumeSnapshotClassName)
+		}
+	}
+	return nil
+}
+
+func rollbackPolicy(policies []multisitepostgresv1alpha1.StorageRollbackPolicy,
+	storageClass string,
+) (multisitepostgresv1alpha1.StorageRollbackPolicy, bool) {
+	for _, policy := range policies {
+		if policy.StorageClassName == storageClass {
+			return policy, true
+		}
+	}
+	return multisitepostgresv1alpha1.StorageRollbackPolicy{}, false
+}
+
+func snapshotClassDiscovered(classes []multisitepostgresv1alpha1.VolumeSnapshotClassInventory,
+	name string,
+) bool {
+	if name == "" {
+		return false
+	}
+	for _, snapshotClass := range classes {
+		if snapshotClass.Name == name && snapshotClass.Driver != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *PostgresUpgradeReconciler) upgradeBlocked(ctx context.Context,
