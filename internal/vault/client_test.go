@@ -86,3 +86,22 @@ func TestNewClientRejectsInvalidCABundle(t *testing.T) {
 		t.Fatal("invalid Vault CA bundle was accepted")
 	}
 }
+
+func TestValidateSecretReference(t *testing.T) {
+	valid := api.VaultSecretReference{
+		Mount: "platform/secret", Path: "postgres/orders/users/orders-app", Key: "password",
+	}
+	if err := ValidateSecretReference(valid, true); err != nil {
+		t.Fatalf("valid reference rejected: %v", err)
+	}
+	for _, reference := range []api.VaultSecretReference{
+		{Mount: "/secret", Path: "postgres/orders"},
+		{Mount: "secret", Path: "../orders"},
+		{Mount: "secret", Path: "postgres//orders"},
+		{Mount: "secret", Path: "postgres/orders\nother"},
+	} {
+		if err := ValidateSecretReference(reference, false); err == nil {
+			t.Fatalf("unsafe reference accepted: %#v", reference)
+		}
+	}
+}

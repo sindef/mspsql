@@ -144,18 +144,11 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 		if obj.Spec.TDE.Vault == nil {
 			errs = append(errs, field.Required(tdePath, "TDE requires a Vault key identity"))
 		} else {
-			for name, value := range map[string]string{
-				"kvMount": obj.Spec.TDE.Vault.KVMount,
-				"keyPath": obj.Spec.TDE.Vault.KeyPath,
-			} {
-				trimmed := strings.Trim(value, "/")
-				if trimmed == "" {
-					errs = append(errs, field.Required(tdePath.Child(name), "required"))
-				} else if strings.ContainsAny(value, "\r\n") ||
-					strings.Contains(value, "//") || slices.Contains(strings.Split(value, "/"), "..") {
-					errs = append(errs, field.Invalid(tdePath.Child(name), value,
-						"must be a normalized single-line Vault path"))
-				}
+			if err := validateVaultPath(tdePath.Child("kvMount"), obj.Spec.TDE.Vault.KVMount); err != nil {
+				errs = append(errs, err)
+			}
+			if err := validateVaultPath(tdePath.Child("keyPath"), obj.Spec.TDE.Vault.KeyPath); err != nil {
+				errs = append(errs, err)
 			}
 			for name, value := range map[string]string{
 				"providerName":     obj.Spec.TDE.Vault.ProviderName,
@@ -170,19 +163,17 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 			}
 		}
 	}
-	if obj.Spec.Credentials.PostgresVaultRef.Mount == "" ||
-		obj.Spec.Credentials.PostgresVaultRef.Path == "" {
-		errs = append(errs, field.Required(specPath.Child("credentials", "postgresVaultRef"),
-			"mount and path are required"))
-	}
+	errs = append(errs, validateVaultSecretReference(
+		specPath.Child("credentials", "postgresVaultRef"),
+		obj.Spec.Credentials.PostgresVaultRef, false)...)
 	hasPgpool := false
 	for _, site := range obj.Spec.Sites {
 		hasPgpool = hasPgpool || site.Components.PgpoolReplicas > 0
 	}
-	if hasPgpool && (obj.Spec.Credentials.PgpoolVaultRef.Mount == "" ||
-		obj.Spec.Credentials.PgpoolVaultRef.Path == "") {
-		errs = append(errs, field.Required(specPath.Child("credentials", "pgpoolVaultRef"),
-			"mount and path are required when Pgpool is enabled"))
+	if hasPgpool {
+		errs = append(errs, validateVaultSecretReference(
+			specPath.Child("credentials", "pgpoolVaultRef"),
+			obj.Spec.Credentials.PgpoolVaultRef, false)...)
 	}
 	if obj.Spec.Backup != nil && strings.Trim(obj.Spec.Backup.Repository.Prefix, "/") == "" {
 		errs = append(errs, field.Required(specPath.Child("backup", "repository", "prefix"),
@@ -216,7 +207,46 @@ func validateBackupRepository(repository api.BackupRepositorySpec, repositoryPat
 	if ref := repository.CABundleSecretRef; ref != nil && ref.Name == "" {
 		errs = append(errs, field.Required(repositoryPath.Child("caBundleSecretRef", "name"), "required"))
 	}
+	errs = append(errs, validateVaultSecretReference(
+		repositoryPath.Child("credentialVaultRef"), repository.CredentialVaultRef, false)...)
 	return errs
+}
+
+func validateVaultSecretReference(referencePath *field.Path, reference api.VaultSecretReference,
+	requireKey bool,
+) field.ErrorList {
+	var errs field.ErrorList
+	if err := validateVaultPath(referencePath.Child("mount"), reference.Mount); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateVaultPath(referencePath.Child("path"), reference.Path); err != nil {
+		errs = append(errs, err)
+	}
+	if requireKey || reference.Key != "" {
+		if reference.Key == "" {
+			errs = append(errs, field.Required(referencePath.Child("key"), "required"))
+		} else if len(reference.Key) > 253 || strings.ContainsAny(reference.Key, "\x00\r\n") {
+			errs = append(errs, field.Invalid(referencePath.Child("key"), reference.Key,
+				"must be a single-line key no longer than 253 bytes"))
+		}
+	}
+	return errs
+}
+
+func validateVaultPath(valuePath *field.Path, value string) *field.Error {
+	if value == "" {
+		return field.Required(valuePath, "required")
+	}
+	if len(value) > 1024 || strings.Trim(value, "/") != value ||
+		strings.ContainsAny(value, "\x00\r\n") || strings.Contains(value, "//") {
+		return field.Invalid(valuePath, value, "must be a normalized single-line Vault path")
+	}
+	for segment := range strings.SplitSeq(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return field.Invalid(valuePath, value, "must be a normalized single-line Vault path")
+		}
+	}
+	return nil
 }
 
 func validateBackupSchedules(schedules api.BackupSchedules, schedulesPath *field.Path) field.ErrorList {
@@ -326,11 +356,8 @@ func validateUser(obj *api.PostgresUser) error {
 		errs = append(errs, field.Forbidden(field.NewPath("spec", "roleName"),
 			"infrastructure role is protected"))
 	}
-	if obj.Spec.PasswordVaultRef.Mount == "" || obj.Spec.PasswordVaultRef.Path == "" ||
-		obj.Spec.PasswordVaultRef.Key == "" {
-		errs = append(errs, field.Required(field.NewPath("spec", "passwordVaultRef"),
-			"mount, path and key are required"))
-	}
+	errs = append(errs, validateVaultSecretReference(
+		field.NewPath("spec", "passwordVaultRef"), obj.Spec.PasswordVaultRef, true)...)
 	for i, membership := range obj.Spec.MemberOf {
 		errs = append(errs, validateSQLIdentifier(
 			field.NewPath("spec", "memberOf").Index(i).Child("role"), membership.Role)...)

@@ -101,8 +101,8 @@ func (c *Client) LoginKubernetes(ctx context.Context, jwt string) (Token, error)
 func (c *Client) ReadKV2(ctx context.Context, token string,
 	reference api.VaultSecretReference,
 ) (Secret, error) {
-	if reference.Mount == "" || reference.Path == "" {
-		return Secret{}, errors.New("vault KV v2 mount and path are required")
+	if err := ValidateSecretReference(reference, false); err != nil {
+		return Secret{}, err
 	}
 	var response struct {
 		Data struct {
@@ -128,6 +128,39 @@ func (c *Client) ReadKV2(ctx context.Context, token string,
 		return Secret{}, errors.New("vault KV v2 response has no metadata version")
 	}
 	return Secret{Data: data, Version: response.Data.Metadata.Version}, nil
+}
+
+func ValidateSecretReference(reference api.VaultSecretReference, requireKey bool) error {
+	if err := validatePath("mount", reference.Mount); err != nil {
+		return err
+	}
+	if err := validatePath("path", reference.Path); err != nil {
+		return err
+	}
+	if requireKey && reference.Key == "" {
+		return errors.New("vault secret key is required")
+	}
+	if reference.Key != "" &&
+		(len(reference.Key) > 253 || strings.ContainsAny(reference.Key, "\x00\r\n")) {
+		return errors.New("vault secret key must be a single-line key no longer than 253 bytes")
+	}
+	return nil
+}
+
+func validatePath(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("vault KV v2 %s is required", name)
+	}
+	if len(value) > 1024 || strings.Trim(value, "/") != value ||
+		strings.ContainsAny(value, "\x00\r\n") || strings.Contains(value, "//") {
+		return fmt.Errorf("vault KV v2 %s must be a normalized single-line path", name)
+	}
+	for segment := range strings.SplitSeq(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("vault KV v2 %s must be a normalized single-line path", name)
+		}
+	}
+	return nil
 }
 
 func RequireFields(secret Secret, fields ...string) error {

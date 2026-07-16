@@ -83,9 +83,46 @@ func TestValidateInstance(t *testing.T) {
 	}
 	base.Spec.TDE = api.TDESpec{}
 
+	base.Spec.Credentials.PostgresVaultRef.Path = "../shared"
+	if err := validateInstance(base); err == nil {
+		t.Fatal("unsafe PostgreSQL credential path was accepted")
+	}
+	base.Spec.Credentials.PostgresVaultRef.Path = "postgres/orders"
+
+	base.Spec.Credentials.PgpoolVaultRef.Mount = "/secret"
+	if err := validateInstance(base); err == nil {
+		t.Fatal("non-normalized Pgpool credential mount was accepted")
+	}
+	base.Spec.Credentials.PgpoolVaultRef.Mount = "secret"
+
+	base.Spec.Backup = &api.BackupSpec{Repository: api.BackupRepositorySpec{
+		Type: "S3", Bucket: "backups", Prefix: "orders",
+		CredentialVaultRef: api.VaultSecretReference{Mount: "secret", Path: "backup//orders"},
+	}}
+	if err := validateInstance(base); err == nil {
+		t.Fatal("unsafe backup credential path was accepted")
+	}
+	base.Spec.Backup = nil
+
 	base.Spec.Sites[2].Components.PostgresReplicas = 1
 	if err := validateInstance(base); err == nil {
 		t.Fatal("witness with PostgreSQL was accepted")
+	}
+}
+
+func TestValidateUserRejectsUnsafeVaultReference(t *testing.T) {
+	user := &api.PostgresUser{Spec: api.PostgresUserSpec{
+		RoleName: "orders_app",
+		PasswordVaultRef: api.VaultSecretReference{
+			Mount: "secret", Path: "postgres/orders/users/orders-app", Key: "password\nother",
+		},
+	}}
+	if err := validateUser(user); err == nil {
+		t.Fatal("unsafe Vault key was accepted")
+	}
+	user.Spec.PasswordVaultRef.Key = "password"
+	if err := validateUser(user); err != nil {
+		t.Fatalf("valid Vault reference rejected: %v", err)
 	}
 }
 
@@ -116,6 +153,9 @@ func TestRestoreSpecIsValidatedAndImmutable(t *testing.T) {
 		TargetBackup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
 			Type: "S3", Bucket: "backups", Prefix: "orders-restored",
 			Endpoint: "https://s3.example",
+			CredentialVaultRef: api.VaultSecretReference{
+				Mount: "secret", Path: "postgres/orders-restored/pgbackrest",
+			},
 		}},
 	}}
 	if err := validateRestore(restore); err != nil {
