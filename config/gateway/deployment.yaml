@@ -38,6 +38,9 @@ spec:
             > /run/mspsql/wireguard/wg0.conf
           wireguard-go wg0
           wg-quick up /run/mspsql/wireguard/wg0.conf
+          hub_address="$(awk '/^Address/ {split($3, address, "/"); print address[1]}' \
+            /etc/wireguard/interface.conf)"
+          socat TCP-LISTEN:9444,bind="${hub_address}",reuseaddr,fork TCP:agent-control:9444 &
           while true; do
             sleep 5
             cat /etc/wireguard/interface.conf /etc/wireguard-peers/peers.conf \
@@ -65,10 +68,12 @@ spec:
           limits: {multisite-postgres.dev/tun: 1}
         volumeMounts:
         - {name: runtime, mountPath: /run/mspsql}
+        - {name: wireguard-runtime, mountPath: /run/wireguard}
         - {name: identity, mountPath: /etc/wireguard, readOnly: true}
         - {name: peers, mountPath: /etc/wireguard-peers, readOnly: true}
       volumes:
       - {name: runtime, emptyDir: {medium: Memory}}
+      - {name: wireguard-runtime, emptyDir: {medium: Memory}}
       - name: identity
         secret: {secretName: mspsql-wireguard-identity, defaultMode: 0400}
       - name: peers

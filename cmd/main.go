@@ -87,7 +87,7 @@ func main() {
 		"Hub gRPC address placed in registration bundles.")
 	flag.StringVar(&agentImage, "site-agent-image", "ghcr.io/sindef/mspsql-agent:latest",
 		"Site agent image placed in registration bundles.")
-	flag.StringVar(&wireGuardImage, "wireguard-image", "ghcr.io/wireguard/wireguard-go:latest",
+	flag.StringVar(&wireGuardImage, "wireguard-image", "ghcr.io/sindef/mspsql-wireguard:latest",
 		"WireGuard userspace image placed in registration bundles.")
 	flag.StringVar(&wireGuardNetworkCIDR, "wireguard-network-cidr", "10.254.0.0/16",
 		"Private IPv4 network allocated to the hub and registered site peers.")

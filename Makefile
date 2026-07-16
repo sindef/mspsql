@@ -93,6 +93,10 @@ agent-build: generate fmt vet ## Build the site agent binary.
 tun-device-plugin-build: fmt vet ## Build the TUN device plugin binary.
 	go build -o bin/tun-device-plugin ./cmd/tun-device-plugin
 
+.PHONY: wireguard-image
+wireguard-image: ## Build the userspace WireGuard image.
+	$(CONTAINER_TOOL) build -f Dockerfile.wireguard -t ghcr.io/sindef/mspsql-wireguard:latest .
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

@@ -1,0 +1,8 @@
+FROM alpine:3.24.1
+
+RUN apk add --no-cache \
+    iproute2 \
+    socat \
+    wireguard-go \
+    wireguard-tools-wg \
+    wireguard-tools-wg-quick

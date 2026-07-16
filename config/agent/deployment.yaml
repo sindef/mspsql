@@ -77,6 +77,7 @@ spec:
         volumeMounts:
         - {name: identity, mountPath: /etc/wireguard, readOnly: true}
         - {name: runtime, mountPath: /run/mspsql}
+        - {name: wireguard-runtime, mountPath: /run/wireguard}
       volumes:
       - name: bootstrap
         secret:
@@ -87,3 +88,4 @@ spec:
           optional: true
           defaultMode: 0400
       - {name: runtime, emptyDir: {medium: Memory}}
+      - {name: wireguard-runtime, emptyDir: {medium: Memory}}

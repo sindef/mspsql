@@ -10,5 +10,5 @@ images:
   newName: ghcr.io/sindef/mspsql-gateway
   newTag: latest
 - name: wireguard-go
-  newName: ghcr.io/wireguard/wireguard-go
+  newName: ghcr.io/sindef/mspsql-wireguard
   newTag: latest

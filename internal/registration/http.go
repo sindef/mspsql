@@ -441,7 +441,11 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 			"volumeMounts": []any{
 				map[string]any{"name": "identity", "mountPath": "/etc/wireguard", "readOnly": true},
 				map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
+				map[string]any{"name": "wireguard-runtime", "mountPath": "/run/wireguard"},
 			},
+		})
+		volumes = append(volumes, map[string]any{
+			"name": "wireguard-runtime", "emptyDir": map[string]any{"medium": "Memory"},
 		})
 	}
 	return map[string]any{
