@@ -22,6 +22,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -279,5 +280,63 @@ func TestPruneDeletesOnlyObjectsFromOlderRevisions(t *testing.T) {
 	}
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(unmanaged), &corev1.Service{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRetainDeletionRemovesWorkloadsAndKeepsPVCs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	certificateGVK := schema.GroupVersionKind{
+		Group: "cert-manager.io", Version: "v1", Kind: "Certificate",
+	}
+	scheme.AddKnownTypeWithName(certificateGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(certificateGVK.GroupVersion().WithKind("CertificateList"),
+		&unstructured.UnstructuredList{})
+	ownership := map[string]string{
+		enabledLabel: "true", hubDomainLabel: "hub.example", siteUIDLabel: "site",
+		instanceUIDLabel: "instance",
+	}
+	managed := map[string]string{
+		"app.kubernetes.io/managed-by":        "mspsql-agent",
+		"multisite-postgres.dev/instance-uid": "instance",
+	}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orders", Labels: ownership}}
+	statefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "orders", Name: "postgres-vic-0", Labels: managed,
+	}}
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "orders", Name: "data-postgres-vic-0-0", Labels: maps.Clone(managed),
+	}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace, statefulSet, claim).Build()
+	reconciler := Reconciler{Client: kube, HubDomain: "hub.example", SiteUID: "site"}
+	result, err := reconciler.Apply(context.Background(), plan.SitePlan{
+		SiteUID: "site", InstanceUID: "instance", Revision: 2,
+		Site:     api.PostgresSiteSpec{Namespace: "orders"},
+		Deletion: &plan.DeletionPlan{Policy: api.DeletionPolicyRetain},
+	}, plan.SitePlan{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != "Deleted" {
+		t.Fatalf("phase = %s", result.Phase)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(statefulSet),
+		&appsv1.StatefulSet{}); err == nil {
+		t.Fatal("StatefulSet was retained")
+	}
+	var retained corev1.PersistentVolumeClaim
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(claim), &retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained.Labels["multisite-postgres.dev/retained-instance-uid"] != "instance" {
+		t.Fatalf("retained PVC labels = %#v", retained.Labels)
 	}
 }

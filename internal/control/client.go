@@ -205,7 +205,7 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 		}); err != nil {
 			return err
 		}
-		if applyErr == nil && result.Phase == "Ready" {
+		if applyErr == nil && (result.Phase == "Ready" || result.Phase == "Deleted") {
 			conditions := make([]*controlv1.Condition, 0, len(result.Conditions))
 			for _, condition := range result.Conditions {
 				conditions = append(conditions, &controlv1.Condition{

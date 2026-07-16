@@ -43,6 +43,11 @@ type SitePlan struct {
 	TDE             api.TDESpec          `json:"tde,omitempty"`
 	Backup          *api.BackupSpec      `json:"backup,omitempty"`
 	MemberAddresses map[string]string    `json:"memberAddresses,omitempty"`
+	Deletion        *DeletionPlan        `json:"deletion,omitempty"`
+}
+
+type DeletionPlan struct {
+	Policy api.DeletionPolicy `json:"policy"`
 }
 
 type Envelope struct {
@@ -135,7 +140,8 @@ func Classify(previous, next SitePlan) MutationClass {
 		return MutationCoordinated
 	}
 	if !bytes.Equal(mustCanonical(previous.Backup), mustCanonical(next.Backup)) ||
-		!bytes.Equal(mustCanonical(previous.TDE), mustCanonical(next.TDE)) {
+		!bytes.Equal(mustCanonical(previous.TDE), mustCanonical(next.TDE)) ||
+		!bytes.Equal(mustCanonical(previous.Deletion), mustCanonical(next.Deletion)) {
 		return MutationCoordinated
 	}
 	return MutationSafe

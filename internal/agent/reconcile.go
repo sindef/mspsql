@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	api "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
 )
 
@@ -53,6 +54,15 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	connected bool,
 ) (ApplyResult, error) {
 	result := ApplyResult{Phase: "CreatingNamespaces", Addresses: map[string]string{}}
+	if desired.Deletion != nil {
+		if !connected {
+			result.Phase = "WaitingForHub"
+			setLocalCondition(&result.Conditions, "Deleted", metav1.ConditionFalse,
+				"HubRequired", "Deletion is blocked while disconnected from the hub")
+			return result, nil
+		}
+		return r.deleteInstance(ctx, desired)
+	}
 	if err := EnsureNamespace(ctx, r.Client, desired.Site.Namespace, r.HubDomain, r.SiteUID,
 		desired.InstanceUID, connected); err != nil {
 		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse,
@@ -145,6 +155,56 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	return result, nil
 }
 
+func (r *Reconciler) deleteInstance(ctx context.Context, desired plan.SitePlan) (ApplyResult, error) {
+	result := ApplyResult{Phase: "Deleting", Addresses: map[string]string{}}
+	var namespace corev1.Namespace
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: desired.Site.Namespace}, &namespace); apierrors.IsNotFound(err) {
+		result.Phase = "Deleted"
+		setLocalCondition(&result.Conditions, "Deleted", metav1.ConditionTrue,
+			"NamespaceAbsent", "The target namespace no longer exists")
+		return result, nil
+	} else if err != nil {
+		return result, err
+	}
+	if err := EnsureNamespace(ctx, r.Client, desired.Site.Namespace, r.HubDomain, r.SiteUID,
+		desired.InstanceUID, true); err != nil {
+		return result, err
+	}
+	if desired.Deletion.Policy == api.DeletionPolicyDelete {
+		if err := r.Client.Delete(ctx, &namespace); err != nil && !apierrors.IsNotFound(err) {
+			return result, err
+		}
+		setLocalCondition(&result.Conditions, "Deleted", metav1.ConditionFalse,
+			"NamespaceTerminating", "Waiting for the target namespace to terminate")
+		return result, nil
+	}
+	if err := r.deleteManagedObjects(ctx, desired, ""); err != nil {
+		return result, err
+	}
+	var claims corev1.PersistentVolumeClaimList
+	if err := r.Client.List(ctx, &claims, client.InNamespace(desired.Site.Namespace), client.MatchingLabels{
+		"app.kubernetes.io/managed-by":        "mspsql-agent",
+		"multisite-postgres.dev/instance-uid": desired.InstanceUID,
+	}); err != nil {
+		return result, err
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		base := claim.DeepCopy()
+		if claim.Labels == nil {
+			claim.Labels = map[string]string{}
+		}
+		claim.Labels["multisite-postgres.dev/retained-instance-uid"] = desired.InstanceUID
+		if err := r.Client.Patch(ctx, claim, client.MergeFrom(base)); err != nil {
+			return result, err
+		}
+	}
+	result.Phase = "Deleted"
+	setLocalCondition(&result.Conditions, "Deleted", metav1.ConditionTrue,
+		"WorkloadsRemoved", "Active workloads were removed and persistent data was retained")
+	return result, nil
+}
+
 func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 	encoded, err := json.Marshal(object)
 	if err != nil {
@@ -155,6 +215,10 @@ func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 }
 
 func (r *Reconciler) pruneStaleObjects(ctx context.Context, desired plan.SitePlan) error {
+	return r.deleteManagedObjects(ctx, desired, fmt.Sprintf("%d", desired.Revision))
+}
+
+func (r *Reconciler) deleteManagedObjects(ctx context.Context, desired plan.SitePlan, keepRevision string) error {
 	certificates := &unstructured.UnstructuredList{}
 	certificates.SetGroupVersionKind(schema.GroupVersionKind{
 		Group: "cert-manager.io", Version: "v1", Kind: "CertificateList",
@@ -172,7 +236,6 @@ func (r *Reconciler) pruneStaleObjects(ctx context.Context, desired plan.SitePla
 		"app.kubernetes.io/managed-by":        "mspsql-agent",
 		"multisite-postgres.dev/instance-uid": desired.InstanceUID,
 	}
-	revision := fmt.Sprintf("%d", desired.Revision)
 	for _, list := range lists {
 		if err := r.Client.List(ctx, list, client.InNamespace(desired.Site.Namespace), labels); err != nil {
 			return err
@@ -183,7 +246,8 @@ func (r *Reconciler) pruneStaleObjects(ctx context.Context, desired plan.SitePla
 		}
 		for _, object := range objects {
 			managed, ok := object.(client.Object)
-			if !ok || managed.GetLabels()["multisite-postgres.dev/desired-revision"] == revision {
+			if !ok || keepRevision != "" &&
+				managed.GetLabels()["multisite-postgres.dev/desired-revision"] == keepRevision {
 				continue
 			}
 			if err := r.Client.Delete(ctx, managed); err != nil && !apierrors.IsNotFound(err) {

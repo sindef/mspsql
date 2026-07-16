@@ -267,6 +267,9 @@ func (s *Server) recordResult(ctx context.Context, siteName string, result *cont
 		for _, condition := range result.Conditions {
 			setSiteCondition(&site.Conditions, condition.Type, metav1.ConditionStatus(condition.Status),
 				condition.Reason, condition.Message)
+			if condition.Type == "Deleted" && condition.Status == string(metav1.ConditionTrue) {
+				site.Phase = "Deleted"
+			}
 		}
 	})
 }
@@ -286,7 +289,8 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 		for j := range instance.Status.Sites {
 			if instance.Status.Sites[j].Name == siteName {
 				update(&instance.Status.Sites[j])
-				if allApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
+				if instance.DeletionTimestamp.IsZero() &&
+					allApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
 					instance.Status.Phase = "Ready"
 					setSiteCondition(&instance.Status.Conditions, "Ready", metav1.ConditionTrue,
 						"AllSitesReady", "All sites applied the active revision")

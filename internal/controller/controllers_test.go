@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -26,9 +27,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
+	"github.com/sindef/mspsql/internal/plan"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -161,6 +164,33 @@ func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 		if configMap.Data["envelope.json"] == "" {
 			t.Fatalf("site %s plan is empty", site)
 		}
+	}
+	var active api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &active); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Delete(context.Background(), &active); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	var deletionPlan corev1.ConfigMap
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: "platform", Name: "mspsql-plan-orders-vic",
+	}, &deletionPlan); err != nil {
+		t.Fatal(err)
+	}
+	var envelope plan.Envelope
+	if err := json.Unmarshal([]byte(deletionPlan.Data["envelope.json"]), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var desired plan.SitePlan
+	if err := json.Unmarshal(envelope.Plan, &desired); err != nil {
+		t.Fatal(err)
+	}
+	if desired.Deletion == nil || desired.Deletion.Policy != api.DeletionPolicyRetain {
+		t.Fatalf("deletion plan = %#v", desired.Deletion)
 	}
 }
 

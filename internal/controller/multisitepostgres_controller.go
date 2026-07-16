@@ -201,8 +201,10 @@ func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
 			},
 			Data: data,
 		}
-		if err := controllerutil.SetControllerReference(instance, &configMap, r.Scheme); err != nil {
-			return err
+		if instance.DeletionTimestamp.IsZero() {
+			if err := controllerutil.SetControllerReference(instance, &configMap, r.Scheme); err != nil {
+				return err
+			}
 		}
 		return r.Create(ctx, &configMap)
 	}
@@ -211,6 +213,9 @@ func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
 	}
 	if configMap.Data["envelope.json"] == data["envelope.json"] {
 		return nil
+	}
+	if !instance.DeletionTimestamp.IsZero() {
+		configMap.OwnerReferences = nil
 	}
 	configMap.Data = data
 	return r.Update(ctx, &configMap)
@@ -223,8 +228,25 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 		return ctrl.Result{}, nil
 	}
 	if instance.Annotations["multisite-postgres.dev/force-orphan"] == "true" {
+		if err := r.deletePlanConfigMaps(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
 		controllerutil.RemoveFinalizer(instance, instanceFinalizer)
 		return ctrl.Result{}, r.Update(ctx, instance)
+	}
+	if instance.Status.PlanFingerprint != "deleting" {
+		if instance.Spec.DeletionPolicy == multisitepostgresv1alpha1.DeletionPolicyDelete &&
+			!conditionTrue(instance.Status.Conditions, "BackupReady") {
+			instance.Status.Phase = "Deleting"
+			setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
+				metav1.ConditionTrue, "BackupNotVerified",
+				"Delete policy requires a verified backup before remote cleanup begins")
+			return ctrl.Result{}, r.updateInstanceStatus(ctx, instance)
+		}
+		if err := r.issueDeletionPlans(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 	var waiting []string
 	for _, site := range instance.Status.Sites {
@@ -242,8 +264,96 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 		}
 		return ctrl.Result{}, nil
 	}
+	if err := r.deletePlanConfigMaps(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	controllerutil.RemoveFinalizer(instance, instanceFinalizer)
 	return ctrl.Result{}, r.Update(ctx, instance)
+}
+
+func (r *MultiSitePostgresReconciler) issueDeletionPlans(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) error {
+	systemNamespace := r.SystemNamespace
+	if systemNamespace == "" {
+		systemNamespace = "mspsql-system"
+	}
+	privateKey, err := ensureSigningKey(ctx, r.Client, systemNamespace)
+	if err != nil {
+		return err
+	}
+	now := time.Now
+	if r.Now != nil {
+		now = r.Now
+	}
+	deletionPolicy := instance.Spec.DeletionPolicy
+	if deletionPolicy == "" {
+		deletionPolicy = multisitepostgresv1alpha1.DeletionPolicyRetain
+	}
+	instance.Status.ActiveRevision++
+	if instance.Status.ActiveRevision == 0 {
+		instance.Status.ActiveRevision = 1
+	}
+	memberAddresses := make(map[string]string)
+	for _, siteStatus := range instance.Status.Sites {
+		maps.Copy(memberAddresses, siteStatus.Addresses)
+	}
+	statuses := make([]multisitepostgresv1alpha1.SiteRevisionStatus, 0, len(instance.Spec.Sites))
+	for _, site := range instance.Spec.Sites {
+		var registration multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKey{Name: site.SiteRegistrationRef}, &registration); err != nil {
+			return err
+		}
+		envelope, err := plan.Sign(privateKey, plan.SitePlan{
+			SiteUID:         string(registration.UID),
+			InstanceUID:     string(instance.UID),
+			HubNamespace:    instance.Namespace,
+			HubName:         instance.Name,
+			Revision:        instance.Status.ActiveRevision,
+			GeneratedAt:     now().UTC(),
+			Site:            site,
+			Postgres:        instance.Spec.Postgres,
+			TDE:             instance.Spec.TDE,
+			Backup:          instance.Spec.Backup,
+			MemberAddresses: memberAddresses,
+			Deletion:        &plan.DeletionPlan{Policy: deletionPolicy},
+		})
+		if err != nil {
+			return err
+		}
+		if err := r.reconcilePlan(ctx, instance, site.Name, string(registration.UID), envelope); err != nil {
+			return err
+		}
+		status := previousSiteStatus(instance.Status.Sites, site.Name)
+		status.Name = site.Name
+		status.SiteRegistrationRef = site.SiteRegistrationRef
+		status.DesiredRevision = instance.Status.ActiveRevision
+		status.Phase = "DeletionPlanIssued"
+		statuses = append(statuses, status)
+	}
+	instance.Status.Sites = statuses
+	instance.Status.PlanFingerprint = "deleting"
+	instance.Status.Phase = "Deleting"
+	setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
+		metav1.ConditionTrue, "AwaitingSites", "Waiting for all sites to acknowledge remote cleanup")
+	return r.updateInstanceStatus(ctx, instance)
+}
+
+func (r *MultiSitePostgresReconciler) deletePlanConfigMaps(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) error {
+	var plans corev1.ConfigMapList
+	if err := r.List(ctx, &plans, client.InNamespace(instance.Namespace), client.MatchingLabels{
+		"multisite-postgres.dev/instance-uid": string(instance.UID),
+	}); err != nil {
+		return err
+	}
+	for i := range plans.Items {
+		if err := r.Delete(ctx, &plans.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *MultiSitePostgresReconciler) updateInstanceStatus(ctx context.Context,
