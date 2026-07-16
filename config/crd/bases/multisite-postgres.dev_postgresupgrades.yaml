@@ -4,30 +4,30 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: postgresdatabases.multisite-postgres.multisite-postgres.dev
+  name: postgresupgrades.multisite-postgres.dev
 spec:
-  group: multisite-postgres.multisite-postgres.dev
+  group: multisite-postgres.dev
   names:
-    kind: PostgresDatabase
-    listKind: PostgresDatabaseList
-    plural: postgresdatabases
-    singular: postgresdatabase
+    kind: PostgresUpgrade
+    listKind: PostgresUpgradeList
+    plural: postgresupgrades
+    singular: postgresupgrade
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.databaseName
-      name: Database
+    - jsonPath: .spec.instanceRef
+      name: Instance
       type: string
-    - jsonPath: .metadata.creationTimestamp
-      name: Age
-      type: date
+    - jsonPath: .spec.targetMajorVersion
+      name: Target
+      type: integer
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: PostgresDatabase is the Schema for the postgresdatabases API
+        description: PostgresUpgrade is the Schema for the postgresupgrades API
         properties:
           apiVersion:
             description: |-
@@ -47,69 +47,26 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PostgresDatabase
+            description: spec defines the desired state of PostgresUpgrade
             properties:
-              databaseName:
-                type: string
-              deletionPolicy:
-                default: Retain
-                enum:
-                - Retain
-                - Delete
-                type: string
               instanceRef:
                 type: string
-              quotas:
-                properties:
-                  connectionLimit:
-                    format: int32
-                    minimum: -1
-                    type: integer
-                  idleInTransactionSessionTimeout:
-                    type: string
-                  lockTimeout:
-                    type: string
-                  statementTimeout:
-                    type: string
-                  storageAlertThreshold:
-                    anyOf:
-                    - type: integer
-                    - type: string
-                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                    x-kubernetes-int-or-string: true
-                  tempFileLimit:
-                    anyOf:
-                    - type: integer
-                    - type: string
-                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                    x-kubernetes-int-or-string: true
-                type: object
-              roles:
-                items:
-                  properties:
-                    name:
-                      type: string
-                    profile:
-                      enum:
-                      - Owner
-                      - ReadWrite
-                      - ReadOnly
-                      type: string
-                  required:
-                  - name
-                  - profile
-                  type: object
-                type: array
-              schemas:
-                items:
-                  type: string
-                type: array
+              serviceRestorationTarget:
+                type: string
+              targetImage:
+                type: string
+              targetMajorVersion:
+                format: int32
+                minimum: 14
+                type: integer
             required:
-            - databaseName
             - instanceRef
+            - serviceRestorationTarget
+            - targetImage
+            - targetMajorVersion
             type: object
           status:
-            description: status defines the observed state of PostgresDatabase
+            description: status defines the observed state of PostgresUpgrade
             properties:
               conditions:
                 items:
@@ -173,20 +130,17 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
-              observedSize:
-                anyOf:
-                - type: integer
-                - type: string
-                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                x-kubernetes-int-or-string: true
-              orphanedDeclarations:
-                items:
-                  type: string
-                type: array
               phase:
                 type: string
-              tdeVerified:
-                type: boolean
+              startedAt:
+                format: date-time
+                type: string
+              writeOutageStartedAt:
+                format: date-time
+                type: string
+              writeServiceRestoredAt:
+                format: date-time
+                type: string
             type: object
         required:
         - spec

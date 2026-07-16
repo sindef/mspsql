@@ -4,30 +4,30 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: postgresupgrades.multisite-postgres.multisite-postgres.dev
+  name: postgresusers.multisite-postgres.dev
 spec:
-  group: multisite-postgres.multisite-postgres.dev
+  group: multisite-postgres.dev
   names:
-    kind: PostgresUpgrade
-    listKind: PostgresUpgradeList
-    plural: postgresupgrades
-    singular: postgresupgrade
+    kind: PostgresUser
+    listKind: PostgresUserList
+    plural: postgresusers
+    singular: postgresuser
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.instanceRef
-      name: Instance
+    - jsonPath: .spec.roleName
+      name: Role
       type: string
-    - jsonPath: .spec.targetMajorVersion
-      name: Target
-      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: PostgresUpgrade is the Schema for the postgresupgrades API
+        description: PostgresUser is the Schema for the postgresusers API
         properties:
           apiVersion:
             description: |-
@@ -47,26 +47,68 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PostgresUpgrade
+            description: spec defines the desired state of PostgresUser
             properties:
+              deletionPolicy:
+                default: Retain
+                enum:
+                - Retain
+                - Delete
+                type: string
               instanceRef:
                 type: string
-              serviceRestorationTarget:
+              memberOf:
+                items:
+                  properties:
+                    databaseRef:
+                      type: string
+                    role:
+                      type: string
+                  required:
+                  - databaseRef
+                  - role
+                  type: object
+                type: array
+              passwordVaultRef:
+                properties:
+                  key:
+                    type: string
+                  mount:
+                    type: string
+                  path:
+                    type: string
+                required:
+                - mount
+                - path
+                type: object
+              quotas:
+                properties:
+                  connectionLimit:
+                    format: int32
+                    minimum: -1
+                    type: integer
+                  idleInTransactionSessionTimeout:
+                    type: string
+                  lockTimeout:
+                    type: string
+                  statementTimeout:
+                    type: string
+                  tempFileLimit:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              roleName:
                 type: string
-              targetImage:
-                type: string
-              targetMajorVersion:
-                format: int32
-                minimum: 14
-                type: integer
             required:
             - instanceRef
-            - serviceRestorationTarget
-            - targetImage
-            - targetMajorVersion
+            - passwordVaultRef
+            - roleName
             type: object
           status:
-            description: status defines the observed state of PostgresUpgrade
+            description: status defines the observed state of PostgresUser
             properties:
               conditions:
                 items:
@@ -127,19 +169,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialVersion:
+                format: int64
+                type: integer
               observedGeneration:
                 format: int64
                 type: integer
               phase:
-                type: string
-              startedAt:
-                format: date-time
-                type: string
-              writeOutageStartedAt:
-                format: date-time
-                type: string
-              writeServiceRestoredAt:
-                format: date-time
                 type: string
             type: object
         required:

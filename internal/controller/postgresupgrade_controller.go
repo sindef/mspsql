@@ -36,10 +36,10 @@ type PostgresUpgradeReconciler struct {
 	Now    func() time.Time
 }
 
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresupgrades,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresupgrades/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresupgrades/finalizers,verbs=update
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=multisitepostgres;postgresrestores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresupgrades,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresupgrades/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresupgrades/finalizers,verbs=update
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres;postgresrestores,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -38,7 +38,7 @@ func SetupPostgresRestoreWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresrestore,mutating=true,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.multisite-postgres.dev,resources=postgresrestores,verbs=create;update,versions=v1alpha1,name=mpostgresrestore-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresrestore,mutating=true,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.dev,resources=postgresrestores,verbs=create;update,versions=v1alpha1,name=mpostgresrestore-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PostgresRestoreCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind PostgresRestore when those are created or updated.
@@ -54,7 +54,7 @@ func (d *PostgresRestoreCustomDefaulter) Default(_ context.Context, obj *multisi
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresrestore,mutating=false,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.multisite-postgres.dev,resources=postgresrestores,verbs=create;update,versions=v1alpha1,name=vpostgresrestore-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresrestore,mutating=false,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.dev,resources=postgresrestores,verbs=create;update,versions=v1alpha1,name=vpostgresrestore-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PostgresRestoreCustomValidator struct is responsible for validating the PostgresRestore resource
 // when it is created, updated, or deleted.

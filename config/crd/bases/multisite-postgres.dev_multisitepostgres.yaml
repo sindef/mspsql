@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: multisitepostgres.multisite-postgres.multisite-postgres.dev
+  name: multisitepostgres.multisite-postgres.dev
 spec:
-  group: multisite-postgres.multisite-postgres.dev
+  group: multisite-postgres.dev
   names:
     kind: MultiSitePostgres
     listKind: MultiSitePostgresList

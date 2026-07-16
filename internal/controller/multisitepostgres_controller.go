@@ -46,10 +46,10 @@ type MultiSitePostgresReconciler struct {
 	Now             func() time.Time
 }
 
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=multisitepostgres/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=multisitepostgres/finalizers,verbs=update
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=siteregistrations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres/finalizers,verbs=update
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 
 func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

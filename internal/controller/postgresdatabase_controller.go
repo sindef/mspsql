@@ -35,10 +35,10 @@ type PostgresDatabaseReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresdatabases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresdatabases/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresdatabases/finalizers,verbs=update
-// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresdatabases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresdatabases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresdatabases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PostgresDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

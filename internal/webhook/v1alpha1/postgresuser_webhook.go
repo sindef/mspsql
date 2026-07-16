@@ -38,7 +38,7 @@ func SetupPostgresUserWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresuser,mutating=true,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.multisite-postgres.dev,resources=postgresusers,verbs=create;update,versions=v1alpha1,name=mpostgresuser-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresuser,mutating=true,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.dev,resources=postgresusers,verbs=create;update,versions=v1alpha1,name=mpostgresuser-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PostgresUserCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind PostgresUser when those are created or updated.
@@ -57,7 +57,7 @@ func (d *PostgresUserCustomDefaulter) Default(_ context.Context, obj *multisitep
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresuser,mutating=false,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.multisite-postgres.dev,resources=postgresusers,verbs=create;update,versions=v1alpha1,name=vpostgresuser-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresuser,mutating=false,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.dev,resources=postgresusers,verbs=create;update,versions=v1alpha1,name=vpostgresuser-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PostgresUserCustomValidator struct is responsible for validating the PostgresUser resource
 // when it is created, updated, or deleted.

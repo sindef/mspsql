@@ -15,7 +15,7 @@ webhooks:
   name: mmultisitepostgres-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -35,7 +35,7 @@ webhooks:
   name: mpostgresdatabase-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -55,7 +55,7 @@ webhooks:
   name: mpostgresrestore-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -75,7 +75,7 @@ webhooks:
   name: mpostgresupgrade-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -95,7 +95,7 @@ webhooks:
   name: mpostgresuser-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -115,7 +115,7 @@ webhooks:
   name: msiteregistration-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -141,7 +141,7 @@ webhooks:
   name: vmultisitepostgres-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -161,7 +161,7 @@ webhooks:
   name: vpostgresdatabase-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -181,7 +181,7 @@ webhooks:
   name: vpostgresrestore-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -201,7 +201,7 @@ webhooks:
   name: vpostgresupgrade-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -221,7 +221,7 @@ webhooks:
   name: vpostgresuser-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -241,7 +241,7 @@ webhooks:
   name: vsiteregistration-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - multisite-postgres.multisite-postgres.dev
+    - multisite-postgres.dev
     apiVersions:
     - v1alpha1
     operations:

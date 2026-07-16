@@ -39,7 +39,7 @@ func SetupPostgresUpgradeWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresupgrade,mutating=true,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.multisite-postgres.dev,resources=postgresupgrades,verbs=create;update,versions=v1alpha1,name=mpostgresupgrade-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresupgrade,mutating=true,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.dev,resources=postgresupgrades,verbs=create;update,versions=v1alpha1,name=mpostgresupgrade-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PostgresUpgradeCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind PostgresUpgrade when those are created or updated.
@@ -58,7 +58,7 @@ func (d *PostgresUpgradeCustomDefaulter) Default(_ context.Context, obj *multisi
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresupgrade,mutating=false,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.multisite-postgres.dev,resources=postgresupgrades,verbs=create;update,versions=v1alpha1,name=vpostgresupgrade-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-multisite-postgres-multisite-postgres-dev-v1alpha1-postgresupgrade,mutating=false,failurePolicy=fail,sideEffects=None,groups=multisite-postgres.dev,resources=postgresupgrades,verbs=create;update,versions=v1alpha1,name=vpostgresupgrade-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // PostgresUpgradeCustomValidator struct is responsible for validating the PostgresUpgrade resource
 // when it is created, updated, or deleted.
