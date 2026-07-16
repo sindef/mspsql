@@ -82,7 +82,7 @@ func TestDefaultsAreNonDestructive(t *testing.T) {
 	if obj.Spec.DeletionPolicy != api.DeletionPolicyRetain {
 		t.Fatalf("deletion policy = %q", obj.Spec.DeletionPolicy)
 	}
-	if got := obj.Spec.Backup.Retention.Duration.Duration.Hours(); got != 168 {
+	if got := obj.Spec.Backup.Retention.Duration.Hours(); got != 168 {
 		t.Fatalf("retention hours = %v", got)
 	}
 	if obj.Spec.Sites[0].Certificates.EtcdIssuerRef.Kind != "ClusterIssuer" {

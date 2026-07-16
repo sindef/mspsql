@@ -98,10 +98,11 @@ func bootstrapIfRequired(ctx context.Context, kube client.Client, namespace, ide
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return false, fmt.Errorf("registration failed with HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+		return false, fmt.Errorf("registration failed with HTTP %d: %s",
+			response.StatusCode, strings.TrimSpace(string(message)))
 	}
 	var binding registration.BindResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&binding); err != nil {

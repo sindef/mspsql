@@ -189,7 +189,11 @@ func (s *Server) recordHeartbeat(ctx context.Context, siteName string,
 	if err := s.Client.Get(ctx, client.ObjectKey{Name: siteName}, &site); err != nil {
 		return err
 	}
-	now := metav1.NewTime(s.now())
+	heartbeatTime := s.now()
+	if heartbeat.SentAt != nil && heartbeat.SentAt.IsValid() {
+		heartbeatTime = heartbeat.SentAt.AsTime()
+	}
+	now := metav1.NewTime(heartbeatTime)
 	site.Status.LastHeartbeatTime = &now
 	site.Status.Phase = "Connected"
 	return s.Client.Status().Update(ctx, &site)
@@ -218,8 +222,8 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 			site.Addresses = map[string]string{}
 		}
 		for key, value := range progress.ResourceSummaries {
-			if strings.HasPrefix(key, "address/") {
-				site.Addresses[strings.TrimPrefix(key, "address/")] = value
+			if member, ok := strings.CutPrefix(key, "address/"); ok {
+				site.Addresses[member] = value
 				hasAddresses = true
 			}
 		}

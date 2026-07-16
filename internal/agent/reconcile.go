@@ -18,12 +18,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/sindef/mspsql/internal/plan"
@@ -116,12 +119,17 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 }
 
 func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
-	return r.Client.Patch(ctx, object, client.Apply, client.FieldOwner("mspsql-agent"))
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return err
+	}
+	return r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
+		client.FieldOwner("mspsql-agent"))
 }
 
 func loadBalancerAddress(service *corev1.Service) (string, error) {
 	if len(service.Status.LoadBalancer.Ingress) != 1 {
-		return "", fmt.Errorf("Service %s must have exactly one ingress address", service.Name)
+		return "", fmt.Errorf("service %s must have exactly one ingress address", service.Name)
 	}
 	ingress := service.Status.LoadBalancer.Ingress[0]
 	if ingress.IP != "" {
@@ -130,17 +138,13 @@ func loadBalancerAddress(service *corev1.Service) (string, error) {
 	if ingress.Hostname != "" {
 		return ingress.Hostname, nil
 	}
-	return "", fmt.Errorf("Service %s ingress address is empty", service.Name)
+	return "", fmt.Errorf("service %s ingress address is empty", service.Name)
 }
 
 func mergeAddresses(first, second map[string]string) map[string]string {
 	merged := make(map[string]string, len(first)+len(second))
-	for key, value := range first {
-		merged[key] = value
-	}
-	for key, value := range second {
-		merged[key] = value
-	}
+	maps.Copy(merged, first)
+	maps.Copy(merged, second)
 	return merged
 }
 

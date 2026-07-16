@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sync"
 	"time"
 
@@ -51,7 +52,7 @@ func (c *AgentClient) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	stream, err := controlv1.NewAgentControlClient(connection).Connect(ctx)
 	if err != nil {
 		return err
@@ -179,9 +180,7 @@ func (c *AgentClient) heartbeats(ctx context.Context, stream controlv1.AgentCont
 	for {
 		c.activeMu.Lock()
 		revisions := make(map[string]int64, len(c.active))
-		for instanceUID, revision := range c.active {
-			revisions[instanceUID] = revision
-		}
+		maps.Copy(revisions, c.active)
 		c.activeMu.Unlock()
 		if err := c.send(stream, &controlv1.AgentMessage{
 			Message: &controlv1.AgentMessage_Heartbeat{Heartbeat: &controlv1.AgentHeartbeat{

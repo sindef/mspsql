@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -126,9 +127,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	siteStatuses := make([]multisitepostgresv1alpha1.SiteRevisionStatus, 0, len(instance.Spec.Sites))
 	memberAddresses := make(map[string]string)
 	for _, siteStatus := range instance.Status.Sites {
-		for member, address := range siteStatus.Addresses {
-			memberAddresses[member] = address
-		}
+		maps.Copy(memberAddresses, siteStatus.Addresses)
 	}
 	for _, site := range instance.Spec.Sites {
 		registration := registrations[site.Name]

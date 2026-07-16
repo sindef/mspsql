@@ -29,7 +29,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -43,6 +42,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	controlv1 "github.com/sindef/mspsql/gen/control/v1"
@@ -119,6 +119,7 @@ func main() {
 		RetryPeriod: 15 * time.Second, ReleaseOnCancel: true, Name: "mspsql-site-agent",
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
+				leaderCtx = crlog.IntoContext(leaderCtx, log)
 				if err := os.MkdirAll(filepath.Dir(activationPath), 0o750); err != nil {
 					log.Error(err, "Could not create WireGuard activation directory")
 					return
@@ -127,10 +128,10 @@ func main() {
 					log.Error(err, "Could not activate WireGuard")
 					return
 				}
-				defer os.Remove(activationPath)
-				reconcileCached(leaderCtx, cache, reconciler, log)
+				defer func() { _ = os.Remove(activationPath) }()
+				reconcileCached(leaderCtx, cache, reconciler)
 				runControlLoop(leaderCtx, target, tlsConfig, cache, reconciler, registrationUID,
-					string(clusterUID), log)
+					string(clusterUID))
 			},
 			OnStoppedLeading: func() {
 				_ = os.Remove(activationPath)
@@ -152,11 +153,12 @@ func clients(config *rest.Config) client.Client {
 }
 
 func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, cache *agent.Cache,
-	reconciler *agent.Reconciler, registrationUID, clusterUID string, log logr.Logger,
+	reconciler *agent.Reconciler, registrationUID, clusterUID string,
 ) {
+	log := crlog.FromContext(ctx).WithName("control")
 	backoff := time.Second
 	for ctx.Err() == nil {
-		client := &control.AgentClient{
+		controlClient := &control.AgentClient{
 			Target: target,
 			DialOptions: []grpc.DialOption{
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
@@ -171,7 +173,7 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 			},
 			Cache: cache, Reconciler: reconciler,
 		}
-		if err := client.Run(ctx); err != nil && ctx.Err() == nil {
+		if err := controlClient.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Error(err, "Control stream disconnected")
 		}
 		delay := backoff + time.Duration(rand.Int64N(int64(backoff/2+1)))
@@ -186,7 +188,8 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 	}
 }
 
-func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler, log logr.Logger) {
+func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler) {
+	log := crlog.FromContext(ctx).WithName("cache")
 	plans, err := cache.List(ctx)
 	if err != nil {
 		log.Error(err, "Could not load signed plan cache")

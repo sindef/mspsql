@@ -18,8 +18,9 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -243,7 +244,7 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 			endpoints = append(endpoints, "https://"+address+":2379")
 		}
 	}
-	sort.Strings(endpoints)
+	slices.Sort(endpoints)
 	config := fmt.Sprintf(`scope: %s
 name: ${POD_NAME}
 restapi:
@@ -359,7 +360,7 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 			ordinal, address, ordinal, ordinal))
 		ordinal++
 	}
-	sort.Strings(backends)
+	slices.Sort(backends)
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "pgpool-" + desired.Site.Name, Labels: copyMap(labels),
@@ -430,7 +431,7 @@ func etcdInitialCluster(desired plan.SitePlan) (string, error) {
 			members = append(members, member+"=https://"+address+":2380")
 		}
 	}
-	sort.Strings(members)
+	slices.Sort(members)
 	if len(members) < 3 || len(members)%2 == 0 {
 		return "", fmt.Errorf("complete odd etcd member address set is required")
 	}
@@ -488,11 +489,7 @@ func resourceLabels(desired plan.SitePlan) map[string]string {
 }
 
 func copyMap(input map[string]string) map[string]string {
-	output := make(map[string]string, len(input))
-	for key, value := range input {
-		output[key] = value
-	}
-	return output
+	return maps.Clone(input)
 }
 
 func stringMapAny(input map[string]string) map[string]any {

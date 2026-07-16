@@ -121,7 +121,7 @@ func (r *PostgresRestoreReconciler) operationConflict(ctx context.Context, names
 	}
 	for _, restore := range restores.Items {
 		if restore.Spec.TargetInstanceRef == instanceRef &&
-			!(operationKind == "restore" && restore.Name == operationName) &&
+			(operationKind != "restore" || restore.Name != operationName) &&
 			restore.Status.Phase != "Completed" && restore.Status.Phase != "Failed" {
 			return "another restore targets this instance", nil
 		}

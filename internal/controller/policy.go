@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"slices"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 )
@@ -43,7 +44,7 @@ func validateSitePolicy(site api.PostgresSiteSpec, registration *api.SiteRegistr
 			return fmt.Errorf("PostgreSQL issuer %q is not permitted", site.Certificates.PostgresIssuerRef.Name)
 		}
 		if !issuerAllowed(registration.Spec.PermittedIssuers.Pgpool, site.Certificates.PgpoolIssuerRef) {
-			return fmt.Errorf("Pgpool issuer %q is not permitted", site.Certificates.PgpoolIssuerRef.Name)
+			return fmt.Errorf("pgpool issuer %q is not permitted", site.Certificates.PgpoolIssuerRef.Name)
 		}
 	}
 	if !discoveredStorageClass(registration.Status.DiscoveredStorageClasses, site.Storage.Etcd) ||
@@ -75,10 +76,5 @@ func issuerAllowed(allowed []api.IssuerReference, requested api.IssuerReference)
 }
 
 func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, wanted)
 }
