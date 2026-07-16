@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-control
+spec:
+  podSelector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: mspsql
+  policyTypes: [Ingress]
+  ingress:
+  - ports:
+    - {protocol: TCP, port: 9444}
+    - {protocol: TCP, port: 8082}

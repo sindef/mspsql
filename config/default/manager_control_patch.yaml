@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        ports:
+        - {name: grpc, containerPort: 9444, protocol: TCP}
+        - {name: registration, containerPort: 8082, protocol: TCP}
+        volumeMounts:
+        - {name: control-identity, mountPath: /etc/mspsql/control, readOnly: true}
+      volumes:
+      - name: control-identity
+        secret:
+          secretName: mspsql-control-identity
+          defaultMode: 0400
