@@ -263,3 +263,22 @@ func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentWireGuardStopsOnLeadershipLoss(t *testing.T) {
+	site := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "vic", UID: types.UID("site-uid"),
+	}}
+	raw, err := json.Marshal(agentDeployment(site, "agent:test", "wireguard:test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := json.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	command := deployment.Spec.Template.Spec.Containers[1].Command
+	if len(command) != 3 || !strings.Contains(command[2], "wg-quick down") ||
+		!strings.Contains(command[2], "while [ -f /run/mspsql/leader ]") {
+		t.Fatalf("WireGuard leadership cleanup command = %#v", command)
+	}
+}

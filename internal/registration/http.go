@@ -460,8 +460,12 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 			"name": "wireguard", "image": wireGuardImage,
 			"command": []any{"/bin/sh", "-ec",
 				"while [ ! -f /run/mspsql/leader ]; do sleep 1; done; " +
-					"wireguard-go wg0; wg-quick up /etc/wireguard/wg0.conf; " +
-					"while true; do sleep 3600; done"},
+					"wireguard-go wg0 & wireguard_pid=$!; " +
+					"wg-quick up /etc/wireguard/wg0.conf; " +
+					"cleanup() { wg-quick down /etc/wireguard/wg0.conf 2>/dev/null || true; " +
+					"kill \"$wireguard_pid\" 2>/dev/null || true; }; " +
+					"trap cleanup EXIT; trap 'exit 0' TERM INT; " +
+					"while [ -f /run/mspsql/leader ]; do sleep 1; done"},
 			"securityContext": map[string]any{
 				"allowPrivilegeEscalation": false,
 				"readOnlyRootFilesystem":   true,

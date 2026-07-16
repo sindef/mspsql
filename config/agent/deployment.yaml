@@ -68,9 +68,16 @@ spec:
         - -ec
         - |
           while [ ! -f /run/mspsql/leader ]; do sleep 1; done
-          wireguard-go wg0
+          wireguard-go wg0 &
+          wireguard_pid="$!"
           wg-quick up /etc/wireguard/wg0.conf
-          while true; do sleep 3600; done
+          cleanup() {
+            wg-quick down /etc/wireguard/wg0.conf 2>/dev/null || true
+            kill "${wireguard_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          trap 'exit 0' TERM INT
+          while [ -f /run/mspsql/leader ]; do sleep 1; done
         resources:
           requests: {cpu: 25m, memory: 32Mi, multisite-postgres.dev/tun: 1}
           limits: {cpu: 250m, memory: 128Mi, multisite-postgres.dev/tun: 1}

@@ -38,13 +38,22 @@ spec:
           mkdir -p /run/mspsql/wireguard
           cat /etc/wireguard/interface.conf /etc/wireguard-peers/peers.conf \
             > /run/mspsql/wireguard/wg0.conf
-          wireguard-go wg0
+          wireguard-go wg0 &
+          wireguard_pid="$!"
           wg-quick up /run/mspsql/wireguard/wg0.conf
           hub_address="$(awk '/^Address/ {split($3, address, "/"); print address[1]}' \
             /etc/wireguard/interface.conf)"
           socat TCP-LISTEN:9444,bind="${hub_address}",reuseaddr,fork \
             TCP:mspsql-agent-control:9444 &
-          while true; do
+          socat_pid="$!"
+          cleanup() {
+            kill "${socat_pid}" 2>/dev/null || true
+            wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null || true
+            kill "${wireguard_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          trap 'exit 0' TERM INT
+          while [ -f /run/mspsql/leader ]; do
             sleep 5
             cat /etc/wireguard/interface.conf /etc/wireguard-peers/peers.conf \
               > /run/mspsql/wireguard/wg0.next
