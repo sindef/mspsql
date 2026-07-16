@@ -188,7 +188,8 @@ func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.Si
 		}
 		if desired.TDE.Enabled {
 			setLocalCondition(&result.Conditions, "TDEVerified", metav1.ConditionTrue,
-				"EncryptedBootstrapReady", "Patroni completed the pg_tde bootstrap and all members are Ready")
+				"DatabaseAuditPassed",
+				"Every local member resolved its pg_tde key and reported no unencrypted user relations")
 		}
 	} else if desired.Site.Role == api.SiteRoleData {
 		setLocalCondition(&result.Conditions, "RestoreWaiting", metav1.ConditionTrue,
@@ -391,6 +392,25 @@ func (r *Reconciler) workloadsReady(ctx context.Context, objects []client.Object
 				return false, fmt.Sprintf("Deployment %s has %d/%d Available replicas",
 					observed.Name, observed.Status.AvailableReplicas, replicas), nil
 			}
+		case *batchv1.Job:
+			var observed batchv1.Job
+			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(expected), &observed); err != nil {
+				return false, "", err
+			}
+			complete := false
+			for _, condition := range observed.Status.Conditions {
+				if condition.Type == batchv1.JobComplete && condition.Status == corev1.ConditionTrue {
+					complete = true
+					break
+				}
+				if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+					return false, fmt.Sprintf("Job %s failed: %s", observed.Name, condition.Message), nil
+				}
+			}
+			if complete {
+				continue
+			}
+			return false, fmt.Sprintf("Job %s has not completed", observed.Name), nil
 		}
 	}
 	return true, "", nil

@@ -451,6 +451,7 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 	}
 	var patroniConfig, bootstrapScript string
 	var postgres *appsv1.StatefulSet
+	var audit *batchv1.Job
 	for _, object := range objects {
 		switch object := object.(type) {
 		case *corev1.ConfigMap:
@@ -460,6 +461,8 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 			if strings.HasPrefix(object.Name, "postgres-") {
 				postgres = object
 			}
+		case *batchv1.Job:
+			audit = object
 		}
 	}
 	for _, expected := range []string{
@@ -480,6 +483,17 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 	}
 	if postgres == nil || !hasVolume(postgres.Spec.Template.Spec.Volumes, "pg-tde-vault") {
 		t.Fatal("PostgreSQL member does not mount the TDE Vault token")
+	}
+	if audit == nil {
+		t.Fatal("TDE acceptance audit Job was not rendered")
+	}
+	auditCommand := audit.Spec.Template.Spec.Containers[0].Command[2]
+	for _, expected := range []string{
+		"pg_tde_verify_key()", "default_table_access_method", "access_method.amname <> 'tde_heap'",
+	} {
+		if !strings.Contains(auditCommand, expected) {
+			t.Fatalf("TDE audit is missing %q:\n%s", expected, auditCommand)
+		}
 	}
 }
 

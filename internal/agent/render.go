@@ -26,6 +26,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -182,6 +183,9 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	if desired.Site.Components.PgpoolReplicas > 0 &&
 		(desired.Restore == nil || desired.Restore.Phase == plan.RestorePhaseVerify) {
 		objects = append(objects, r.pgpoolConfig(desired, labels), r.pgpoolDeployment(desired, labels))
+	}
+	if desired.TDE.Enabled {
+		objects = append(objects, r.tdeAuditJob(desired, labels))
 	}
 	return objects, nil
 }
@@ -586,6 +590,103 @@ SQL
 			Namespace: desired.Site.Namespace, Name: "pg-tde-bootstrap", Labels: copyMap(labels),
 		},
 		Data: map[string]string{"tde-bootstrap.sh": script},
+	}
+}
+
+func (r Renderer) tdeAuditJob(desired plan.SitePlan, labels map[string]string) *batchv1.Job {
+	var members []string
+	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
+		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
+		if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed &&
+			name != desired.Restore.SeedMember {
+			continue
+		}
+		members = append(members, name+"."+desired.Site.Namespace+".svc")
+	}
+	script := `set -euo pipefail
+for host in "$@"; do
+  ready=false
+  for attempt in $(seq 1 60); do
+    if psql -X -h "$host" -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null 2>&1; then
+      ready=true
+      break
+    fi
+    sleep 10
+  done
+  test "$ready" = true
+  psql -X -h "$host" -U postgres -d postgres -Atqc \
+    "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname" |
+  while IFS= read -r database; do
+    psql -X -h "$host" -U postgres -d "$database" -v ON_ERROR_STOP=1 -Atq <<'SQL'
+SELECT 1 / ((SELECT count(*) FROM pg_extension WHERE extname = 'pg_tde') = 1)::int;
+SELECT 1 / (current_setting('default_table_access_method') = 'tde_heap')::int;
+SELECT 1 / (current_setting('pg_tde.enforce_encryption') = 'on')::int;
+SELECT pg_tde_verify_key();
+SELECT 1 / (NOT EXISTS (
+  SELECT 1
+  FROM pg_class AS relation
+  JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  JOIN pg_am AS access_method ON access_method.oid = relation.relam
+  WHERE relation.relkind IN ('r', 'm')
+    AND relation.relpersistence <> 't'
+    AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+    AND namespace.nspname !~ '^pg_toast'
+    AND access_method.amname <> 'tde_heap'
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_depend
+      WHERE classid = 'pg_class'::regclass
+        AND objid = relation.oid
+        AND deptype = 'e'
+    )
+))::int;
+SQL
+  done
+done
+`
+	jobLabels := copyMap(labels)
+	jobLabels["multisite-postgres.dev/component"] = "tde-audit"
+	backoffLimit := int32(3)
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: desired.Site.Namespace,
+			Name:      fmt.Sprintf("mspsql-tde-audit-%d", desired.Revision),
+			Labels:    jobLabels,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: &backoffLimit,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: jobLabels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName:           workloadServiceAccount,
+					AutomountServiceAccountToken: ptr(false),
+					RestartPolicy:                corev1.RestartPolicyNever,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr(true), FSGroup: ptr(int64(26)),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: []corev1.Container{{
+						Name: "audit", Image: desired.Postgres.Image,
+						Command:         append([]string{"/bin/bash", "-ec", script, "tde-audit"}, members...),
+						SecurityContext: restrictedContainer(),
+						Env: []corev1.EnvVar{
+							{Name: "PGPASSWORD", ValueFrom: secretKeySelector("postgres-auth", "superuser-password")},
+							{Name: "PGSSLMODE", Value: "verify-full"},
+							{Name: "PGSSLROOTCERT", Value: "/postgres-tls/ca.crt"},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "postgres-tls", MountPath: "/postgres-tls", ReadOnly: true},
+						},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "postgres-tls", VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: fmt.Sprintf("postgres-%s-0-tls", desired.Site.Name),
+							},
+						},
+					}},
+				},
+			},
+		},
 	}
 }
 
