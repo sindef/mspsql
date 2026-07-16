@@ -10,3 +10,12 @@ spec:
   sourceInstanceRef: orders
   targetInstanceRef: orders-recovered
   targetTime: "2026-07-16T02:15:00Z"
+  targetBackup:
+    repository:
+      type: S3
+      bucket: database-backups
+      prefix: orders-recovered
+      endpoint: https://s3.example.internal
+      credentialVaultRef:
+        mount: secret
+        path: postgres/orders-recovered/pgbackrest

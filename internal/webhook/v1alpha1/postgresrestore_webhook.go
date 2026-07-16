@@ -19,6 +19,8 @@ package v1alpha1
 import (
 	"context"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -74,6 +76,9 @@ func (v *PostgresRestoreCustomValidator) ValidateCreate(_ context.Context, obj *
 func (v *PostgresRestoreCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj *multisitepostgresv1alpha1.PostgresRestore) (admission.Warnings, error) {
 	postgresrestorelog.Info("Validation for PostgresRestore upon update", "name", newObj.GetName())
 
+	if !apiequality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
+		return nil, apierrors.NewBadRequest("PostgresRestore spec is immutable")
+	}
 	return nil, validateRestore(newObj)
 }
 

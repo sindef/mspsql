@@ -165,16 +165,8 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	}
 	setLocalCondition(&result.Conditions, "EtcdQuorate", metav1.ConditionTrue,
 		"AllMembersHealthy", "All etcd member readiness checks are passing")
-	if desired.Site.Role == api.SiteRoleData {
-		setLocalCondition(&result.Conditions, "PatroniReady", metav1.ConditionTrue,
-			"AllMembersHealthy", "All Patroni member readiness checks are passing")
-		if err := r.observeTopology(ctx, desired, &result); err != nil {
-			return result, err
-		}
-		if desired.TDE.Enabled {
-			setLocalCondition(&result.Conditions, "TDEVerified", metav1.ConditionTrue,
-				"EncryptedBootstrapReady", "Patroni completed the pg_tde bootstrap and all members are Ready")
-		}
+	if err := r.setDataPlaneConditions(ctx, desired, &result); err != nil {
+		return result, err
 	}
 	if err := r.pruneStaleObjects(ctx, desired); err != nil {
 		return result, err
@@ -183,6 +175,34 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
 	return result, nil
+}
+
+func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.SitePlan,
+	result *ApplyResult,
+) error {
+	if restoreExpectsPostgres(desired) {
+		setLocalCondition(&result.Conditions, "PatroniReady", metav1.ConditionTrue,
+			"AllMembersHealthy", "All Patroni member readiness checks are passing")
+		if err := r.observeTopology(ctx, desired, result); err != nil {
+			return err
+		}
+		if desired.TDE.Enabled {
+			setLocalCondition(&result.Conditions, "TDEVerified", metav1.ConditionTrue,
+				"EncryptedBootstrapReady", "Patroni completed the pg_tde bootstrap and all members are Ready")
+		}
+	} else if desired.Site.Role == api.SiteRoleData {
+		setLocalCondition(&result.Conditions, "RestoreWaiting", metav1.ConditionTrue,
+			"SeedRecoveryInProgress", "PostgreSQL remains stopped until the restored seed member is promoted")
+	}
+	return nil
+}
+
+func restoreExpectsPostgres(desired plan.SitePlan) bool {
+	if desired.Site.Role != api.SiteRoleData {
+		return false
+	}
+	return desired.Restore == nil || desired.Restore.Phase != plan.RestorePhaseSeed ||
+		desired.Site.Name == desired.Restore.SeedSite
 }
 
 func (r *Reconciler) observeTopology(ctx context.Context, desired plan.SitePlan, result *ApplyResult) error {

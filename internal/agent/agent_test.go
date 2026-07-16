@@ -155,6 +155,74 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	}
 }
 
+func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
+	desired := plan.SitePlan{
+		SiteUID: "site", InstanceUID: "target", Revision: 1,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders-restored", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 2, PgpoolReplicas: 2},
+			Storage: api.SiteStorage{
+				Etcd:     &api.StorageRequest{StorageClassName: "standard"},
+				Postgres: &api.StorageRequest{StorageClassName: "standard"},
+			},
+		},
+		Postgres: api.PostgresSpec{Image: "postgres:17"},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-qld-0": "10.0.1.1", "etcd-nsw-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.10",
+			"postgres-vic-1": "10.0.0.11",
+		},
+		Restore: &plan.RestorePlan{
+			OperationUID: "restore", SourceInstanceUID: "source",
+			SourceBackup: api.BackupSpec{Repository: api.BackupRepositorySpec{
+				Type: "S3", Bucket: "backups", Prefix: "orders",
+				Endpoint: "https://s3.example", Region: "ap-southeast-2",
+			}},
+			TargetTime: time.Date(2026, 7, 16, 2, 15, 0, 0, time.UTC),
+			BackupSet:  "20260716-010000F", SeedSite: "vic", SeedMember: "postgres-vic-0",
+			Phase: plan.RestorePhaseSeed,
+		},
+	}
+	objects, err := (Renderer{Images: Images{Etcd: "etcd:3.6", Pgpool: "pgpool:4.6"}}).
+		Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var postgresMembers, pgpool int
+	var patroni, restoreScript string
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *appsv1.StatefulSet:
+			if strings.HasPrefix(object.Name, "postgres-") {
+				postgresMembers++
+			}
+		case *appsv1.Deployment:
+			pgpool++
+		case *corev1.ConfigMap:
+			patroni += object.Data["patroni.yml"]
+			restoreScript += object.Data["restore.sh"]
+		}
+	}
+	if postgresMembers != 1 || pgpool != 0 {
+		t.Fatalf("postgres=%d pgpool=%d", postgresMembers, pgpool)
+	}
+	for _, expected := range []string{
+		"method: pgbackrest", "keep_existing_recovery_conf: true",
+	} {
+		if !strings.Contains(patroni, expected) {
+			t.Fatalf("Patroni restore config is missing %q:\n%s", expected, patroni)
+		}
+	}
+	for _, expected := range []string{
+		"--stanza=mspsql-source", "--type=time", "--target-action=promote",
+		"--set=20260716-010000F",
+	} {
+		if !strings.Contains(restoreScript, expected) {
+			t.Fatalf("restore script is missing %q:\n%s", expected, restoreScript)
+		}
+	}
+}
+
 func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := appsv1.AddToScheme(scheme); err != nil {

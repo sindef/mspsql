@@ -31,6 +31,7 @@ type PostgresRestoreSpec struct {
 	TargetTime        metav1.Time     `json:"targetTime"`
 	BackupSet         string          `json:"backupSet,omitempty"`
 	RestoreTopology   RestoreTopology `json:"restoreTopology,omitempty"`
+	TargetBackup      *BackupSpec     `json:"targetBackup,omitempty"`
 }
 
 type PostgresRestoreStatus struct {

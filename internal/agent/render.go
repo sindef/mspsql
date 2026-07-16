@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -143,27 +144,43 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	if desired.Site.Role == api.SiteRoleWitness {
 		return objects, nil
 	}
-	patroniConfig := r.patroniConfig(desired, labels)
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed &&
+		desired.Site.Name != desired.Restore.SeedSite {
+		return objects, nil
+	}
+	workloadPlan := desired
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		workloadPlan.Backup = desired.Restore.SourceBackup.DeepCopy()
+	}
+	patroniConfig := r.patroniConfig(workloadPlan, labels)
 	objects = append(objects, patroniConfig)
-	if desired.Backup != nil {
-		pgBackRestConfig, configErr := r.pgBackRestConfig(desired, labels)
+	if workloadPlan.Backup != nil {
+		pgBackRestConfig, configErr := r.pgBackRestConfig(workloadPlan, labels)
 		if configErr != nil {
 			return nil, configErr
 		}
 		objects = append(objects, pgBackRestConfig)
+	}
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		objects = append(objects, r.restoreBootstrapConfig(workloadPlan, labels))
 	}
 	if desired.TDE.Enabled {
 		objects = append(objects, r.tdeBootstrapConfig(desired, labels))
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
+		if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed &&
+			name != desired.Restore.SeedMember {
+			continue
+		}
 		address := desired.MemberAddresses[name]
 		if address == "" {
 			return nil, fmt.Errorf("address for %s is not allocated", name)
 		}
-		objects = append(objects, r.postgresStatefulSet(desired, name, address, labels))
+		objects = append(objects, r.postgresStatefulSet(workloadPlan, name, address, labels))
 	}
-	if desired.Site.Components.PgpoolReplicas > 0 {
+	if desired.Site.Components.PgpoolReplicas > 0 &&
+		(desired.Restore == nil || desired.Restore.Phase == plan.RestorePhaseVerify) {
 		objects = append(objects, r.pgpoolConfig(desired, labels), r.pgpoolDeployment(desired, labels))
 	}
 	return objects, nil
@@ -315,7 +332,9 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 	tdeParameters := ""
 	tdeBinaries := ""
 	if desired.TDE.Enabled {
-		postInit = "  post_init: /operator/tde-bootstrap.sh\n"
+		if desired.Restore == nil {
+			postInit = "  post_init: /operator/tde-bootstrap.sh\n"
+		}
 		tdeParameters = `    shared_preload_libraries: pg_tde
 `
 		tdeBinaries = `  bin_name:
@@ -325,7 +344,7 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 	}
 	backupParameters := ""
 	if desired.Backup != nil {
-		stanza := "mspsql-" + desired.InstanceUID
+		stanza := backupStanza(desired)
 		backupParameters = fmt.Sprintf(`    archive_mode: "on"
     archive_command: 'pgbackrest --config=/etc/pgbackrest/pgbackrest.conf --stanza=%s archive-push %%p'
     archive_timeout: 60s
@@ -343,6 +362,18 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
     synchronous_node_count: %d
 `, desired.Postgres.SynchronousStandbyCount)
 	}
+	bootstrapMethod := `  initdb:
+    - encoding: UTF8
+    - data-checksums
+` + initdbTDE + postInit
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		bootstrapMethod = `  method: pgbackrest
+  pgbackrest:
+    command: /restore/restore.sh
+    keep_existing_recovery_conf: true
+    no_params: true
+`
+	}
 	bootstrap := fmt.Sprintf(`bootstrap:
   dcs:
 %s
@@ -356,10 +387,7 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
         - local all all peer
         - hostssl replication replication 0.0.0.0/0 scram-sha-256
         - hostssl all all 0.0.0.0/0 scram-sha-256
-  initdb:
-    - encoding: UTF8
-    - data-checksums
-%s%s`, synchronousConfig, initdbTDE, postInit)
+%s`, synchronousConfig, bootstrapMethod)
 	config := fmt.Sprintf(`scope: %s
 name: ${MEMBER_NAME}
 %srestapi:
@@ -434,7 +462,7 @@ func (r Renderer) pgBackRestConfig(desired plan.SitePlan, labels map[string]stri
 	if port == "" {
 		port = "443"
 	}
-	stanza := "mspsql-" + desired.InstanceUID
+	stanza := backupStanza(desired)
 	caConfig := ""
 	if repository.CABundleSecretRef != nil {
 		caConfig = "repo1-storage-ca-file=/repository/ca.crt\n"
@@ -473,6 +501,48 @@ pg1-path=/var/lib/postgresql/data
 		},
 		Data: map[string]string{"pgbackrest.conf": config},
 	}, nil
+}
+
+func backupStanza(desired plan.SitePlan) string {
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		return "mspsql-" + desired.Restore.SourceInstanceUID
+	}
+	return "mspsql-" + desired.InstanceUID
+}
+
+func (r Renderer) restoreBootstrapConfig(desired plan.SitePlan,
+	labels map[string]string,
+) *corev1.ConfigMap {
+	args := []string{
+		"pgbackrest",
+		"--config=/etc/pgbackrest/pgbackrest.conf",
+		"--stanza=" + backupStanza(desired),
+		"--pg1-path=/var/lib/postgresql/data",
+		"--delta",
+		"--type=time",
+		"--target=" + desired.Restore.TargetTime.UTC().Format(time.RFC3339Nano),
+		"--target-action=promote",
+	}
+	if desired.Restore.BackupSet != "" {
+		args = append(args, "--set="+desired.Restore.BackupSet)
+	}
+	args = append(args, "restore")
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: desired.Site.Namespace, Name: "restore-bootstrap", Labels: copyMap(labels),
+		},
+		Data: map[string]string{
+			"restore.sh": "#!/bin/bash\nset -euo pipefail\nexec " + strings.Join(quoted, " ") + "\n",
+		},
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func (r Renderer) tdeBootstrapConfig(desired plan.SitePlan, labels map[string]string) *corev1.ConfigMap {
@@ -569,6 +639,19 @@ exec patroni /tmp/patroni.yml`, name, address)
 			}},
 			corev1.Volume{Name: "pg-tde-vault", VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{SecretName: "pg-tde-vault"},
+			}},
+		)
+	}
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		volumeMounts = append(volumeMounts,
+			corev1.VolumeMount{Name: "restore-bootstrap", MountPath: "/restore", ReadOnly: true},
+		)
+		volumes = append(volumes,
+			corev1.Volume{Name: "restore-bootstrap", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "restore-bootstrap"},
+					DefaultMode:          ptr(int32(0o550)),
+				},
 			}},
 		)
 	}

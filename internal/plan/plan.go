@@ -44,7 +44,27 @@ type SitePlan struct {
 	Backup          *api.BackupSpec             `json:"backup,omitempty"`
 	Credentials     api.InstanceCredentialsSpec `json:"credentials"`
 	MemberAddresses map[string]string           `json:"memberAddresses,omitempty"`
+	Restore         *RestorePlan                `json:"restore,omitempty"`
 	Deletion        *DeletionPlan               `json:"deletion,omitempty"`
+}
+
+type RestorePhase string
+
+const (
+	RestorePhaseSeed     RestorePhase = "Seed"
+	RestorePhaseReplicas RestorePhase = "Replicas"
+	RestorePhaseVerify   RestorePhase = "Verify"
+)
+
+type RestorePlan struct {
+	OperationUID      string         `json:"operationUID"`
+	SourceInstanceUID string         `json:"sourceInstanceUID"`
+	SourceBackup      api.BackupSpec `json:"sourceBackup"`
+	TargetTime        time.Time      `json:"targetTime"`
+	BackupSet         string         `json:"backupSet,omitempty"`
+	SeedSite          string         `json:"seedSite"`
+	SeedMember        string         `json:"seedMember"`
+	Phase             RestorePhase   `json:"phase"`
 }
 
 type DeletionPlan struct {
@@ -143,6 +163,7 @@ func Classify(previous, next SitePlan) MutationClass {
 	if !bytes.Equal(mustCanonical(previous.Backup), mustCanonical(next.Backup)) ||
 		!bytes.Equal(mustCanonical(previous.TDE), mustCanonical(next.TDE)) ||
 		!bytes.Equal(mustCanonical(previous.Credentials), mustCanonical(next.Credentials)) ||
+		!bytes.Equal(mustCanonical(previous.Restore), mustCanonical(next.Restore)) ||
 		!bytes.Equal(mustCanonical(previous.Deletion), mustCanonical(next.Deletion)) {
 		return MutationCoordinated
 	}

@@ -113,6 +113,13 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
 		metav1.ConditionTrue, "AllAgentsConnected", "All site agents are connected")
 
+	restorePlan, err := r.restorePlan(ctx, &instance)
+	if err != nil {
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "RestoreContractInvalid", err.Error())
+		instance.Status.Phase = "Restoring"
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
+	}
 	fingerprint, err := planFingerprint(&instance)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -156,6 +163,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			Backup:          instance.Spec.Backup,
 			Credentials:     instance.Spec.Credentials,
 			MemberAddresses: memberAddresses,
+			Restore:         restorePlan,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
@@ -180,13 +188,20 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 		metav1.ConditionFalse, "PlansIssued", "Waiting for all sites to apply the active revision")
 	if allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
-		instance.Status.Phase = "Ready"
-		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
-			metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
+		if restorePlan != nil && restorePlan.Phase != plan.RestorePhaseVerify {
+			instance.Status.Phase = "Restoring"
+			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+				metav1.ConditionFalse, "RestoreInProgress",
+				"The restore target is not available until recovery and replica seeding complete")
+		} else {
+			instance.Status.Phase = "Ready"
+			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+				metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
+		}
 	}
 	backupRequeue, err := r.reconcileBackupSchedules(ctx, &instance, now(),
 		conditionTrue(instance.Status.Conditions, "Ready") &&
-			conditionTrue(instance.Status.Conditions, "TopologyReady"))
+			conditionTrue(instance.Status.Conditions, "TopologyReady") && restorePlan == nil)
 	if err != nil {
 		setCondition(&instance.Status.Conditions, instance.Generation, "BackupReady",
 			metav1.ConditionFalse, "ScheduleInvalid", err.Error())
@@ -214,7 +229,9 @@ func (r *MultiSitePostgresReconciler) validateInstanceClaims(ctx context.Context
 		if backupClaimsConflict(instance.Spec.Backup, other.Spec.Backup) {
 			return fmt.Errorf("backup repository claim conflicts with %s/%s", other.Namespace, other.Name)
 		}
-		if tdeClaimsConflict(instance.Spec.TDE, other.Spec.TDE) {
+		restoreSource := instance.Annotations[restoreSourceUIDAnnotation]
+		if tdeClaimsConflict(instance.Spec.TDE, other.Spec.TDE) &&
+			restoreSource != string(other.UID) {
 			return fmt.Errorf("TDE key identity conflicts with %s/%s", other.Namespace, other.Name)
 		}
 	}
@@ -455,8 +472,12 @@ func allSitesApplied(statuses []multisitepostgresv1alpha1.SiteRevisionStatus, re
 
 func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, now time.Time) {
 	dataSites := 0
+	seedRestore := instance.Annotations[restorePhaseAnnotation] == string(plan.RestorePhaseSeed)
+	if seedRestore {
+		dataSites = 1
+	}
 	for _, site := range instance.Spec.Sites {
-		if site.Role == multisitepostgresv1alpha1.SiteRoleData {
+		if !seedRestore && site.Role == multisitepostgresv1alpha1.SiteRoleData {
 			dataSites++
 		}
 	}
@@ -524,10 +545,14 @@ func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (string, error) {
 	payload, err := json.Marshal(struct {
-		Generation int64
-		Addresses  map[string]map[string]string
+		Generation   int64
+		Addresses    map[string]map[string]string
+		RestoreUID   string
+		RestorePhase string
 	}{
-		Generation: instance.Generation,
+		Generation:   instance.Generation,
+		RestoreUID:   instance.Annotations[restoreUIDAnnotation],
+		RestorePhase: instance.Annotations[restorePhaseAnnotation],
 		Addresses: func() map[string]map[string]string {
 			addresses := make(map[string]map[string]string, len(instance.Spec.Sites))
 			for _, desiredSite := range instance.Spec.Sites {
@@ -546,4 +571,48 @@ func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (str
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func (r *MultiSitePostgresReconciler) restorePlan(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) (*plan.RestorePlan, error) {
+	restoreName := instance.Annotations[restoreNameAnnotation]
+	if restoreName == "" || instance.Annotations[restorePhaseAnnotation] == "Completed" {
+		return nil, nil
+	}
+	var restore multisitepostgresv1alpha1.PostgresRestore
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: instance.Namespace, Name: restoreName,
+	}, &restore); err != nil {
+		return nil, fmt.Errorf("read owning restore: %w", err)
+	}
+	var source multisitepostgresv1alpha1.MultiSitePostgres
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: instance.Namespace, Name: restore.Spec.SourceInstanceRef,
+	}, &source); err != nil {
+		return nil, fmt.Errorf("read restore source: %w", err)
+	}
+	if source.Spec.Backup == nil {
+		return nil, fmt.Errorf("restore source has no backup repository")
+	}
+	seedSite, seedMember, err := selectRestoreSeed(instance.Spec.Sites)
+	if err != nil {
+		return nil, err
+	}
+	phase := plan.RestorePhase(instance.Annotations[restorePhaseAnnotation])
+	switch phase {
+	case plan.RestorePhaseSeed, plan.RestorePhaseReplicas, plan.RestorePhaseVerify:
+	default:
+		return nil, fmt.Errorf("unsupported restore phase %q", phase)
+	}
+	return &plan.RestorePlan{
+		OperationUID:      string(restore.UID),
+		SourceInstanceUID: string(source.UID),
+		SourceBackup:      *source.Spec.Backup.DeepCopy(),
+		TargetTime:        restore.Spec.TargetTime.Time,
+		BackupSet:         restore.Spec.BackupSet,
+		SeedSite:          seedSite,
+		SeedMember:        seedMember,
+		Phase:             phase,
+	}, nil
 }

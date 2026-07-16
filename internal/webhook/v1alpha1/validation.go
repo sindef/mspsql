@@ -297,14 +297,38 @@ func validateSQLIdentifier(identifierPath *field.Path, value string) field.Error
 }
 
 func validateRestore(obj *api.PostgresRestore) error {
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+	for name, value := range map[string]string{
+		"sourceInstanceRef": obj.Spec.SourceInstanceRef,
+		"targetInstanceRef": obj.Spec.TargetInstanceRef,
+	} {
+		if value == "" {
+			errs = append(errs, field.Required(specPath.Child(name), "required"))
+			continue
+		}
+		for _, problem := range validation.IsDNS1123Subdomain(value) {
+			errs = append(errs, field.Invalid(specPath.Child(name), value, problem))
+		}
+	}
 	if obj.Spec.SourceInstanceRef == obj.Spec.TargetInstanceRef {
-		return field.Invalid(field.NewPath("spec", "targetInstanceRef"), obj.Spec.TargetInstanceRef,
-			"in-place restore is forbidden")
+		errs = append(errs, field.Invalid(specPath.Child("targetInstanceRef"),
+			obj.Spec.TargetInstanceRef, "in-place restore is forbidden"))
 	}
 	if obj.Spec.TargetTime.IsZero() {
-		return field.Required(field.NewPath("spec", "targetTime"), "time-based PITR target is required")
+		errs = append(errs, field.Required(specPath.Child("targetTime"), "time-based PITR target is required"))
 	}
-	return nil
+	if obj.Spec.TargetBackup != nil {
+		if strings.Trim(obj.Spec.TargetBackup.Repository.Prefix, "/") == "" {
+			errs = append(errs, field.Required(specPath.Child("targetBackup", "repository", "prefix"),
+				"backup prefix must identify the restored instance"))
+		}
+		errs = append(errs, validateBackupRepository(obj.Spec.TargetBackup.Repository,
+			specPath.Child("targetBackup", "repository"))...)
+		errs = append(errs, validateBackupSchedules(obj.Spec.TargetBackup.Schedules,
+			specPath.Child("targetBackup", "schedules"))...)
+	}
+	return errs.ToAggregate()
 }
 
 func validateUpgrade(obj *api.PostgresUpgrade) error {

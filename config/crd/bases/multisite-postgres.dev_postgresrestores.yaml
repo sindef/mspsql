@@ -230,6 +230,75 @@ spec:
                 type: object
               sourceInstanceRef:
                 type: string
+              targetBackup:
+                properties:
+                  repository:
+                    properties:
+                      bucket:
+                        type: string
+                      caBundleSecretRef:
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      credentialVaultRef:
+                        properties:
+                          key:
+                            type: string
+                          mount:
+                            type: string
+                          path:
+                            type: string
+                        required:
+                        - mount
+                        - path
+                        type: object
+                      endpoint:
+                        type: string
+                      prefix:
+                        type: string
+                      region:
+                        type: string
+                      type:
+                        enum:
+                        - S3
+                        type: string
+                      uriStyle:
+                        enum:
+                        - host
+                        - path
+                        type: string
+                    required:
+                    - bucket
+                    - credentialVaultRef
+                    - prefix
+                    - type
+                    type: object
+                  retention:
+                    properties:
+                      duration:
+                        type: string
+                      walDuration:
+                        type: string
+                    type: object
+                  schedules:
+                    properties:
+                      differential:
+                        type: string
+                      full:
+                        type: string
+                      incremental:
+                        type: string
+                      timezone:
+                        type: string
+                    type: object
+                required:
+                - repository
+                type: object
               targetInstanceRef:
                 type: string
               targetTime:

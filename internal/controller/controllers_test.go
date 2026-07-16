@@ -333,3 +333,91 @@ func TestInstanceSecretClaimsAreExclusive(t *testing.T) {
 		t.Fatal("independent TDE identities conflict")
 	}
 }
+
+func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
+	scheme := testScheme(t)
+	now := time.Date(2026, 7, 16, 3, 0, 0, 0, time.UTC)
+	window := metav1.NewTime(now.Add(-24 * time.Hour))
+	source := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("source-uid"),
+		},
+		Spec: api.MultiSitePostgresSpec{
+			Postgres: api.PostgresSpec{
+				MajorVersion: 17, Image: "postgres:17", SynchronousStandbyCount: 1,
+			},
+			Sites: []api.PostgresSiteSpec{
+				{
+					Name: "vic", SiteRegistrationRef: "vic", Namespace: "orders",
+					Role: api.SiteRoleData, PrimaryPreference: 100,
+					Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 1},
+				},
+				{
+					Name: "qld", SiteRegistrationRef: "qld", Namespace: "orders",
+					Role: api.SiteRoleData, PrimaryPreference: 50,
+					Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 1},
+				},
+			},
+			Backup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
+				Type: "S3", Bucket: "backups", Prefix: "orders",
+				CredentialVaultRef: api.VaultSecretReference{Mount: "secret", Path: "orders/backup"},
+			}},
+		},
+		Status: api.MultiSitePostgresStatus{
+			RecoveryWindowStart: &window,
+			Conditions: []metav1.Condition{
+				{Type: "Ready", Status: metav1.ConditionTrue},
+				{Type: "RecoveryWindowAvailable", Status: metav1.ConditionTrue},
+			},
+		},
+	}
+	restore := &api.PostgresRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-restore", UID: types.UID("restore-uid"),
+		},
+		Spec: api.PostgresRestoreSpec{
+			SourceInstanceRef: "orders", TargetInstanceRef: "orders-recovered",
+			TargetTime: metav1.NewTime(now.Add(-time.Hour)),
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}, &api.PostgresRestore{}).
+		WithObjects(source, restore).Build()
+	reconciler := PostgresRestoreReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+	}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: restore.Namespace, Name: restore.Name,
+	}}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	var target api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "platform", Name: "orders-recovered",
+	}, &target); err != nil {
+		t.Fatal(err)
+	}
+	if target.Annotations[restorePhaseAnnotation] != string(plan.RestorePhaseSeed) ||
+		target.Spec.Sites[0].Namespace != "orders-recovered-vic" ||
+		target.Spec.Backup != nil {
+		t.Fatalf("restore target = %#v", target)
+	}
+
+	target.Status.Primary = "postgres-vic-0"
+	target.Status.Conditions = []metav1.Condition{
+		{Type: "TopologyReady", Status: metav1.ConditionTrue},
+	}
+	if err := kube.Status().Update(context.Background(), &target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(&target), &target); err != nil {
+		t.Fatal(err)
+	}
+	if target.Annotations[restorePhaseAnnotation] != string(plan.RestorePhaseReplicas) {
+		t.Fatalf("restore phase = %q", target.Annotations[restorePhaseAnnotation])
+	}
+}

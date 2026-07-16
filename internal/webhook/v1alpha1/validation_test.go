@@ -17,9 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 )
@@ -91,5 +93,29 @@ func TestDefaultsAreNonDestructive(t *testing.T) {
 	}
 	if obj.Spec.Sites[0].Certificates.EtcdIssuerRef.Kind != "ClusterIssuer" {
 		t.Fatal("issuer kind was not defaulted")
+	}
+}
+
+func TestRestoreSpecIsValidatedAndImmutable(t *testing.T) {
+	restore := &api.PostgresRestore{Spec: api.PostgresRestoreSpec{
+		SourceInstanceRef: "orders", TargetInstanceRef: "orders-restored",
+		TargetTime: metav1.Now(),
+		TargetBackup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
+			Type: "S3", Bucket: "backups", Prefix: "orders-restored",
+			Endpoint: "https://s3.example",
+		}},
+	}}
+	if err := validateRestore(restore); err != nil {
+		t.Fatalf("valid restore rejected: %v", err)
+	}
+	updated := restore.DeepCopy()
+	updated.Spec.TargetInstanceRef = "different"
+	if _, err := (&PostgresRestoreCustomValidator{}).
+		ValidateUpdate(context.Background(), restore, updated); err == nil {
+		t.Fatal("running restore spec was mutable")
+	}
+	restore.Spec.TargetBackup.Repository.Endpoint = "http://s3.example"
+	if err := validateRestore(restore); err == nil {
+		t.Fatal("insecure target backup endpoint was accepted")
 	}
 }

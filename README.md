@@ -110,6 +110,19 @@ passphrase. Private S3-compatible endpoints use
 `backup.repository.caBundleSecretRef`, which follows the same site-agent
 namespace Secret contract as the Vault CA reference.
 
+## Restore contract
+
+`PostgresRestore` performs time-based PITR into a new instance. Patroni starts
+one selected seed member with pgBackRest custom bootstrap, waits for recovery
+and promotion, clones the remaining members, establishes synchronous
+replication, and only then exposes Pgpool and completes acceptance.
+
+The source repository and historical TDE identity are read-only restore inputs.
+`spec.targetBackup`, when supplied, must claim a distinct repository prefix and
+Vault credential path and becomes the recovered instance's repository after
+promotion. Omitting it leaves the recovered instance without scheduled backups
+until its `MultiSitePostgres` backup specification is configured.
+
 ## Security invariants
 
 - Plan caches accept only valid Ed25519 signatures, the bound site and

@@ -119,9 +119,13 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 			return err
 		}
 	}
-	if desired.Backup != nil {
+	backup := desired.Backup
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		backup = desired.Restore.SourceBackup.DeepCopy()
+	}
+	if backup != nil {
 		repository, readErr := vaultClient.ReadKV2(ctx, token.Value,
-			desired.Backup.Repository.CredentialVaultRef)
+			backup.Repository.CredentialVaultRef)
 		if readErr != nil {
 			return readErr
 		}
@@ -134,8 +138,8 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 			"s3-secret-key":          []byte(repository.Data["s3SecretKey"]),
 			"repo-cipher-passphrase": []byte(repository.Data["repositoryCipherPassphrase"]),
 		}
-		if desired.Backup.Repository.CABundleSecretRef != nil {
-			repositoryCA, caErr := m.secretValue(ctx, desired.Backup.Repository.CABundleSecretRef)
+		if backup.Repository.CABundleSecretRef != nil {
+			repositoryCA, caErr := m.secretValue(ctx, backup.Repository.CABundleSecretRef)
 			if caErr != nil {
 				return fmt.Errorf("read backup repository CA Secret: %w", caErr)
 			}
