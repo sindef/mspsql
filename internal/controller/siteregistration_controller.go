@@ -18,40 +18,123 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
+	"github.com/sindef/mspsql/internal/registration"
 )
 
 // SiteRegistrationReconciler reconciles a SiteRegistration object
 type SiteRegistrationReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme                *runtime.Scheme
+	SystemNamespace       string
+	RegistrationPublicURL string
+	Now                   func() time.Time
 }
 
 // +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=siteregistrations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=siteregistrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=siteregistrations/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the SiteRegistration object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
-
-	// TODO(user): your logic here
+	var site multisitepostgresv1alpha1.SiteRegistration
+	if err := r.Get(ctx, req.NamespacedName, &site); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !site.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	now := time.Now
+	if r.Now != nil {
+		now = r.Now
+	}
+	systemNamespace := r.SystemNamespace
+	if systemNamespace == "" {
+		systemNamespace = "mspsql-system"
+	}
+	secretKey := types.NamespacedName{
+		Namespace: systemNamespace,
+		Name:      "registration-" + string(site.UID),
+	}
+	var secret corev1.Secret
+	err := r.Get(ctx, secretKey, &secret)
+	if apierrors.IsNotFound(err) || tokenExpired(&secret, now()) {
+		token, tokenErr := registration.NewToken(now())
+		if tokenErr != nil {
+			return ctrl.Result{}, tokenErr
+		}
+		secret = corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Namespace: secretKey.Namespace, Name: secretKey.Name},
+			Immutable:  ptr(true),
+			Data: map[string][]byte{
+				"sha256":    token.Hash,
+				"expiresAt": []byte(token.ExpiresAt.UTC().Format(time.RFC3339Nano)),
+			},
+		}
+		if err == nil {
+			if deleteErr := r.Delete(ctx, &secret); deleteErr != nil {
+				return ctrl.Result{}, deleteErr
+			}
+			secret.ResourceVersion = ""
+			secret.UID = ""
+		}
+		if err := controllerutil.SetControllerReference(&site, &secret, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, &secret); err != nil {
+			return ctrl.Result{}, err
+		}
+		baseURL := r.RegistrationPublicURL
+		if baseURL == "" {
+			baseURL = "https://registration.invalid"
+		}
+		site.Status.RegistrationURL = fmt.Sprintf("%s/%s/registration.yaml", baseURL, token.Value)
+		expiresAt := metav1.NewTime(token.ExpiresAt)
+		site.Status.RegistrationExpiresAt = &expiresAt
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	site.Status.Phase = "Pending"
+	if site.Status.ClusterUID != "" {
+		site.Status.Phase = "Connected"
+	}
+	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionFalse,
+		"AwaitingAgent", "Waiting for the site agent to bind this registration")
+	if site.Status.ClusterUID != "" {
+		setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionTrue,
+			"ClusterBound", "Registration is bound to an immutable Kubernetes cluster UID")
+	}
+	if err := r.Status().Update(ctx, &site); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
+}
+
+func tokenExpired(secret *corev1.Secret, now time.Time) bool {
+	encoded := secret.Data["expiresAt"]
+	if len(secret.Data["sha256"]) == 0 || len(encoded) == 0 {
+		return true
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, string(encoded))
+	return err != nil || !now.Before(expiresAt)
+}
+
+func ptr[T any](value T) *T {
+	return &value
 }
 
 // SetupWithManager sets up the controller with the Manager.
