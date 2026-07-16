@@ -4,6 +4,7 @@ set -euo pipefail
 
 clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
 image="${IMG:-mspsql:test}"
+vault_image="hashicorp/vault:1.21.4"
 
 cleanup() {
   for cluster in "${clusters[@]}"; do
@@ -12,11 +13,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+docker pull "${vault_image}"
+
 for cluster in "${clusters[@]}"; do
   kind create cluster --name "${cluster}" --wait 120s
 done
 
 for site in vic nsw qld; do
+  kind load docker-image "${vault_image}" --name "mspsql-${site}"
   site_kubeconfig="$(mktemp)"
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
   ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}"

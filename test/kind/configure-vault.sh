@@ -8,7 +8,12 @@ kubectl=(kubectl --kubeconfig="${kubeconfig}")
 vault_env=(env VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root)
 
 "${kubectl[@]}" apply -f test/kind/vault.yaml
-"${kubectl[@]}" -n vault rollout status deployment/vault --timeout=120s
+if ! "${kubectl[@]}" -n vault rollout status deployment/vault --timeout=180s; then
+  "${kubectl[@]}" -n vault get pods -o wide
+  "${kubectl[@]}" -n vault describe pods
+  "${kubectl[@]}" -n vault logs deployment/vault --all-containers || true
+  exit 1
+fi
 "${kubectl[@]}" create namespace orders-postgres
 "${kubectl[@]}" -n orders-postgres create serviceaccount mspsql-workload
 
