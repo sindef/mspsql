@@ -62,7 +62,9 @@ func TestUserSQLReadsPasswordFromEnvironment(t *testing.T) {
 		},
 	})
 	if !strings.Contains(sql, `\getenv user_password USER_PASSWORD`) ||
-		!strings.Contains(sql, `GRANT "orders_rw" TO "orders_app"`) {
+		!strings.Contains(sql, `GRANT "orders_rw" TO "orders_app"`) ||
+		!strings.Contains(sql, `pg_advisory_lock`) ||
+		!strings.Contains(sql, `pg_advisory_unlock`) {
 		t.Fatalf("user SQL = %s", sql)
 	}
 	job := sqlJob(plan.SitePlan{
@@ -73,7 +75,8 @@ func TestUserSQLReadsPasswordFromEnvironment(t *testing.T) {
 		InstanceUID: "instance", OperationUID: "operation", Primary: "postgres-vic-0",
 	}, "operation", sql, true)
 	command := job.Spec.Template.Spec.Containers[0].Command[2]
-	if !strings.Contains(command, "cat /user-credential/password") {
+	if !strings.Contains(command, "cat /user-credential/password") ||
+		!strings.Contains(command, "pg_is_in_recovery()") {
 		t.Fatalf("Job command does not load the mounted password: %s", command)
 	}
 }

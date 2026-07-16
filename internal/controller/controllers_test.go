@@ -72,6 +72,16 @@ func TestSiteRegistrationIssuesHashedToken(t *testing.T) {
 	if len(secret.Data["sha256"]) != 32 {
 		t.Fatalf("stored token hash length = %d", len(secret.Data["sha256"]))
 	}
+	var signingKey corev1.Secret
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: "system", Name: signingKeySecretName,
+	}, &signingKey); err != nil {
+		t.Fatal(err)
+	}
+	if len(signingKey.Data["privateKey"]) == 0 ||
+		len(signingKey.Data["publicKey"]) == 0 {
+		t.Fatal("directive signing key was not initialized during site registration")
+	}
 	var updated api.SiteRegistration
 	if err := kube.Get(context.Background(), types.NamespacedName{Name: "vic"}, &updated); err != nil {
 		t.Fatal(err)

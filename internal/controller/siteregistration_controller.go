@@ -64,6 +64,9 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if systemNamespace == "" {
 		systemNamespace = "mspsql-system"
 	}
+	if _, err := ensureSigningKey(ctx, r.Client, systemNamespace); err != nil {
+		return ctrl.Result{}, err
+	}
 	secretKey := types.NamespacedName{
 		Namespace: systemNamespace,
 		Name:      "registration-" + string(site.UID),

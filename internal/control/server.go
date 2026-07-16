@@ -496,6 +496,11 @@ func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.Pl
 				setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
 					metav1.ConditionTrue, "BackupVerified",
 					"pgBackRest completed a backup and verified archived WAL metadata")
+				if object.Status.RecoveryWindowStart != nil {
+					setInstanceCondition(&object.Status.Conditions, object.Generation,
+						"RecoveryWindowAvailable", metav1.ConditionTrue, "ContinuousWALVerified",
+						"pgBackRest metadata contains a restorable backup and archived WAL range")
+				}
 			} else {
 				setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
 					metav1.ConditionFalse, "BackupFailed", "The scheduled pgBackRest operation failed")

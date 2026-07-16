@@ -432,7 +432,13 @@ func sqlJob(desired plan.SitePlan, payload directive.Payload, name, sql string, 
 			Name: "user-credential", MountPath: "/user-credential", ReadOnly: true,
 		})
 	}
-	command := "psql -X -v ON_ERROR_STOP=1 -f - <<'SQL'\n" + sql + "SQL\n"
+	preflight := `SELECT NOT pg_is_in_recovery() AS is_primary \gset
+\if :is_primary
+\else
+\quit 1
+\endif
+`
+	command := "psql -X -v ON_ERROR_STOP=1 -f - <<'SQL'\n" + preflight + sql + "SQL\n"
 	if userPassword {
 		command = "export USER_PASSWORD=\"$(cat /user-credential/password)\"\n" + command
 	}
@@ -610,6 +616,8 @@ func appendDatabaseRoleSQL(sql *strings.Builder, database string, schemas []stri
 func userSQL(spec api.PostgresUserSpec) string {
 	role := quoteIdentifier(spec.RoleName)
 	var sql strings.Builder
+	fmt.Fprintf(&sql, "SELECT pg_advisory_lock(hashtextextended(%s, 0));\n",
+		quoteLiteral("mspsql/user/"+spec.RoleName))
 	fmt.Fprintf(&sql, "DO $$BEGIN CREATE ROLE %s LOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END$$;\n", role)
 	sql.WriteString("\\getenv user_password USER_PASSWORD\n")
 	fmt.Fprintf(&sql, "ALTER ROLE %s LOGIN PASSWORD :'user_password';\n", role)
@@ -628,6 +636,8 @@ func userSQL(spec api.PostgresUserSpec) string {
 		fmt.Fprintf(&sql, "ALTER ROLE %s SET temp_file_limit = %s;\n", role,
 			quoteLiteral(fmt.Sprintf("%dkB", kilobytes)))
 	}
+	fmt.Fprintf(&sql, "SELECT pg_advisory_unlock(hashtextextended(%s, 0));\n",
+		quoteLiteral("mspsql/user/"+spec.RoleName))
 	return sql.String()
 }
 
