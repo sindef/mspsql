@@ -33,6 +33,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -146,6 +147,7 @@ func clients(config *rest.Config) client.Client {
 	must(appsv1.AddToScheme(scheme))
 	must(batchv1.AddToScheme(scheme))
 	must(coordinationv1.AddToScheme(scheme))
+	must(storagev1.AddToScheme(scheme))
 	kube, err := client.New(config, client.Options{Scheme: scheme})
 	must(err)
 	return kube
@@ -169,9 +171,14 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 			Hello: &controlv1.AgentHello{
 				RegistrationUid: registrationUID, ClusterUid: clusterUID, AgentVersion: version,
 				ProtocolVersion: plan.ProtocolVersion,
-				Capabilities:    []string{"signed-cache", "server-side-apply", "cert-manager-v1", "metallb"},
+				Capabilities: []string{
+					"signed-cache", "server-side-apply", "cert-manager-v1", "metallb", "inventory-v1",
+				},
 			},
 			Cache: cache, Reconciler: reconciler,
+			Inventory: func(inventoryCtx context.Context) ([]byte, error) {
+				return agent.DiscoverInventory(inventoryCtx, cache.Client)
+			},
 		}
 		if err := controlClient.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Error(err, "Control stream disconnected")

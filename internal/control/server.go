@@ -178,6 +178,10 @@ func (s *Server) receive(ctx context.Context, stream controlv1.AgentControl_Conn
 			if err := s.recordResult(ctx, siteName, message.GetResult()); err != nil {
 				return err
 			}
+		case message.GetInventory() != nil:
+			if err := s.recordInventory(ctx, siteName, message.GetInventory()); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -196,6 +200,28 @@ func (s *Server) recordHeartbeat(ctx context.Context, siteName string,
 	now := metav1.NewTime(heartbeatTime)
 	site.Status.LastHeartbeatTime = &now
 	site.Status.Phase = "Connected"
+	return s.Client.Status().Update(ctx, &site)
+}
+
+func (s *Server) recordInventory(ctx context.Context, siteName string,
+	update *controlv1.InventoryUpdate,
+) error {
+	if len(update.InventoryJson) > 1024*1024 {
+		return status.Error(codes.ResourceExhausted, "inventory exceeds one MiB")
+	}
+	var inventory struct {
+		StorageClasses []api.StorageClassInventory `json:"storageClasses"`
+		Issuers        []api.IssuerReference       `json:"issuers"`
+	}
+	if err := json.Unmarshal(update.InventoryJson, &inventory); err != nil {
+		return status.Error(codes.InvalidArgument, "inventory JSON is invalid")
+	}
+	var site api.SiteRegistration
+	if err := s.Client.Get(ctx, client.ObjectKey{Name: siteName}, &site); err != nil {
+		return err
+	}
+	site.Status.DiscoveredStorageClasses = inventory.StorageClasses
+	site.Status.DiscoveredIssuers = inventory.Issuers
 	return s.Client.Status().Update(ctx, &site)
 }
 

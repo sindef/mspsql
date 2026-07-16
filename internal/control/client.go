@@ -40,6 +40,7 @@ type AgentClient struct {
 	Hello        *controlv1.AgentHello
 	Cache        *agent.Cache
 	Reconciler   *agent.Reconciler
+	Inventory    func(context.Context) ([]byte, error)
 	sendMu       sync.Mutex
 	activeMu     sync.Mutex
 	active       map[string]int64
@@ -70,6 +71,9 @@ func (c *AgentClient) Run(ctx context.Context) error {
 	if err := c.send(stream, &controlv1.AgentMessage{
 		Message: &controlv1.AgentMessage_Hello{Hello: c.Hello},
 	}); err != nil {
+		return err
+	}
+	if err := c.sendInventory(ctx, stream); err != nil {
 		return err
 	}
 	if c.active == nil {
@@ -253,26 +257,47 @@ func (c *AgentClient) reject(stream controlv1.AgentControl_ConnectClient,
 }
 
 func (c *AgentClient) heartbeats(ctx context.Context, stream controlv1.AgentControl_ConnectClient) error {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(time.Minute)
+	inventoryTicker := time.NewTicker(10 * time.Minute)
+	defer heartbeatTicker.Stop()
+	defer inventoryTicker.Stop()
 	for {
-		c.activeMu.Lock()
-		revisions := make(map[string]int64, len(c.active))
-		maps.Copy(revisions, c.active)
-		c.activeMu.Unlock()
-		if err := c.send(stream, &controlv1.AgentMessage{
-			Message: &controlv1.AgentMessage_Heartbeat{Heartbeat: &controlv1.AgentHeartbeat{
-				ActiveRevisions: revisions, SentAt: timestamppb.New(c.now()),
-			}},
-		}); err != nil {
-			return err
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
+			c.activeMu.Lock()
+			revisions := make(map[string]int64, len(c.active))
+			maps.Copy(revisions, c.active)
+			c.activeMu.Unlock()
+			if err := c.send(stream, &controlv1.AgentMessage{
+				Message: &controlv1.AgentMessage_Heartbeat{Heartbeat: &controlv1.AgentHeartbeat{
+					ActiveRevisions: revisions, SentAt: timestamppb.New(c.now()),
+				}},
+			}); err != nil {
+				return err
+			}
+		case <-inventoryTicker.C:
+			if err := c.sendInventory(ctx, stream); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+func (c *AgentClient) sendInventory(ctx context.Context, stream controlv1.AgentControl_ConnectClient) error {
+	if c.Inventory == nil {
+		return nil
+	}
+	inventory, err := c.Inventory(ctx)
+	if err != nil {
+		return err
+	}
+	return c.send(stream, &controlv1.AgentMessage{
+		Message: &controlv1.AgentMessage_Inventory{Inventory: &controlv1.InventoryUpdate{
+			InventoryJson: inventory,
+		}},
+	})
 }
 
 func (c *AgentClient) send(stream controlv1.AgentControl_ConnectClient, message *controlv1.AgentMessage) error {

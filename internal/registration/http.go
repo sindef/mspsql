@@ -176,6 +176,8 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
 				rule([]string{"cert-manager.io"}, []string{"certificates"},
 					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
+				rule([]string{"cert-manager.io"}, []string{"issuers", "clusterissuers"},
+					[]string{"get", "list", "watch"}),
 				rule([]string{"storage.k8s.io"}, []string{"storageclasses"}, []string{"get", "list", "watch"}),
 			},
 		},

@@ -20,12 +20,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -165,5 +167,50 @@ func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 	}
 	if ready || message == "" {
 		t.Fatalf("partially available StatefulSet was reported Ready: %q", message)
+	}
+}
+
+func TestDiscoverInventoryReportsStorageAndIssuers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	issuerGVK := schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}
+	clusterIssuerGVK := schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "ClusterIssuer"}
+	scheme.AddKnownTypeWithName(issuerGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(issuerGVK.GroupVersion().WithKind("IssuerList"), &unstructured.UnstructuredList{})
+	scheme.AddKnownTypeWithName(clusterIssuerGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(clusterIssuerGVK.GroupVersion().WithKind("ClusterIssuerList"),
+		&unstructured.UnstructuredList{})
+	allowExpansion := true
+	reclaimPolicy := corev1.PersistentVolumeReclaimRetain
+	bindingMode := storagev1.VolumeBindingWaitForFirstConsumer
+	storageClass := &storagev1.StorageClass{
+		ObjectMeta:           metav1.ObjectMeta{Name: "nvme"},
+		Provisioner:          "csi.example",
+		AllowVolumeExpansion: &allowExpansion,
+		ReclaimPolicy:        &reclaimPolicy,
+		VolumeBindingMode:    &bindingMode,
+		AllowedTopologies: []corev1.TopologySelectorTerm{{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{
+			Key: "topology.kubernetes.io/zone", Values: []string{"vic-a"},
+		}}}},
+	}
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(clusterIssuerGVK)
+	issuer.SetName("etcd-root")
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(storageClass, issuer).Build()
+	encoded, err := DiscoverInventory(context.Background(), kube)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventory SiteInventory
+	if err := json.Unmarshal(encoded, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.StorageClasses) != 1 || inventory.StorageClasses[0].Provisioner != "csi.example" {
+		t.Fatalf("storage inventory = %#v", inventory.StorageClasses)
+	}
+	if len(inventory.Issuers) != 1 || inventory.Issuers[0].Name != "etcd-root" {
+		t.Fatalf("issuer inventory = %#v", inventory.Issuers)
 	}
 }
