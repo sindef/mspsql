@@ -85,6 +85,11 @@ Every data site uses `spec.sites[].vaultAuth` to authenticate the
 the `vault` token audience. Secret references use Vault KV v2 mount and path
 names.
 
+For Vault endpoints signed by a private CA, `vaultAuth.caBundleSecretRef`
+references a Secret in the site-agent namespace. Its key defaults to `ca.crt`.
+The agent uses that trust bundle for Vault API calls and copies only the CA
+certificate into the workload's pg_tde runtime Secret.
+
 The referenced records have these required string fields:
 
 | Reference | Fields |

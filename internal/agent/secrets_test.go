@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -52,19 +53,26 @@ func TestSecretMaterializerUsesDocumentedVaultSchema(t *testing.T) {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "mspsql-agent", Name: "vault-ca"},
+		Data:       map[string][]byte{"ca.crt": []byte("site-ca")},
+	}).Build()
 	materializer := SecretMaterializer{
-		Client: kube,
+		Client:          kube,
+		SourceNamespace: "mspsql-agent",
 		Token: func(_ context.Context, namespace, serviceAccount string) (string, error) {
 			if namespace != "orders" || serviceAccount != workloadServiceAccount {
 				t.Fatalf("token identity = %s/%s", namespace, serviceAccount)
 			}
 			return "projected", nil
 		},
-		Vault: func(auth api.VaultAuthSpec) *vault.Client {
+		Vault: func(auth api.VaultAuthSpec, caBundle []byte) (*vault.Client, error) {
+			if string(caBundle) != "site-ca" {
+				t.Fatalf("CA bundle = %q", caBundle)
+			}
 			return &vault.Client{
 				Address: server.URL, AuthMount: auth.AuthMount, Role: auth.AuthRole, HTTP: server.Client(),
-			}
+			}, nil
 		},
 	}
 	desired := plan.SitePlan{
@@ -72,7 +80,10 @@ func TestSecretMaterializerUsesDocumentedVaultSchema(t *testing.T) {
 		Site: api.PostgresSiteSpec{
 			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
 			Components: api.SiteComponents{PgpoolReplicas: 1},
-			VaultAuth:  &api.VaultAuthSpec{AuthMount: "kubernetes", AuthRole: "orders-vic"},
+			VaultAuth: &api.VaultAuthSpec{
+				AuthMount: "kubernetes", AuthRole: "orders-vic",
+				CABundleSecretRef: &api.SecretKeyReference{Name: "vault-ca"},
+			},
 		},
 		Credentials: api.InstanceCredentialsSpec{
 			PostgresVaultRef: api.VaultSecretReference{Mount: "secret", Path: "postgres/orders"},
@@ -93,6 +104,7 @@ func TestSecretMaterializerUsesDocumentedVaultSchema(t *testing.T) {
 	assertSecretValue(t, kube, "pgpool-auth", "admin-password", "pool")
 	assertSecretValue(t, kube, "pgbackrest-repository", "repo-cipher-passphrase", "cipher")
 	assertSecretValue(t, kube, "pg-tde-vault", "token", "short-lived")
+	assertSecretValue(t, kube, "pg-tde-vault", "ca.crt", "site-ca")
 }
 
 func assertSecretValue(t *testing.T, kube client.Client, name, key, expected string) {

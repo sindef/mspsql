@@ -367,7 +367,7 @@ psql "$dsn" -v ON_ERROR_STOP=1 \
   -v key_path="$key_path" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS pg_tde;
 SELECT pg_tde_add_global_key_provider_vault_v2(
-  :'provider', :'vault_address', :'key_path', '/vault/token', NULL
+  :'provider', :'vault_address', :'key_path', '/vault/token', __CA_ARGUMENT__
 );
 SELECT pg_tde_create_key_using_global_key_provider(:'principal_key', :'provider');
 SELECT pg_tde_set_default_key_using_global_key_provider(:'principal_key', :'provider');
@@ -381,6 +381,11 @@ ALTER DATABASE template1 SET default_table_access_method = tde_heap;
 ALTER DATABASE template1 SET pg_tde.enforce_encryption = on;
 SQL
 `
+	caArgument := "NULL"
+	if desired.Site.VaultAuth != nil && desired.Site.VaultAuth.CABundleSecretRef != nil {
+		caArgument = "'/vault/ca.crt'"
+	}
+	script = strings.ReplaceAll(script, "__CA_ARGUMENT__", caArgument)
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "pg-tde-bootstrap", Labels: copyMap(labels),

@@ -19,6 +19,8 @@ package vault
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +52,26 @@ type Token struct {
 type Secret struct {
 	Data    map[string]string
 	Version int64
+}
+
+func NewClient(auth api.VaultAuthSpec, caBundle []byte) (*Client, error) {
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	if len(caBundle) > 0 {
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("load system CA pool: %w", err)
+		}
+		if !roots.AppendCertsFromPEM(caBundle) {
+			return nil, errors.New("Vault CA bundle contains no certificates")
+		}
+		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    roots,
+		}}
+	}
+	return &Client{
+		Address: auth.Address, AuthMount: auth.AuthMount, Role: auth.AuthRole, HTTP: httpClient,
+	}, nil
 }
 
 func (c *Client) LoginKubernetes(ctx context.Context, jwt string) (Token, error) {

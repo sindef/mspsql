@@ -36,9 +36,10 @@ import (
 const workloadServiceAccount = "mspsql-workload"
 
 type SecretMaterializer struct {
-	Client client.Client
-	Token  func(context.Context, string, string) (string, error)
-	Vault  func(api.VaultAuthSpec) *vault.Client
+	Client          client.Client
+	SourceNamespace string
+	Token           func(context.Context, string, string) (string, error)
+	Vault           func(api.VaultAuthSpec, []byte) (*vault.Client, error)
 }
 
 func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePlan) error {
@@ -52,7 +53,14 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 	if err != nil {
 		return fmt.Errorf("request projected Vault service-account token: %w", err)
 	}
-	vaultClient := m.Vault(*desired.Site.VaultAuth)
+	caBundle, err := m.vaultCABundle(ctx, *desired.Site.VaultAuth)
+	if err != nil {
+		return err
+	}
+	vaultClient, err := m.Vault(*desired.Site.VaultAuth, caBundle)
+	if err != nil {
+		return fmt.Errorf("configure Vault client: %w", err)
+	}
 	token, err := vaultClient.LoginKubernetes(ctx, jwt)
 	if err != nil {
 		return err
@@ -108,7 +116,7 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 		if desired.TDE.Vault == nil {
 			return fmt.Errorf("tde is enabled without a Vault key identity")
 		}
-		if err := m.reconcileSecret(ctx, desired, "pg-tde-vault", 0, map[string][]byte{
+		tdeData := map[string][]byte{
 			"token":            []byte(token.Value),
 			"token-expires-at": []byte(token.ExpiresAt.UTC().Format(time.RFC3339)),
 			"address":          []byte(desired.Site.VaultAuth.Address),
@@ -117,11 +125,37 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 				"/data/" + strings.Trim(desired.TDE.Vault.KeyPath, "/")),
 			"provider-name":      []byte(desired.TDE.Vault.ProviderName),
 			"principal-key-name": []byte(desired.TDE.Vault.PrincipalKeyName),
-		}); err != nil {
+		}
+		if len(caBundle) > 0 {
+			tdeData["ca.crt"] = caBundle
+		}
+		if err := m.reconcileSecret(ctx, desired, "pg-tde-vault", 0, tdeData); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (m *SecretMaterializer) vaultCABundle(ctx context.Context, auth api.VaultAuthSpec) ([]byte, error) {
+	if auth.CABundleSecretRef == nil {
+		return nil, nil
+	}
+	key := auth.CABundleSecretRef.Key
+	if key == "" {
+		key = "ca.crt"
+	}
+	var secret corev1.Secret
+	if err := m.Client.Get(ctx, client.ObjectKey{
+		Namespace: m.SourceNamespace, Name: auth.CABundleSecretRef.Name,
+	}, &secret); err != nil {
+		return nil, fmt.Errorf("read Vault CA Secret: %w", err)
+	}
+	caBundle := secret.Data[key]
+	if len(caBundle) == 0 {
+		return nil, fmt.Errorf("Vault CA Secret %s/%s has no non-empty key %q",
+			m.SourceNamespace, auth.CABundleSecretRef.Name, key)
+	}
+	return caBundle, nil
 }
 
 func (m *SecretMaterializer) reconcileSecret(ctx context.Context, desired plan.SitePlan, name string,

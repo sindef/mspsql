@@ -34,6 +34,7 @@ spec:
       address: https://vault.example.internal:8200
       authMount: kubernetes-vic
       authRole: orders-postgres-vic
+      caBundleSecretRef: {name: vault-ca, key: ca.crt}
     certificates:
       etcdIssuerRef: {name: etcd-vault, kind: ClusterIssuer}
       postgresIssuerRef: {name: postgres-vault, kind: ClusterIssuer}

@@ -80,3 +80,9 @@ func TestKV2RejectsNonStringValues(t *testing.T) {
 		t.Fatal("non-string Vault value was accepted")
 	}
 }
+
+func TestNewClientRejectsInvalidCABundle(t *testing.T) {
+	if _, err := NewClient(api.VaultAuthSpec{Address: "https://vault.example"}, []byte("invalid")); err == nil {
+		t.Fatal("invalid Vault CA bundle was accepted")
+	}
+}

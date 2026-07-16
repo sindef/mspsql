@@ -47,7 +47,6 @@ import (
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	api "github.com/sindef/mspsql/api/v1alpha1"
 	controlv1 "github.com/sindef/mspsql/gen/control/v1"
 	"github.com/sindef/mspsql/internal/agent"
 	"github.com/sindef/mspsql/internal/control"
@@ -111,13 +110,10 @@ func main() {
 			HubDomain: hubDomain, Images: agent.Images{Etcd: etcdImage, Pgpool: pgpoolImage},
 		},
 		Secrets: &agent.SecretMaterializer{
-			Client: kube,
-			Token:  vaultServiceAccountToken(kube),
-			Vault: func(auth api.VaultAuthSpec) *vaultclient.Client {
-				return &vaultclient.Client{
-					Address: auth.Address, AuthMount: auth.AuthMount, Role: auth.AuthRole,
-				}
-			},
+			Client:          kube,
+			SourceNamespace: namespace,
+			Token:           vaultServiceAccountToken(kube),
+			Vault:           vaultclient.NewClient,
 		},
 	}
 	identity := envOrDefault("POD_NAME", fmt.Sprintf("site-agent-%d", os.Getpid()))

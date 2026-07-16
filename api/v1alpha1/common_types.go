@@ -90,10 +90,16 @@ type LoadBalancerSpec struct {
 	AddressPool string `json:"addressPool"`
 }
 
+type SecretKeyReference struct {
+	Name string `json:"name"`
+	Key  string `json:"key,omitempty"`
+}
+
 type VaultAuthSpec struct {
-	Address   string `json:"address"`
-	AuthMount string `json:"authMount"`
-	AuthRole  string `json:"authRole"`
+	Address           string              `json:"address"`
+	AuthMount         string              `json:"authMount"`
+	AuthRole          string              `json:"authRole"`
+	CABundleSecretRef *SecretKeyReference `json:"caBundleSecretRef,omitempty"`
 }
 
 type SiteCertificateSpec struct {

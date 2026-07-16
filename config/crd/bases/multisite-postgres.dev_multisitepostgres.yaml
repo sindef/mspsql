@@ -314,6 +314,15 @@ spec:
                           type: string
                         authRole:
                           type: string
+                        caBundleSecretRef:
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
                       required:
                       - address
                       - authMount

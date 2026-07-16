@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -98,6 +99,22 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 			}
 			if site.VaultAuth == nil {
 				errs = append(errs, field.Required(p.Child("vaultAuth"), "data sites require Vault authentication"))
+			} else {
+				vaultPath := p.Child("vaultAuth")
+				address, err := url.Parse(site.VaultAuth.Address)
+				if err != nil || address.Scheme == "" || address.Host == "" {
+					errs = append(errs, field.Invalid(vaultPath.Child("address"),
+						site.VaultAuth.Address, "must be an absolute URL"))
+				}
+				if site.VaultAuth.AuthMount == "" {
+					errs = append(errs, field.Required(vaultPath.Child("authMount"), "required"))
+				}
+				if site.VaultAuth.AuthRole == "" {
+					errs = append(errs, field.Required(vaultPath.Child("authRole"), "required"))
+				}
+				if ref := site.VaultAuth.CABundleSecretRef; ref != nil && ref.Name == "" {
+					errs = append(errs, field.Required(vaultPath.Child("caBundleSecretRef", "name"), "required"))
+				}
 			}
 		}
 	}
