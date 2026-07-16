@@ -41,21 +41,30 @@ spec:
       containers:
       - name: vault
         image: hashicorp/vault:1.21.4
-        args: [server, -dev]
+        args:
+        - server
+        - -dev
         env:
-        - {name: VAULT_DEV_ROOT_TOKEN_ID, value: root}
-        - {name: VAULT_DEV_LISTEN_ADDRESS, value: "0.0.0.0:8200"}
+        - name: VAULT_DEV_ROOT_TOKEN_ID
+          value: root
+        - name: VAULT_DEV_LISTEN_ADDRESS
+          value: "0.0.0.0:8200"
         ports:
-        - {name: http, containerPort: 8200}
+        - name: http
+          containerPort: 8200
         readinessProbe:
-          httpGet: {path: /v1/sys/health?standbyok=true, port: http}
+          httpGet:
+            path: "/v1/sys/health?standbyok=true"
+            port: http
           initialDelaySeconds: 2
           periodSeconds: 2
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
-            drop: [ALL]
-            add: [IPC_LOCK]
+            drop:
+            - ALL
+            add:
+            - IPC_LOCK
 ---
 apiVersion: v1
 kind: Service
@@ -66,4 +75,6 @@ spec:
   selector:
     app: vault
   ports:
-  - {name: http, port: 8200, targetPort: http}
+  - name: http
+    port: 8200
+    targetPort: http
