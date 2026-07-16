@@ -31,7 +31,17 @@ EOF
 "${kubectl[@]}" apply -f "${metallb_manifest}"
 "${kubectl[@]}" -n metallb-system rollout status deployment/controller --timeout=300s
 "${kubectl[@]}" -n metallb-system rollout status daemonset/speaker --timeout=300s
-"${kubectl[@]}" apply -f - <<EOF
+for _ in $(seq 1 60); do
+  webhook_address="$("${kubectl[@]}" -n metallb-system get endpoints \
+    metallb-webhook-service -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
+  [[ -n "${webhook_address}" ]] && break
+  sleep 2
+done
+test -n "${webhook_address}"
+
+configured=false
+for _ in $(seq 1 30); do
+  if "${kubectl[@]}" apply -f - <<EOF
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -50,3 +60,10 @@ spec:
   ipAddressPools:
   - database-services
 EOF
+  then
+    configured=true
+    break
+  fi
+  sleep 2
+done
+test "${configured}" = "true"
