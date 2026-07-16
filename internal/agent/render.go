@@ -185,16 +185,70 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 		if address == "" {
 			return nil, fmt.Errorf("address for %s is not allocated", name)
 		}
-		objects = append(objects, r.postgresStatefulSet(workloadPlan, name, address, labels))
+		statefulSet := r.postgresStatefulSet(workloadPlan, name, address, labels)
+		if majorMemberStopped(desired, name) {
+			statefulSet.Spec.Replicas = ptr(int32(0))
+		}
+		objects = append(objects, statefulSet)
 	}
 	if desired.Site.Components.PgpoolReplicas > 0 &&
 		(desired.Restore == nil || desired.Restore.Phase == plan.RestorePhaseVerify) {
-		objects = append(objects, r.pgpoolConfig(desired, labels), r.pgpoolDeployment(desired, labels))
+		deployment := r.pgpoolDeployment(desired, labels)
+		if majorWriteServiceStopped(desired) {
+			deployment.Spec.Replicas = ptr(int32(0))
+		}
+		objects = append(objects, r.pgpoolConfig(desired, labels), deployment)
 	}
-	if desired.TDE.Enabled {
+	if desired.TDE.Enabled && !majorWriteServiceStopped(desired) {
 		objects = append(objects, r.tdeAuditJob(desired, labels))
 	}
+	if desired.MajorUpgrade != nil &&
+		desired.MajorUpgrade.Phase == plan.MajorUpgradePhasePreflight &&
+		desired.Site.Role == api.SiteRoleData {
+		objects = append(objects, r.MajorPreflightJob(desired))
+	}
+	if desired.MajorUpgrade != nil &&
+		desired.MajorUpgrade.Phase == plan.MajorUpgradePhaseStartPrimary &&
+		memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name) {
+		objects = append(objects, r.MajorAcceptanceJob(desired))
+	}
+	if desired.MajorUpgrade != nil &&
+		desired.MajorUpgrade.Phase == plan.MajorUpgradePhaseRollbackStart &&
+		memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name) {
+		objects = append(objects, r.MajorRollbackAcceptanceJob(desired))
+	}
 	return objects, nil
+}
+
+func majorMemberStopped(desired plan.SitePlan, member string) bool {
+	if desired.MajorUpgrade == nil {
+		return false
+	}
+	switch desired.MajorUpgrade.Phase {
+	case plan.MajorUpgradePhaseStop, plan.MajorUpgradePhaseSnapshot,
+		plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
+		plan.MajorUpgradePhaseRollback:
+		return true
+	case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites:
+		return member != desired.MajorUpgrade.Primary
+	default:
+		return false
+	}
+}
+
+func majorWriteServiceStopped(desired plan.SitePlan) bool {
+	if desired.MajorUpgrade == nil {
+		return false
+	}
+	switch desired.MajorUpgrade.Phase {
+	case plan.MajorUpgradePhaseDrain, plan.MajorUpgradePhaseStop, plan.MajorUpgradePhaseSnapshot,
+		plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
+		plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRollback,
+		plan.MajorUpgradePhaseRollbackStart:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r Renderer) AddressMigrationJob(desired plan.SitePlan) (*batchv1.Job, error) {
@@ -995,6 +1049,16 @@ func credentialVersionForMember(desired plan.SitePlan, member string) string {
 }
 
 func postgresMemberImage(desired plan.SitePlan, member string) string {
+	if desired.MajorUpgrade != nil {
+		switch desired.MajorUpgrade.Phase {
+		case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites:
+			if member == desired.MajorUpgrade.Primary {
+				return desired.MajorUpgrade.TargetImage
+			}
+		case plan.MajorUpgradePhaseReplicas, plan.MajorUpgradePhaseFinalize:
+			return desired.MajorUpgrade.TargetImage
+		}
+	}
 	if desired.Upgrade == nil {
 		return desired.Postgres.Image
 	}

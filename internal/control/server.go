@@ -587,6 +587,62 @@ func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.Pl
 			object.Status.ObservedGeneration = object.Generation
 			return s.Client.Status().Update(ctx, &object)
 		case "PostgresUpgrade":
+			if configMap.Data["type"] == "Backup" {
+				if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					var object api.PostgresUpgrade
+					if err := s.Client.Get(ctx, client.ObjectKey{
+						Namespace: configMap.Namespace, Name: owner.Name,
+					}, &object); err != nil {
+						return err
+					}
+					conditionType := "FreshBackupReady"
+					successMessage := "pgBackRest completed a fresh full backup and verified archived WAL"
+					if configMap.Data["upgradeBackupPhase"] == "post-upgrade" {
+						conditionType = "PostUpgradeBackupReady"
+						successMessage = "pgBackRest completed the post-upgrade full backup and verified archived WAL"
+					}
+					if directiveSucceeded(result.Conditions) {
+						setInstanceCondition(&object.Status.Conditions, object.Generation,
+							conditionType, metav1.ConditionTrue, "BackupVerified", successMessage)
+					} else {
+						setInstanceCondition(&object.Status.Conditions, object.Generation,
+							conditionType, metav1.ConditionFalse, "BackupFailed",
+							"The required full backup or WAL verification failed")
+					}
+					return s.Client.Status().Update(ctx, &object)
+				}); err != nil {
+					return err
+				}
+				if !directiveSucceeded(result.Conditions) {
+					return nil
+				}
+				return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					var instance api.MultiSitePostgres
+					if err := s.Client.Get(ctx, client.ObjectKey{
+						Namespace: configMap.Namespace, Name: configMap.Data["instanceRef"],
+					}, &instance); err != nil {
+						return err
+					}
+					for _, condition := range result.Conditions {
+						switch condition.Type {
+						case "BackupCompletedAt":
+							if completedAt, err := time.Parse(time.RFC3339, condition.Message); err == nil {
+								value := metav1.NewTime(completedAt)
+								instance.Status.LastBackupTime = &value
+							}
+						case "RecoveryWindowStart":
+							if windowStart, err := time.Parse(time.RFC3339, condition.Message); err == nil {
+								value := metav1.NewTime(windowStart)
+								instance.Status.RecoveryWindowStart = &value
+							}
+						}
+					}
+					setInstanceCondition(&instance.Status.Conditions, instance.Generation,
+						"BackupReady", metav1.ConditionTrue, "BackupVerified",
+						"pgBackRest completed a backup and verified archived WAL metadata")
+					return s.Client.Status().Update(ctx, &instance)
+				})
+			}
 			var object api.PostgresUpgrade
 			if err := s.Client.Get(ctx, client.ObjectKey{
 				Namespace: configMap.Namespace, Name: owner.Name,
@@ -636,34 +692,36 @@ func applyDirectiveStatus(phase *string, conditions *[]metav1.Condition, deletin
 func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName string,
 	update func(*api.SiteRevisionStatus),
 ) error {
-	var instances api.MultiSitePostgresList
-	if err := s.Client.List(ctx, &instances); err != nil {
-		return err
-	}
-	for i := range instances.Items {
-		instance := &instances.Items[i]
-		if string(instance.UID) != instanceUID {
-			continue
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var instances api.MultiSitePostgresList
+		if err := s.Client.List(ctx, &instances); err != nil {
+			return err
 		}
-		for j := range instance.Status.Sites {
-			if instance.Status.Sites[j].Name == siteName {
-				update(&instance.Status.Sites[j])
-				for k := range instance.Status.Sites[j].Conditions {
-					instance.Status.Sites[j].Conditions[k].ObservedGeneration = instance.Generation
-				}
-				aggregateInstanceConditions(instance)
-				if instance.DeletionTimestamp.IsZero() &&
-					allApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
-					instance.Status.Phase = "Ready"
-					setSiteCondition(&instance.Status.Conditions, "Ready", metav1.ConditionTrue,
-						"AllSitesReady", "All sites applied the active revision")
-				}
-				return s.Client.Status().Update(ctx, instance)
+		for i := range instances.Items {
+			instance := &instances.Items[i]
+			if string(instance.UID) != instanceUID {
+				continue
 			}
+			for j := range instance.Status.Sites {
+				if instance.Status.Sites[j].Name == siteName {
+					update(&instance.Status.Sites[j])
+					for k := range instance.Status.Sites[j].Conditions {
+						instance.Status.Sites[j].Conditions[k].ObservedGeneration = instance.Generation
+					}
+					aggregateInstanceConditions(instance)
+					if instance.DeletionTimestamp.IsZero() &&
+						allApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
+						instance.Status.Phase = "Ready"
+						setSiteCondition(&instance.Status.Conditions, "Ready", metav1.ConditionTrue,
+							"AllSitesReady", "All sites applied the active revision")
+					}
+					return s.Client.Status().Update(ctx, instance)
+				}
+			}
+			return status.Error(codes.NotFound, "site is not part of the instance")
 		}
-		return status.Error(codes.NotFound, "site is not part of the instance")
-	}
-	return status.Error(codes.NotFound, "instance UID was not found")
+		return status.Error(codes.NotFound, "instance UID was not found")
+	})
 }
 
 func aggregateInstanceConditions(instance *api.MultiSitePostgres) {
@@ -748,24 +806,26 @@ func siteRole(instance *api.MultiSitePostgres, siteName string) api.SiteRole {
 }
 
 func (s *Server) triggerInstanceReconcile(ctx context.Context, instanceUID string) error {
-	var instances api.MultiSitePostgresList
-	if err := s.Client.List(ctx, &instances); err != nil {
-		return err
-	}
-	for i := range instances.Items {
-		instance := &instances.Items[i]
-		if string(instance.UID) != instanceUID {
-			continue
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var instances api.MultiSitePostgresList
+		if err := s.Client.List(ctx, &instances); err != nil {
+			return err
 		}
-		base := instance.DeepCopy()
-		if instance.Annotations == nil {
-			instance.Annotations = map[string]string{}
+		for i := range instances.Items {
+			instance := &instances.Items[i]
+			if string(instance.UID) != instanceUID {
+				continue
+			}
+			base := instance.DeepCopy()
+			if instance.Annotations == nil {
+				instance.Annotations = map[string]string{}
+			}
+			instance.Annotations["multisite-postgres.dev/address-observation"] =
+				s.now().UTC().Format(time.RFC3339Nano)
+			return s.Client.Patch(ctx, instance, client.MergeFrom(base))
 		}
-		instance.Annotations["multisite-postgres.dev/address-observation"] =
-			s.now().UTC().Format(time.RFC3339Nano)
-		return s.Client.Patch(ctx, instance, client.MergeFrom(base))
-	}
-	return status.Error(codes.NotFound, "instance UID was not found")
+		return status.Error(codes.NotFound, "instance UID was not found")
+	})
 }
 
 func validatePeerIdentity(ctx context.Context, registrationUID string) error {

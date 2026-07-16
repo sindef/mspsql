@@ -729,6 +729,191 @@ func TestRendererRollsOnlySelectedPostgresMember(t *testing.T) {
 	}
 }
 
+func TestRendererMajorUpgradeControlsServiceRestorationBoundary(t *testing.T) {
+	desired := plan.SitePlan{
+		SiteUID: "site", InstanceUID: "instance", Revision: 2,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 2, PgpoolReplicas: 2},
+			Storage: api.SiteStorage{
+				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
+			},
+		},
+		Postgres: api.PostgresSpec{Image: "postgres:17"},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-nsw-0": "10.0.1.1", "etcd-qld-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.10", "postgres-vic-1": "10.0.0.11",
+		},
+		MajorUpgrade: &plan.MajorUpgradePlan{
+			OperationUID: "upgrade", Primary: "postgres-vic-0", SourceMajor: 17,
+			TargetMajor: 18, TargetImage: "postgres:18", UpgradeImage: "upgrade@sha256:abc",
+		},
+	}
+	renderer := Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseDrain
+	objects, err := renderer.Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *appsv1.StatefulSet:
+			if strings.HasPrefix(object.Name, "postgres-") && *object.Spec.Replicas != 1 {
+				t.Fatalf("%s replicas = %d during drain", object.Name, *object.Spec.Replicas)
+			}
+		case *appsv1.Deployment:
+			if object.Name == "pgpool" && *object.Spec.Replicas != 0 {
+				t.Fatalf("pgpool replicas = %d during drain", *object.Spec.Replicas)
+			}
+		}
+	}
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseStop
+	objects, err = renderer.Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *appsv1.StatefulSet:
+			if strings.HasPrefix(object.Name, "postgres-") && *object.Spec.Replicas != 0 {
+				t.Fatalf("%s replicas = %d during stop", object.Name, *object.Spec.Replicas)
+			}
+		case *appsv1.Deployment:
+			if object.Name == "pgpool" && *object.Spec.Replicas != 0 {
+				t.Fatalf("pgpool replicas = %d during stop", *object.Spec.Replicas)
+			}
+		}
+	}
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseStartPrimary
+	objects, err = renderer.Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *appsv1.StatefulSet:
+			if !strings.HasPrefix(object.Name, "postgres-") {
+				continue
+			}
+			wantReplicas := int32(0)
+			wantImage := "postgres:17"
+			if object.Name == "postgres-vic-0" {
+				wantReplicas = 1
+				wantImage = "postgres:18"
+			}
+			if *object.Spec.Replicas != wantReplicas ||
+				object.Spec.Template.Spec.Containers[0].Image != wantImage {
+				t.Fatalf("%s replicas/image = %d/%s", object.Name, *object.Spec.Replicas,
+					object.Spec.Template.Spec.Containers[0].Image)
+			}
+		case *appsv1.Deployment:
+			if object.Name == "pgpool" && *object.Spec.Replicas != 2 {
+				t.Fatalf("pgpool replicas = %d during service restoration", *object.Spec.Replicas)
+			}
+		}
+	}
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseReplicas
+	objects, err = renderer.Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range objects {
+		statefulSet, ok := object.(*appsv1.StatefulSet)
+		if ok && strings.HasPrefix(statefulSet.Name, "postgres-") &&
+			statefulSet.Spec.Template.Spec.Containers[0].Image != "postgres:18" {
+			t.Fatalf("%s image = %s during replica reseed", statefulSet.Name,
+				statefulSet.Spec.Template.Spec.Containers[0].Image)
+		}
+	}
+}
+
+func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
+	desired := plan.SitePlan{
+		InstanceUID: "instance",
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders",
+		},
+		MajorUpgrade: &plan.MajorUpgradePlan{
+			OperationUID: "operation", Primary: "postgres-vic-1", SourceMajor: 17,
+			TargetMajor: 18, UpgradeImage: "upgrade@sha256:abc",
+		},
+	}
+	renderer := Renderer{}
+	for _, enabled := range []bool{false, true} {
+		desired.TDE.Enabled = enabled
+		job := renderer.MajorUpgradeJob(desired)
+		command := job.Spec.Template.Spec.Containers[0].Command[2]
+		expected := "/opt/mspsql/new/bin/pg_upgrade"
+		if enabled {
+			expected = "pg_tde_upgrade"
+		}
+		if !strings.Contains(command, expected) {
+			t.Fatalf("TDE=%t upgrade command is missing %q:\n%s", enabled, expected, command)
+		}
+		if enabled && (!strings.Contains(command, "shared_preload_libraries=pg_tde") ||
+			!hasVolume(job.Spec.Template.Spec.Volumes, "pg-tde-vault")) {
+			t.Fatalf("TDE upgrade does not preload pg_tde with Vault access: %#v", job)
+		}
+		if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 {
+			t.Fatalf("destructive upgrade backoffLimit = %v", job.Spec.BackoffLimit)
+		}
+		claim := job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName
+		if claim != "data-postgres-vic-1-0" {
+			t.Fatalf("upgrade PVC = %q", claim)
+		}
+	}
+	stanzaJob := renderer.MajorStanzaUpgradeJob(desired)
+	stanzaCommand := stanzaJob.Spec.Template.Spec.Containers[0].Command[2]
+	if !strings.Contains(stanzaCommand, "--no-online stanza-upgrade") {
+		t.Fatalf("stanza upgrade command = %q", stanzaCommand)
+	}
+	acceptanceJob := renderer.MajorAcceptanceJob(desired)
+	acceptanceCommand := acceptanceJob.Spec.Template.Spec.Containers[0].Command[2]
+	for _, expected := range []string{"SHOW server_version_num", "CREATE SCHEMA", "write_test", "DROP SCHEMA"} {
+		if !strings.Contains(acceptanceCommand, expected) {
+			t.Fatalf("acceptance command is missing %q:\n%s", expected, acceptanceCommand)
+		}
+	}
+}
+
+func TestMajorUpgradeRollbackArtifactsAreRetainedAndRestorable(t *testing.T) {
+	generatedAt := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	desired := plan.SitePlan{
+		InstanceUID: "instance", GeneratedAt: generatedAt,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders",
+			Storage: api.SiteStorage{Postgres: &api.StorageRequest{
+				StorageClassName: "fast",
+			}},
+		},
+		MajorUpgrade: &plan.MajorUpgradePlan{RollbackRetention: 48 * time.Hour},
+	}
+	snapshot := volumeSnapshot(desired, "rollback-a", "data-a", "snapshots")
+	expiresAt := snapshot.GetAnnotations()["multisite-postgres.dev/expires-at"]
+	if expiresAt != generatedAt.Add(48*time.Hour).Format(time.RFC3339) {
+		t.Fatalf("snapshot expiry = %q", expiresAt)
+	}
+	restore := rollbackRestorePVC(desired, "data-a", "rollback-a", api.StorageRollbackPolicy{
+		Strategy: "VolumeSnapshot",
+	})
+	if restore.Spec.DataSource == nil || restore.Spec.DataSource.Kind != "VolumeSnapshot" ||
+		restore.Spec.DataSource.APIGroup == nil ||
+		*restore.Spec.DataSource.APIGroup != "snapshot.storage.k8s.io" {
+		t.Fatalf("snapshot restore dataSource = %#v", restore.Spec.DataSource)
+	}
+	clone := rollbackRestorePVC(desired, "data-a", "rollback-a", api.StorageRollbackPolicy{
+		Strategy: "PVCClone",
+	})
+	if clone.Spec.DataSource == nil || clone.Spec.DataSource.Kind != "PersistentVolumeClaim" ||
+		clone.Spec.DataSource.APIGroup != nil {
+		t.Fatalf("clone restore dataSource = %#v", clone.Spec.DataSource)
+	}
+}
+
 func hasContainer(containers []corev1.Container, name string) bool {
 	for _, container := range containers {
 		if container.Name == name {

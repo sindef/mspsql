@@ -381,5 +381,32 @@ func validateUpgrade(obj *api.PostgresUpgrade) error {
 		return field.Invalid(field.NewPath("spec", "rollbackRetention"),
 			obj.Spec.RollbackRetention, "must be positive")
 	}
+	if benchmark := obj.Spec.Benchmark; benchmark != nil {
+		path := field.NewPath("spec", "benchmark")
+		if benchmark.TestedAt.IsZero() {
+			return field.Required(path.Child("testedAt"), "a benchmark timestamp is required")
+		}
+		if benchmark.EstimatedWriteOutage.Duration <= 0 {
+			return field.Invalid(path.Child("estimatedWriteOutage"),
+				benchmark.EstimatedWriteOutage, "must be positive")
+		}
+		if benchmark.UpgradeImage == "" || benchmark.Evidence == "" {
+			return field.Required(path, "upgradeImage and evidence are required")
+		}
+		if !strings.Contains(benchmark.UpgradeImage, "@sha256:") ||
+			!strings.Contains(benchmark.Evidence, "@sha256:") {
+			return field.Invalid(path, benchmark,
+				"upgradeImage and evidence must be immutable sha256 references")
+		}
+		if benchmark.SourceMajorVersion < 14 ||
+			benchmark.TargetMajorVersion <= benchmark.SourceMajorVersion {
+			return field.Invalid(path, benchmark,
+				"sourceMajorVersion must be supported and lower than targetMajorVersion")
+		}
+		if len(benchmark.PostgresStorageClasses) == 0 {
+			return field.Required(path.Child("postgresStorageClasses"),
+				"at least one tested StorageClass is required")
+		}
+	}
 	return nil
 }

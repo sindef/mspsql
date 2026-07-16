@@ -182,6 +182,8 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 				rule([]string{"storage.k8s.io"}, []string{"storageclasses"}, []string{"get", "list", "watch"}),
 				rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshotclasses"},
 					[]string{"get", "list", "watch"}),
+				rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshots"},
+					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
 			},
 		},
 		map[string]any{

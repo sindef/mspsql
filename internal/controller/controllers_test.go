@@ -326,7 +326,7 @@ func TestCredentialRotationUsesCatalogThenStandby(t *testing.T) {
 	}
 	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 	reconciler := &MultiSitePostgresReconciler{Client: kube}
-	rotation, err := reconciler.credentialRotationPlan(context.Background(), instance, nil, nil, nil)
+	rotation, err := reconciler.credentialRotationPlan(context.Background(), instance, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestCredentialRotationUsesCatalogThenStandby(t *testing.T) {
 	instance.Status.Sites[1].Conditions = append(instance.Status.Sites[1].Conditions, metav1.Condition{
 		Type: "CredentialCatalogUpdated", Status: metav1.ConditionTrue, Message: "2",
 	})
-	rotation, err = reconciler.credentialRotationPlan(context.Background(), instance, nil, nil, nil)
+	rotation, err = reconciler.credentialRotationPlan(context.Background(), instance, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,25 +555,274 @@ func TestMajorUpgradeRequiresDiscoveredRollbackStorage(t *testing.T) {
 	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
 	instance := &api.MultiSitePostgres{Spec: api.MultiSitePostgresSpec{
 		Postgres: api.PostgresSpec{MajorVersion: 17},
+		Backup:   &api.BackupSpec{},
 		Sites: []api.PostgresSiteSpec{{
 			Name: "vic", SiteRegistrationRef: "vic", Role: api.SiteRoleData,
 			Storage: api.SiteStorage{Postgres: &api.StorageRequest{StorageClassName: "premium"}},
 		}},
 	}}
 	upgrade := &api.PostgresUpgrade{Spec: api.PostgresUpgradeSpec{
-		TargetMajorVersion: 18,
-		UpgradeImage:       "registry.example/mspsql-upgrade@sha256:" + strings.Repeat("a", 64),
-		RollbackRetention:  metav1.Duration{Duration: 24 * time.Hour},
+		TargetMajorVersion:       18,
+		TargetImage:              "registry.example/postgres@sha256:" + strings.Repeat("b", 64),
+		UpgradeImage:             "registry.example/mspsql-upgrade@sha256:" + strings.Repeat("a", 64),
+		ServiceRestorationTarget: metav1.Duration{Duration: 15 * time.Minute},
+		RollbackRetention:        metav1.Duration{Duration: 24 * time.Hour},
+		Benchmark: &api.MajorUpgradeBenchmark{
+			TestedAt:             metav1.NewTime(time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)),
+			EstimatedWriteOutage: metav1.Duration{Duration: 10 * time.Minute},
+			UpgradeImage:         "registry.example/mspsql-upgrade@sha256:" + strings.Repeat("a", 64),
+			SourceMajorVersion:   17, TargetMajorVersion: 18,
+			PostgresStorageClasses: []string{"premium"}, Evidence: "oci://evidence@sha256:abc",
+		},
 	}}
-	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance); err != nil {
+	now := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance, now); err != nil {
 		t.Fatalf("valid upgrade contract rejected: %v", err)
 	}
 	registration.Status.DiscoveredVolumeSnapshotClasses = nil
 	if err := kube.Update(context.Background(), registration); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance); err == nil {
+	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance, now); err == nil {
 		t.Fatal("undiscovered VolumeSnapshotClass was accepted")
+	}
+	registration.Status.DiscoveredVolumeSnapshotClasses = []api.VolumeSnapshotClassInventory{{
+		Name: "premium-snapshots", Driver: "csi.example", DeletionPolicy: "Retain",
+	}}
+	if err := kube.Update(context.Background(), registration); err != nil {
+		t.Fatal(err)
+	}
+	upgrade.Spec.Benchmark.EstimatedWriteOutage.Duration = 16 * time.Minute
+	if err := reconciler.validateMajorUpgradeContract(context.Background(), upgrade, instance, now); err == nil {
+		t.Fatal("benchmark exceeding the restoration target was accepted")
+	}
+}
+
+func TestMajorUpgradeTransitionsToOutageAndRollback(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance"), Generation: 1,
+		},
+		Spec: api.MultiSitePostgresSpec{
+			Postgres: api.PostgresSpec{MajorVersion: 17, Image: "postgres:17"},
+		},
+		Status: api.MultiSitePostgresStatus{
+			ObservedGeneration: 1, ActiveRevision: 3, Primary: "postgres-vic-0",
+			Conditions: []metav1.Condition{{Type: "TopologyReady", Status: metav1.ConditionTrue}},
+			Sites:      []api.SiteRevisionStatus{{Name: "vic", AppliedRevision: 3}},
+		},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{
+			InstanceRef: "orders", TargetMajorVersion: 18, TargetImage: "postgres:18",
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}, &api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	now := time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC)
+
+	reconcile := func() {
+		t.Helper()
+		var currentInstance api.MultiSitePostgres
+		var currentUpgrade api.PostgresUpgrade
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &currentInstance); err != nil {
+			t.Fatal(err)
+		}
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reconciler.reconcileMajorUpgrade(
+			context.Background(), &currentUpgrade, &currentInstance, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reconcile()
+	var current api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhasePreflight) ||
+		current.Annotations[upgradeFromAnnotation] != "postgres-vic-0" {
+		t.Fatalf("initial major-upgrade annotations = %#v", current.Annotations)
+	}
+	expected, err := strconv.ParseInt(current.Annotations[upgradeRevisionAnnotation], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ActiveRevision = expected
+	current.Status.Sites = []api.SiteRevisionStatus{{Name: "vic", AppliedRevision: expected}}
+	if err := kube.Status().Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseDrain) {
+		t.Fatalf("phase after preflight = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+	var currentUpgrade api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade); err != nil {
+		t.Fatal(err)
+	}
+	if currentUpgrade.Status.WriteOutageStartedAt == nil {
+		t.Fatal("write outage start was not recorded")
+	}
+	expected, err = strconv.ParseInt(current.Annotations[upgradeRevisionAnnotation], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Status.ActiveRevision = expected
+	current.Status.Sites = []api.SiteRevisionStatus{{Name: "vic", AppliedRevision: expected}}
+	if err := kube.Status().Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseStop) {
+		t.Fatalf("phase after drain = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+
+	current.Annotations[upgradePhaseAnnotation] = string(plan.MajorUpgradePhaseUpgradePrimary)
+	if err := kube.Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.Sites[0].Conditions = []metav1.Condition{{
+		Type: "MajorUpgradeBlocked", Status: metav1.ConditionTrue, Reason: "PrimaryConversionFailed",
+	}}
+	if err := kube.Status().Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseRollback) {
+		t.Fatalf("failure phase = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+}
+
+func TestMajorUpgradeRequestsFreshFullBackup(t *testing.T) {
+	scheme := testScheme(t)
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{InstanceRef: "orders"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUpgrade{}).WithObjects(upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	now := time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC)
+
+	var current api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := reconciler.ensureFreshUpgradeBackup(context.Background(), &current, now)
+	if err != nil || ready {
+		t.Fatalf("first backup preflight = %t, %v", ready, err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	ready, err = reconciler.ensureFreshUpgradeBackup(context.Background(), &current, now)
+	if err != nil || ready {
+		t.Fatalf("second backup preflight = %t, %v", ready, err)
+	}
+	var directive corev1.ConfigMap
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "platform", Name: "mspsql-upgrade-backup-upgrade",
+	}, &directive); err != nil {
+		t.Fatal(err)
+	}
+	if directive.Data["type"] != "Backup" ||
+		!strings.Contains(directive.Data["spec.json"], `"backupType":"full"`) ||
+		len(directive.OwnerReferences) != 1 ||
+		directive.OwnerReferences[0].Kind != "PostgresUpgrade" {
+		t.Fatalf("preflight backup directive = %#v", directive)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	setCondition(&current.Status.Conditions, current.Generation, "FreshBackupReady",
+		metav1.ConditionTrue, "BackupVerified", "ready")
+	if err := kube.Status().Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	ready, err = reconciler.ensureFreshUpgradeBackup(context.Background(), &current, now)
+	if err != nil || !ready {
+		t.Fatalf("completed backup preflight = %t, %v", ready, err)
+	}
+}
+
+func TestMajorUpgradeRetriesPostUpgradeBackup(t *testing.T) {
+	scheme := testScheme(t)
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{InstanceRef: "orders"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUpgrade{}).WithObjects(upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	now := time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC)
+
+	var current api.PostgresUpgrade
+	for range 2 {
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+			t.Fatal(err)
+		}
+		ready, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current, now)
+		if err != nil || ready {
+			t.Fatalf("post-upgrade backup preflight = %t, %v", ready, err)
+		}
+	}
+	var directive corev1.ConfigMap
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "platform", Name: "mspsql-post-upgrade-backup-upgrade-0",
+	}, &directive); err != nil {
+		t.Fatal(err)
+	}
+	if directive.Data["upgradeBackupPhase"] != "post-upgrade" {
+		t.Fatalf("post-upgrade directive = %#v", directive.Data)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	setCondition(&current.Status.Conditions, current.Generation, "PostUpgradeBackupReady",
+		metav1.ConditionFalse, "BackupFailed", "failed")
+	if err := kube.Status().Update(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	if ready, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current, now); err != nil || ready {
+		t.Fatalf("failed backup retry = %t, %v", ready, err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.PostUpgradeBackupAttempt != 1 ||
+		current.Status.PostUpgradeBackupRequestedAt != nil {
+		t.Fatalf("post-upgrade retry status = %#v", current.Status)
 	}
 }
 

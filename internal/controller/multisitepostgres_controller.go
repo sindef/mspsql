@@ -124,7 +124,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "Restoring"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
-	upgradePlan, err := r.upgradePlan(ctx, &instance)
+	upgradePlan, majorUpgradePlan, err := r.upgradePlans(ctx, &instance)
 	if err != nil {
 		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 			metav1.ConditionFalse, "UpgradeContractInvalid", err.Error())
@@ -136,7 +136,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 	credentialRotation, err := r.credentialRotationPlan(ctx, &instance,
-		addressMigration, restorePlan, upgradePlan)
+		addressMigration, restorePlan, upgradePlan, majorUpgradePlan)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -185,6 +185,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			CredentialRotation: credentialRotation,
 			Restore:            restorePlan,
 			Upgrade:            upgradePlan,
+			MajorUpgrade:       majorUpgradePlan,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
@@ -209,10 +210,10 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 		metav1.ConditionFalse, "PlansIssued", "Waiting for all sites to apply the active revision")
 	if allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
-		setAppliedInstanceReady(&instance, restorePlan)
+		setAppliedInstanceReady(&instance, restorePlan, majorUpgradePlan)
 	}
 	backupRequeue, err := r.reconcileBackupSchedules(ctx, &instance, now(),
-		backupSchedulingReady(&instance, restorePlan, upgradePlan))
+		backupSchedulingReady(&instance, restorePlan, upgradePlan, majorUpgradePlan))
 	if err != nil {
 		setCondition(&instance.Status.Conditions, instance.Generation, "BackupReady",
 			metav1.ConditionFalse, "ScheduleInvalid", err.Error())
@@ -227,16 +228,17 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 func backupSchedulingReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
 	restorePlan *plan.RestorePlan, upgradePlan *plan.UpgradePlan,
+	majorUpgradePlan *plan.MajorUpgradePlan,
 ) bool {
 	return conditionTrue(instance.Status.Conditions, "Ready") &&
 		conditionTrue(instance.Status.Conditions, "TopologyReady") &&
 		(instance.Spec.Backup == nil ||
 			conditionTrue(instance.Status.Conditions, "BackupTLSReady")) &&
-		restorePlan == nil && upgradePlan == nil
+		restorePlan == nil && upgradePlan == nil && majorUpgradePlan == nil
 }
 
 func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
-	restorePlan *plan.RestorePlan,
+	restorePlan *plan.RestorePlan, majorUpgradePlan *plan.MajorUpgradePlan,
 ) {
 	if restorePlan != nil && restorePlan.Phase != plan.RestorePhaseVerify {
 		instance.Status.Phase = "Restoring"
@@ -244,6 +246,19 @@ func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgr
 			metav1.ConditionFalse, "RestoreInProgress",
 			"The restore target is not available until recovery and replica seeding complete")
 		return
+	}
+	if majorUpgradePlan != nil {
+		switch majorUpgradePlan.Phase {
+		case plan.MajorUpgradePhaseDrain, plan.MajorUpgradePhaseStop,
+			plan.MajorUpgradePhaseSnapshot, plan.MajorUpgradePhaseUpgradePrimary,
+			plan.MajorUpgradePhaseStanzaUpgrade, plan.MajorUpgradePhaseStartPrimary,
+			plan.MajorUpgradePhaseRollback, plan.MajorUpgradePhaseRollbackStart:
+			instance.Status.Phase = "Upgrading"
+			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+				metav1.ConditionFalse, "WriteServiceUnavailable",
+				"Write service is intentionally unavailable for the active major-upgrade phase")
+			return
+		}
 	}
 	if instance.Spec.Backup != nil &&
 		!conditionTrue(instance.Status.Conditions, "BackupTLSReady") {
@@ -517,17 +532,39 @@ func allSitesApplied(statuses []multisitepostgresv1alpha1.SiteRevisionStatus, re
 func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, now time.Time) {
 	dataSites := 0
 	seedRestore := instance.Annotations[restorePhaseAnnotation] == string(plan.RestorePhaseSeed)
+	majorPhase := plan.MajorUpgradePhase(instance.Annotations[upgradePhaseAnnotation])
+	if majorPhase == plan.MajorUpgradePhaseStop ||
+		majorPhase == plan.MajorUpgradePhaseSnapshot ||
+		majorPhase == plan.MajorUpgradePhaseUpgradePrimary ||
+		majorPhase == plan.MajorUpgradePhaseStanzaUpgrade ||
+		majorPhase == plan.MajorUpgradePhaseRollback {
+		instance.Status.Primary = ""
+		instance.Status.SynchronousStandbys = nil
+		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
+			metav1.ConditionFalse, "PostgreSQLStopped",
+			"Topology observation is suspended while PostgreSQL is intentionally stopped")
+		return
+	}
+	majorPrimaryOnly := majorPhase == plan.MajorUpgradePhaseStartPrimary ||
+		majorPhase == plan.MajorUpgradePhaseRestoreWrites
 	if seedRestore {
 		dataSites = 1
 	}
+	if majorPrimaryOnly {
+		dataSites = 1
+	}
 	for _, site := range instance.Spec.Sites {
-		if !seedRestore && site.Role == multisitepostgresv1alpha1.SiteRoleData {
+		if !seedRestore && !majorPrimaryOnly && site.Role == multisitepostgresv1alpha1.SiteRoleData {
 			dataSites++
 		}
 	}
 	primaryCounts := map[string]int{}
 	var observed []multisitepostgresv1alpha1.SiteRevisionStatus
 	for _, site := range instance.Status.Sites {
+		if majorPrimaryOnly &&
+			!strings.HasPrefix(instance.Annotations[upgradeFromAnnotation], "postgres-"+site.Name+"-") {
+			continue
+		}
 		if site.Primary == "" || site.TopologyObservedAt == nil ||
 			now.Sub(site.TopologyObservedAt.Time) > 2*time.Minute {
 			continue
@@ -647,7 +684,7 @@ func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres,
 func (r *MultiSitePostgresReconciler) credentialRotationPlan(ctx context.Context,
 	instance *multisitepostgresv1alpha1.MultiSitePostgres,
 	addressMigration *plan.AddressMigrationPlan, restorePlan *plan.RestorePlan,
-	upgradePlan *plan.UpgradePlan,
+	upgradePlan *plan.UpgradePlan, majorUpgradePlan *plan.MajorUpgradePlan,
 ) (*plan.CredentialRotationPlan, error) {
 	active, err := r.activeSitePlan(ctx, instance)
 	if err != nil {
@@ -657,7 +694,7 @@ func (r *MultiSitePostgresReconciler) credentialRotationPlan(ctx context.Context
 		!allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
 		return active.CredentialRotation, nil
 	}
-	if addressMigration != nil || restorePlan != nil || upgradePlan != nil {
+	if addressMigration != nil || restorePlan != nil || upgradePlan != nil || majorUpgradePlan != nil {
 		return nil, nil
 	}
 	version, staged := commonStagedCredentialVersion(instance)
@@ -926,27 +963,72 @@ func addressesComplete(addresses map[string]string, expected []string) bool {
 	return true
 }
 
-func (r *MultiSitePostgresReconciler) upgradePlan(ctx context.Context,
+func (r *MultiSitePostgresReconciler) upgradePlans(ctx context.Context,
 	instance *multisitepostgresv1alpha1.MultiSitePostgres,
-) (*plan.UpgradePlan, error) {
+) (*plan.UpgradePlan, *plan.MajorUpgradePlan, error) {
 	upgradeName := instance.Annotations[upgradeNameAnnotation]
 	if upgradeName == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var upgrade multisitepostgresv1alpha1.PostgresUpgrade
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: instance.Namespace, Name: upgradeName,
 	}, &upgrade); err != nil {
-		return nil, fmt.Errorf("read owning upgrade: %w", err)
+		return nil, nil, fmt.Errorf("read owning upgrade: %w", err)
 	}
-	if upgrade.Spec.TargetMajorVersion != instance.Spec.Postgres.MajorVersion {
-		return nil, fmt.Errorf("major upgrades use the disruptive upgrade state machine")
+	phaseValue := instance.Annotations[upgradePhaseAnnotation]
+	if strings.HasPrefix(phaseValue, "Major") {
+		phase := plan.MajorUpgradePhase(phaseValue)
+		switch phase {
+		case plan.MajorUpgradePhasePreflight, plan.MajorUpgradePhaseDrain,
+			plan.MajorUpgradePhaseStop,
+			plan.MajorUpgradePhaseSnapshot, plan.MajorUpgradePhaseUpgradePrimary,
+			plan.MajorUpgradePhaseStanzaUpgrade,
+			plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites,
+			plan.MajorUpgradePhaseReplicas,
+			plan.MajorUpgradePhaseFinalize, plan.MajorUpgradePhaseRollback,
+			plan.MajorUpgradePhaseRollbackStart,
+			plan.MajorUpgradePhaseRollbackRestoreWrites:
+		default:
+			return nil, nil, fmt.Errorf("unsupported major-upgrade phase %q", phase)
+		}
+		policies := make(map[string]multisitepostgresv1alpha1.StorageRollbackPolicy)
+		for _, site := range instance.Spec.Sites {
+			if site.Role != multisitepostgresv1alpha1.SiteRoleData || site.Storage.Postgres == nil {
+				continue
+			}
+			var registration multisitepostgresv1alpha1.SiteRegistration
+			if err := r.Get(ctx, client.ObjectKey{Name: site.SiteRegistrationRef}, &registration); err != nil {
+				return nil, nil, fmt.Errorf("read site %s registration: %w", site.Name, err)
+			}
+			policy, found := rollbackPolicy(registration.Spec.StorageRollbackPolicies,
+				site.Storage.Postgres.StorageClassName)
+			if !found {
+				return nil, nil, fmt.Errorf("site %s rollback policy is unavailable", site.Name)
+			}
+			policies[site.Name] = policy
+		}
+		sourceMajor, err := strconv.ParseInt(instance.Annotations[upgradeSourceMajorAnnotation], 10, 32)
+		if err != nil {
+			return nil, nil, fmt.Errorf("major upgrade source version is invalid")
+		}
+		return nil, &plan.MajorUpgradePlan{
+			OperationUID:      string(upgrade.UID),
+			Phase:             phase,
+			Primary:           instance.Annotations[upgradeFromAnnotation],
+			SourceMajor:       int32(sourceMajor),
+			TargetMajor:       upgrade.Spec.TargetMajorVersion,
+			TargetImage:       upgrade.Spec.TargetImage,
+			UpgradeImage:      upgrade.Spec.UpgradeImage,
+			RollbackRetention: upgrade.Spec.RollbackRetention.Duration,
+			RollbackPolicies:  policies,
+		}, nil
 	}
 	phase := plan.UpgradePhase(instance.Annotations[upgradePhaseAnnotation])
 	switch phase {
 	case plan.UpgradePhaseMember, plan.UpgradePhaseSwitchover, plan.UpgradePhaseFinalize:
 	default:
-		return nil, fmt.Errorf("unsupported minor-upgrade phase %q", phase)
+		return nil, nil, fmt.Errorf("unsupported minor-upgrade phase %q", phase)
 	}
 	return &plan.UpgradePlan{
 		OperationUID:    string(upgrade.UID),
@@ -956,7 +1038,7 @@ func (r *MultiSitePostgresReconciler) upgradePlan(ctx context.Context,
 		FromPrimary:     instance.Annotations[upgradeFromAnnotation],
 		Candidate:       instance.Annotations[upgradeCandidateAnnotation],
 		Phase:           phase,
-	}, nil
+	}, nil, nil
 }
 
 func (r *MultiSitePostgresReconciler) restorePlan(ctx context.Context,

@@ -50,6 +50,7 @@ type SitePlan struct {
 	RuntimeCredentialVersion int64                       `json:"-"`
 	Restore                  *RestorePlan                `json:"restore,omitempty"`
 	Upgrade                  *UpgradePlan                `json:"upgrade,omitempty"`
+	MajorUpgrade             *MajorUpgradePlan           `json:"majorUpgrade,omitempty"`
 	Deletion                 *DeletionPlan               `json:"deletion,omitempty"`
 }
 
@@ -112,6 +113,36 @@ type UpgradePlan struct {
 	FromPrimary     string       `json:"fromPrimary,omitempty"`
 	Candidate       string       `json:"candidate,omitempty"`
 	Phase           UpgradePhase `json:"phase"`
+}
+
+type MajorUpgradePhase string
+
+const (
+	MajorUpgradePhasePreflight             MajorUpgradePhase = "MajorPreflight"
+	MajorUpgradePhaseDrain                 MajorUpgradePhase = "MajorDrain"
+	MajorUpgradePhaseStop                  MajorUpgradePhase = "MajorStop"
+	MajorUpgradePhaseSnapshot              MajorUpgradePhase = "MajorSnapshot"
+	MajorUpgradePhaseUpgradePrimary        MajorUpgradePhase = "MajorUpgradePrimary"
+	MajorUpgradePhaseStanzaUpgrade         MajorUpgradePhase = "MajorStanzaUpgrade"
+	MajorUpgradePhaseStartPrimary          MajorUpgradePhase = "MajorStartPrimary"
+	MajorUpgradePhaseRestoreWrites         MajorUpgradePhase = "MajorRestoreWrites"
+	MajorUpgradePhaseReplicas              MajorUpgradePhase = "MajorReplicas"
+	MajorUpgradePhaseFinalize              MajorUpgradePhase = "MajorFinalize"
+	MajorUpgradePhaseRollback              MajorUpgradePhase = "MajorRollback"
+	MajorUpgradePhaseRollbackStart         MajorUpgradePhase = "MajorRollbackStart"
+	MajorUpgradePhaseRollbackRestoreWrites MajorUpgradePhase = "MajorRollbackRestoreWrites"
+)
+
+type MajorUpgradePlan struct {
+	OperationUID      string                               `json:"operationUID"`
+	Phase             MajorUpgradePhase                    `json:"phase"`
+	Primary           string                               `json:"primary"`
+	SourceMajor       int32                                `json:"sourceMajor"`
+	TargetMajor       int32                                `json:"targetMajor"`
+	TargetImage       string                               `json:"targetImage"`
+	UpgradeImage      string                               `json:"upgradeImage"`
+	RollbackRetention time.Duration                        `json:"rollbackRetention"`
+	RollbackPolicies  map[string]api.StorageRollbackPolicy `json:"rollbackPolicies"`
 }
 
 type DeletionPlan struct {
@@ -215,6 +246,7 @@ func Classify(previous, next SitePlan) MutationClass {
 		!bytes.Equal(mustCanonical(previous.CredentialRotation), mustCanonical(next.CredentialRotation)) ||
 		!bytes.Equal(mustCanonical(previous.Restore), mustCanonical(next.Restore)) ||
 		!bytes.Equal(mustCanonical(previous.Upgrade), mustCanonical(next.Upgrade)) ||
+		!bytes.Equal(mustCanonical(previous.MajorUpgrade), mustCanonical(next.MajorUpgrade)) ||
 		!bytes.Equal(mustCanonical(previous.Deletion), mustCanonical(next.Deletion)) {
 		return MutationCoordinated
 	}

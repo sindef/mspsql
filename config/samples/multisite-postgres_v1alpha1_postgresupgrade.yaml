@@ -8,8 +8,17 @@ metadata:
   namespace: database-platform
 spec:
   instanceRef: orders
-  targetImage: percona/percona-distribution-postgresql:18
+  targetImage: percona/percona-distribution-postgresql@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   targetMajorVersion: 18
   upgradeImage: registry.example/mspsql-pg-upgrade@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   serviceRestorationTarget: 15m
   rollbackRetention: 24h
+  benchmark:
+    testedAt: "2026-07-16T00:00:00Z"
+    estimatedWriteOutage: 10m
+    upgradeImage: registry.example/mspsql-pg-upgrade@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sourceMajorVersion: 17
+    targetMajorVersion: 18
+    tdeEnabled: false
+    postgresStorageClasses: [standard]
+    evidence: oci://registry.example/mspsql-upgrade-evidence@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc

@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -125,6 +126,12 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 			return result, err
 		}
 	}
+	if desired.MajorUpgrade != nil {
+		ready, err := r.prepareMajorUpgrade(ctx, desired, &result)
+		if err != nil || !ready {
+			return result, err
+		}
+	}
 
 	result.Phase = "ReconcilingWorkloads"
 	desired.MemberAddresses = fillMissingAddresses(desired.MemberAddresses, result.Addresses)
@@ -145,7 +152,28 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	if !ready {
 		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse,
 			"WorkloadsProgressing", message)
+		if desired.MajorUpgrade != nil {
+			reason := "WorkloadsPending"
+			if strings.Contains(message, " failed:") {
+				switch desired.MajorUpgrade.Phase {
+				case plan.MajorUpgradePhasePreflight:
+					reason = "PreflightRejected"
+				case plan.MajorUpgradePhaseStartPrimary:
+					reason = "PrimaryAcceptanceFailed"
+				case plan.MajorUpgradePhaseRollbackStart:
+					reason = "RollbackAcceptanceFailed"
+				default:
+					reason = "WorkloadsFailed"
+				}
+			}
+			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
+				reason, message)
+		}
 		return result, nil
+	}
+	if desired.MajorUpgrade != nil {
+		setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionFalse,
+			"PhaseAccepted", "The local major-upgrade phase completed")
 	}
 	setLocalCondition(&result.Conditions, "EtcdQuorate", metav1.ConditionTrue,
 		"AllMembersHealthy", "All etcd member readiness checks are passing")
@@ -163,6 +191,9 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		return result, nil
 	}
 	if err := r.pruneStaleObjects(ctx, desired); err != nil {
+		return result, err
+	}
+	if err := r.cleanupExpiredRollback(ctx, desired, time.Now()); err != nil {
 		return result, err
 	}
 	result.Phase = "Ready"
@@ -371,6 +402,9 @@ func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.Si
 				"DatabaseAuditPassed",
 				"Every local member resolved its pg_tde key and reported no unencrypted user relations")
 		}
+	} else if desired.Site.Role == api.SiteRoleData && desired.MajorUpgrade != nil {
+		setLocalCondition(&result.Conditions, "MajorUpgradeWaiting", metav1.ConditionTrue,
+			"PostgreSQLIntentionallyStopped", "PostgreSQL remains stopped for the active major-upgrade phase")
 	} else if desired.Site.Role == api.SiteRoleData {
 		setLocalCondition(&result.Conditions, "RestoreWaiting", metav1.ConditionTrue,
 			"SeedRecoveryInProgress", "PostgreSQL remains stopped until the restored seed member is promoted")
@@ -413,6 +447,16 @@ func memberBelongsToSite(member, site string) bool {
 func restoreExpectsPostgres(desired plan.SitePlan) bool {
 	if desired.Site.Role != api.SiteRoleData {
 		return false
+	}
+	if desired.MajorUpgrade != nil {
+		switch desired.MajorUpgrade.Phase {
+		case plan.MajorUpgradePhaseStop, plan.MajorUpgradePhaseSnapshot,
+			plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
+			plan.MajorUpgradePhaseRollback:
+			return false
+		case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites:
+			return memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name)
+		}
 	}
 	return desired.Restore == nil || desired.Restore.Phase != plan.RestorePhaseSeed ||
 		desired.Site.Name == desired.Restore.SeedSite
@@ -488,10 +532,15 @@ func (r *Reconciler) deleteInstance(ctx context.Context, desired plan.SitePlan) 
 func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 	encoded, err := json.Marshal(object)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal %T %s/%s: %w",
+			object, object.GetNamespace(), object.GetName(), err)
 	}
-	return r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
-		client.FieldOwner("mspsql-agent"))
+	if err := r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
+		client.FieldOwner("mspsql-agent")); err != nil {
+		return fmt.Errorf("apply %T %s/%s: %w",
+			object, object.GetNamespace(), object.GetName(), err)
+	}
+	return nil
 }
 
 func (r *Reconciler) pruneStaleObjects(ctx context.Context, desired plan.SitePlan) error {

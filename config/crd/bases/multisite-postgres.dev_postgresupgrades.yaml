@@ -49,6 +49,39 @@ spec:
           spec:
             description: spec defines the desired state of PostgresUpgrade
             properties:
+              benchmark:
+                properties:
+                  estimatedWriteOutage:
+                    type: string
+                  evidence:
+                    type: string
+                  postgresStorageClasses:
+                    items:
+                      type: string
+                    type: array
+                  sourceMajorVersion:
+                    format: int32
+                    type: integer
+                  targetMajorVersion:
+                    format: int32
+                    type: integer
+                  tdeEnabled:
+                    type: boolean
+                  testedAt:
+                    format: date-time
+                    type: string
+                  upgradeImage:
+                    type: string
+                required:
+                - estimatedWriteOutage
+                - evidence
+                - postgresStorageClasses
+                - sourceMajorVersion
+                - targetMajorVersion
+                - tdeEnabled
+                - testedAt
+                - upgradeImage
+                type: object
               instanceRef:
                 type: string
               rollbackRetention:
@@ -135,6 +168,15 @@ spec:
                 format: int64
                 type: integer
               phase:
+                type: string
+              postUpgradeBackupAttempt:
+                format: int32
+                type: integer
+              postUpgradeBackupRequestedAt:
+                format: date-time
+                type: string
+              preflightBackupRequestedAt:
+                format: date-time
                 type: string
               startedAt:
                 format: date-time

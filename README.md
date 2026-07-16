@@ -122,13 +122,37 @@ coordinator identities. Every data site's issuer must publish the same CA
 bundle; the hub compares bundle fingerprints and blocks readiness and backup
 scheduling on a mismatch.
 
-Major upgrades require `PostgresUpgrade.spec.upgradeImage` pinned by digest.
-The image contract provides old binaries under `/opt/mspsql/old/bin`, new
-binaries under `/opt/mspsql/new/bin`, their matching library trees under the
-corresponding `lib` directories, and `pg_tde_upgrade` on `PATH`. Every
-data-site PostgreSQL StorageClass must also have a
+Major upgrades require both `targetImage` and `upgradeImage` pinned by digest.
+The upgrade image runs as its non-root default user and provides a POSIX shell,
+`find`, `grep`, old binaries under `/opt/mspsql/old/bin`, new binaries under
+`/opt/mspsql/new/bin`, and their matching library trees under the corresponding
+`lib` directories. TDE-qualified images also provide `pg_tde_upgrade` on
+`PATH` and `pg_tde.so` in both library trees. The target image provides
+`postgres`, `psql`, `pgbackrest`, and `envsubst`.
+
+Every data-site PostgreSQL StorageClass must have a
 `SiteRegistration.spec.storageRollbackPolicies` entry using either a discovered
 CSI `VolumeSnapshotClass` or an administrator-asserted PVC clone capability.
+The operator snapshots or clones every stopped PostgreSQL PVC before conversion
+and retains the artifacts for `rollbackRetention`.
+
+`spec.benchmark` is the platform qualification record for the exact upgrade
+image, source/target majors, TDE mode, and every PostgreSQL StorageClass used by
+the instance. Its evidence reference should identify an immutable CI artifact
+containing the disposable-restore benchmark logs and dataset profile. The
+record must be at most 30 days old, and its estimated write outage must fit
+`serviceRestorationTarget`; otherwise the operator refuses to drain writes.
+
+The state machine requests and verifies a new full backup, drains Pgpool,
+stops every member, captures rollback storage, converts only the former
+primary, runs offline `pgbackrest stanza-upgrade`, and verifies the target
+catalog, TDE audit, and a committed write before restoring Pgpool. Standbys are
+then wiped and recloned through Patroni. Completion requires synchronous
+topology and another verified full backup. Automatic rollback is permitted only
+before Pgpool is restored; afterward the operator preserves new writes and
+reports that forward repair is required. Rollback itself restores every PVC,
+resets Patroni DCS state, verifies the source version, and only then restores
+Pgpool.
 
 Minor upgrades roll one PostgreSQL member at a time. The first target must be
 an observed synchronous standby; after its StatefulSet rollout is fully

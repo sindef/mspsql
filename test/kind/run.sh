@@ -123,6 +123,13 @@ for site in vic nsw qld; do
   done
   test -n "${namespace_uid}"
   if [[ "${site}" != "qld" ]]; then
+    for _ in $(seq 1 60); do
+      if kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres \
+        get secret postgres-auth >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
     kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres get secret postgres-auth \
       -o jsonpath='{.data.superuser-password}' | base64 -d | grep -qx super
   fi

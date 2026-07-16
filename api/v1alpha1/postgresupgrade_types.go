@@ -25,19 +25,34 @@ type PostgresUpgradeSpec struct {
 	InstanceRef string `json:"instanceRef"`
 	TargetImage string `json:"targetImage"`
 	// +kubebuilder:validation:Minimum=14
-	TargetMajorVersion       int32           `json:"targetMajorVersion"`
-	UpgradeImage             string          `json:"upgradeImage,omitempty"`
-	ServiceRestorationTarget metav1.Duration `json:"serviceRestorationTarget"`
-	RollbackRetention        metav1.Duration `json:"rollbackRetention,omitempty"`
+	TargetMajorVersion       int32                  `json:"targetMajorVersion"`
+	UpgradeImage             string                 `json:"upgradeImage,omitempty"`
+	ServiceRestorationTarget metav1.Duration        `json:"serviceRestorationTarget"`
+	RollbackRetention        metav1.Duration        `json:"rollbackRetention,omitempty"`
+	Benchmark                *MajorUpgradeBenchmark `json:"benchmark,omitempty"`
+}
+
+type MajorUpgradeBenchmark struct {
+	TestedAt               metav1.Time     `json:"testedAt"`
+	EstimatedWriteOutage   metav1.Duration `json:"estimatedWriteOutage"`
+	UpgradeImage           string          `json:"upgradeImage"`
+	SourceMajorVersion     int32           `json:"sourceMajorVersion"`
+	TargetMajorVersion     int32           `json:"targetMajorVersion"`
+	TDEEnabled             bool            `json:"tdeEnabled"`
+	PostgresStorageClasses []string        `json:"postgresStorageClasses"`
+	Evidence               string          `json:"evidence"`
 }
 
 type PostgresUpgradeStatus struct {
-	ObservedGeneration     int64        `json:"observedGeneration,omitempty"`
-	Phase                  string       `json:"phase,omitempty"`
-	StartedAt              *metav1.Time `json:"startedAt,omitempty"`
-	WriteOutageStartedAt   *metav1.Time `json:"writeOutageStartedAt,omitempty"`
-	WriteServiceRestoredAt *metav1.Time `json:"writeServiceRestoredAt,omitempty"`
-	UpgradedMembers        []string     `json:"upgradedMembers,omitempty"`
+	ObservedGeneration           int64        `json:"observedGeneration,omitempty"`
+	Phase                        string       `json:"phase,omitempty"`
+	StartedAt                    *metav1.Time `json:"startedAt,omitempty"`
+	PreflightBackupRequestedAt   *metav1.Time `json:"preflightBackupRequestedAt,omitempty"`
+	PostUpgradeBackupRequestedAt *metav1.Time `json:"postUpgradeBackupRequestedAt,omitempty"`
+	PostUpgradeBackupAttempt     int32        `json:"postUpgradeBackupAttempt,omitempty"`
+	WriteOutageStartedAt         *metav1.Time `json:"writeOutageStartedAt,omitempty"`
+	WriteServiceRestoredAt       *metav1.Time `json:"writeServiceRestoredAt,omitempty"`
+	UpgradedMembers              []string     `json:"upgradedMembers,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
