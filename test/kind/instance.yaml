@@ -1,0 +1,49 @@
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: MultiSitePostgres
+metadata:
+  name: orders
+  namespace: database-platform
+spec:
+  deletionPolicy: Retain
+  postgres:
+    majorVersion: 17
+    image: percona/percona-distribution-postgresql:17.10-4
+    synchronousStandbyCount: 1
+  sites:
+  - name: vic
+    siteRegistrationRef: vic
+    namespace: orders-postgres
+    role: Data
+    primaryPreference: 100
+    components: {etcdReplicas: 1, postgresReplicas: 1, pgpoolReplicas: 1}
+    storage:
+      etcd: {storageClassName: standard, size: 1Gi}
+      postgres: {storageClassName: standard, size: 1Gi}
+    loadBalancer: {addressPool: database-services}
+    vaultAuth: {address: "https://vault.invalid", authMount: kubernetes, authRole: orders-vic}
+    certificates:
+      etcdIssuerRef: {name: test, kind: ClusterIssuer}
+      postgresIssuerRef: {name: test, kind: ClusterIssuer}
+      pgpoolIssuerRef: {name: test, kind: ClusterIssuer}
+  - name: nsw
+    siteRegistrationRef: nsw
+    namespace: orders-postgres
+    role: Data
+    primaryPreference: 50
+    components: {etcdReplicas: 1, postgresReplicas: 1, pgpoolReplicas: 1}
+    storage:
+      etcd: {storageClassName: standard, size: 1Gi}
+      postgres: {storageClassName: standard, size: 1Gi}
+    loadBalancer: {addressPool: database-services}
+    vaultAuth: {address: "https://vault.invalid", authMount: kubernetes, authRole: orders-nsw}
+    certificates:
+      etcdIssuerRef: {name: test, kind: ClusterIssuer}
+      postgresIssuerRef: {name: test, kind: ClusterIssuer}
+      pgpoolIssuerRef: {name: test, kind: ClusterIssuer}
+  - name: qld
+    siteRegistrationRef: qld
+    namespace: orders-postgres
+    role: Witness
+    components: {etcdReplicas: 1, postgresReplicas: 0, pgpoolReplicas: 0}
+    certificates:
+      etcdIssuerRef: {name: test, kind: ClusterIssuer}
