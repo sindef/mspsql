@@ -17,6 +17,7 @@ limitations under the License.
 package control
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
@@ -261,6 +262,14 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		} else if !directiveTargetsSite(&instance, directiveType, siteName) {
 			continue
 		}
+		owner := metav1.GetControllerOf(configMap)
+		trusted, trustErr := s.directiveOwnerTrusted(ctx, configMap, owner, &instance)
+		if trustErr != nil {
+			return trustErr
+		}
+		if !trusted {
+			continue
+		}
 		if privateKey == nil {
 			loaded, loadErr := s.signingKey(ctx)
 			if loadErr != nil {
@@ -270,7 +279,7 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		}
 		envelope, err := directive.Sign(privateKey, directive.Payload{
 			SiteUID: siteUID, InstanceUID: string(instance.UID), OperationUID: operationUID,
-			ObjectUID: string(configMap.OwnerReferences[0].UID),
+			ObjectUID: string(owner.UID),
 			Type:      directiveType, Primary: instance.Status.Primary,
 			BackupSource: backupSource, BackupType: backupType,
 			Deleting: configMap.Data["deleting"] == "true", GeneratedAt: s.now().UTC(),
@@ -294,6 +303,116 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		sent[operationUID] = struct{}{}
 	}
 	return nil
+}
+
+func (s *Server) directiveOwnerTrusted(ctx context.Context, configMap *corev1.ConfigMap,
+	owner *metav1.OwnerReference, instance *api.MultiSitePostgres,
+) (bool, error) {
+	if owner == nil || owner.APIVersion != api.GroupVersion.String() || owner.UID == "" ||
+		configMap.Data["instanceRef"] != instance.Name {
+		return false, nil
+	}
+	specMatches := func(spec any) (bool, error) {
+		encoded, err := json.Marshal(spec)
+		return bytes.Equal(encoded, []byte(configMap.Data["spec.json"])), err
+	}
+	switch owner.Kind {
+	case "PostgresDatabase":
+		if configMap.Data["type"] != "Database" || configMap.Name != "mspsql-database-"+owner.Name {
+			return false, nil
+		}
+		var object api.PostgresDatabase
+		if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: owner.Name},
+			&object); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if object.UID != owner.UID || object.Spec.InstanceRef != instance.Name ||
+			configMap.Data["operationUID"] != fmt.Sprintf("%s-%d-%t", object.UID,
+				object.Generation, configMap.Data["deleting"] == "true") {
+			return false, nil
+		}
+		deleting := configMap.Data["deleting"] == "true"
+		if deleting != !object.DeletionTimestamp.IsZero() ||
+			deleting && object.Spec.DeletionPolicy != api.DeletionPolicyDelete {
+			return false, nil
+		}
+		return specMatches(object.Spec)
+	case "PostgresUser":
+		if configMap.Data["type"] != "User" || configMap.Name != "mspsql-user-"+owner.Name {
+			return false, nil
+		}
+		var object api.PostgresUser
+		if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: owner.Name},
+			&object); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if object.UID != owner.UID || object.Spec.InstanceRef != instance.Name ||
+			configMap.Data["operationUID"] != fmt.Sprintf("%s-%d-%t", object.UID,
+				object.Generation, configMap.Data["deleting"] == "true") {
+			return false, nil
+		}
+		deleting := configMap.Data["deleting"] == "true"
+		if deleting != !object.DeletionTimestamp.IsZero() ||
+			deleting && object.Spec.DeletionPolicy != api.DeletionPolicyDelete {
+			return false, nil
+		}
+		return specMatches(object.Spec)
+	case "MultiSitePostgres":
+		if configMap.Data["type"] != "Backup" || owner.UID != instance.UID ||
+			owner.Name != instance.Name || configMap.Data["deleting"] != "false" {
+			return false, nil
+		}
+		var scheduled struct {
+			BackupType  string `json:"backupType"`
+			ScheduledAt string `json:"scheduledAt"`
+		}
+		if json.Unmarshal([]byte(configMap.Data["spec.json"]), &scheduled) != nil {
+			return false, nil
+		}
+		scheduledAt, err := time.Parse(time.RFC3339, scheduled.ScheduledAt)
+		if err != nil {
+			return false, nil
+		}
+		for _, status := range instance.Status.BackupSchedules {
+			if status.Type == scheduled.BackupType && status.LastScheduledAt != nil &&
+				status.LastScheduledAt.Equal(&metav1.Time{Time: scheduledAt}) {
+				expectedName := fmt.Sprintf("mspsql-backup-%s-%d", scheduled.BackupType, scheduledAt.Unix())
+				expectedOperation := fmt.Sprintf("%s-backup-%s-%d", instance.UID,
+					scheduled.BackupType, scheduledAt.Unix())
+				return configMap.Name == expectedName &&
+					configMap.Data["operationUID"] == expectedOperation, nil
+			}
+		}
+		return false, nil
+	case "PostgresUpgrade":
+		if configMap.Data["type"] != "Backup" || configMap.Data["deleting"] != "false" {
+			return false, nil
+		}
+		var object api.PostgresUpgrade
+		if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: owner.Name},
+			&object); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if object.UID != owner.UID || object.Spec.InstanceRef != instance.Name {
+			return false, nil
+		}
+		switch configMap.Data["upgradeBackupPhase"] {
+		case "preflight":
+			return object.Status.PreflightBackupRequestedAt != nil &&
+				configMap.Name == "mspsql-upgrade-backup-"+string(object.UID) &&
+				configMap.Data["operationUID"] == string(object.UID)+"-preflight-backup", nil
+		case "post-upgrade":
+			return object.Status.PostUpgradeBackupRequestedAt != nil &&
+				configMap.Name == fmt.Sprintf("mspsql-post-upgrade-backup-%s-%d",
+					object.UID, object.Status.PostUpgradeBackupAttempt) &&
+				configMap.Data["operationUID"] == fmt.Sprintf("%s-post-upgrade-backup-%d",
+					object.UID, object.Status.PostUpgradeBackupAttempt), nil
+		default:
+			return false, nil
+		}
+	default:
+		return false, nil
+	}
 }
 
 func selectBackupSource(instance *api.MultiSitePostgres) string {

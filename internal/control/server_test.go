@@ -17,13 +17,74 @@ limitations under the License.
 package control
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 )
+
+func TestDirectiveOwnerMustMatchAuthoritativeObject(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-api", UID: types.UID("database-uid"), Generation: 2,
+		},
+		Spec: api.PostgresDatabaseSpec{InstanceRef: "orders", DatabaseName: "orders"},
+	}
+	encoded, err := json.Marshal(database.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := true
+	owner := metav1.OwnerReference{
+		APIVersion: api.GroupVersion.String(), Kind: "PostgresDatabase",
+		Name: database.Name, UID: database.UID, Controller: &controller,
+	}
+	directive := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: database.Namespace, Name: "mspsql-database-" + database.Name,
+			OwnerReferences: []metav1.OwnerReference{owner},
+		},
+		Data: map[string]string{
+			"type": "Database", "instanceRef": "orders", "deleting": "false",
+			"operationUID": "database-uid-2-false", "spec.json": string(encoded),
+		},
+	}
+	server := &Server{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(database).Build()}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders", UID: "instance-uid"},
+	}
+	trusted, err := server.directiveOwnerTrusted(context.Background(), directive,
+		metav1.GetControllerOf(directive), instance)
+	if err != nil || !trusted {
+		t.Fatalf("authoritative directive rejected: trusted=%v err=%v", trusted, err)
+	}
+	directive.Data["spec.json"] = `{"databaseName":"injected"}`
+	trusted, err = server.directiveOwnerTrusted(context.Background(), directive,
+		metav1.GetControllerOf(directive), instance)
+	if err != nil || trusted {
+		t.Fatalf("tampered directive accepted: trusted=%v err=%v", trusted, err)
+	}
+	directive.OwnerReferences = nil
+	trusted, err = server.directiveOwnerTrusted(context.Background(), directive, nil, instance)
+	if err != nil || trusted {
+		t.Fatalf("ownerless directive accepted: trusted=%v err=%v", trusted, err)
+	}
+}
 
 func TestAggregateConditionsExcludesWitnessFromPatroni(t *testing.T) {
 	healthy := func(conditionTypes ...string) []metav1.Condition {
