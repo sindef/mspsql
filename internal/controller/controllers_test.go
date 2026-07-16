@@ -220,3 +220,32 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 		t.Fatalf("empty observed addresses changed fingerprint: %s != %s", before, after)
 	}
 }
+
+func TestInstanceSecretClaimsAreExclusive(t *testing.T) {
+	backup := func(prefix, path string) *api.BackupSpec {
+		return &api.BackupSpec{Repository: api.BackupRepositorySpec{
+			Type: "S3", Bucket: "backups", Prefix: prefix,
+			CredentialVaultRef: api.VaultSecretReference{Mount: "secret", Path: path},
+		}}
+	}
+	if !backupClaimsConflict(backup("orders", "postgres/orders"), backup("/orders/", "postgres/other")) {
+		t.Fatal("equivalent backup prefixes were not rejected")
+	}
+	if !backupClaimsConflict(backup("orders-a", "postgres/shared"), backup("orders-b", "postgres/shared")) {
+		t.Fatal("shared backup credentials were not rejected")
+	}
+	if backupClaimsConflict(backup("orders-a", "postgres/a"), backup("orders-b", "postgres/b")) {
+		t.Fatal("independent backup claims conflict")
+	}
+	tde := func(path string) api.TDESpec {
+		return api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
+			KVMount: "tde", KeyPath: path, ProviderName: "vault", PrincipalKeyName: "default",
+		}}
+	}
+	if !tdeClaimsConflict(tde("postgres/orders"), tde("postgres/orders")) {
+		t.Fatal("shared TDE identity was not rejected")
+	}
+	if tdeClaimsConflict(tde("postgres/orders"), tde("postgres/reporting")) {
+		t.Fatal("independent TDE identities conflict")
+	}
+}

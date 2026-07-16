@@ -92,6 +92,12 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		metav1.ConditionTrue, "AllSitesRegistered", "All referenced sites are registered")
 	setCondition(&instance.Status.Conditions, instance.Generation, "StorageValidated",
 		metav1.ConditionTrue, "SitePolicyAccepted", "StorageClasses, issuers and address pools are permitted")
+	if err := r.validateInstanceClaims(ctx, &instance); err != nil {
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "InstanceIsolationConflict", err.Error())
+		instance.Status.Phase = "ValidatingSites"
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
+	}
 	if !allConnected {
 		setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
 			metav1.ConditionFalse, "AgentDisconnected", "One or more site agents are disconnected")
@@ -175,6 +181,51 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *MultiSitePostgresReconciler) validateInstanceClaims(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) error {
+	var instances multisitepostgresv1alpha1.MultiSitePostgresList
+	if err := r.List(ctx, &instances); err != nil {
+		return err
+	}
+	for i := range instances.Items {
+		other := &instances.Items[i]
+		if other.UID == instance.UID || !other.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if backupClaimsConflict(instance.Spec.Backup, other.Spec.Backup) {
+			return fmt.Errorf("backup repository claim conflicts with %s/%s", other.Namespace, other.Name)
+		}
+		if tdeClaimsConflict(instance.Spec.TDE, other.Spec.TDE) {
+			return fmt.Errorf("TDE key identity conflicts with %s/%s", other.Namespace, other.Name)
+		}
+	}
+	return nil
+}
+
+func backupClaimsConflict(left, right *multisitepostgresv1alpha1.BackupSpec) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	sameRepository := left.Repository.Type == right.Repository.Type &&
+		left.Repository.Bucket == right.Repository.Bucket &&
+		strings.Trim(left.Repository.Prefix, "/") == strings.Trim(right.Repository.Prefix, "/")
+	sameCredentials := left.Repository.CredentialVaultRef.Mount ==
+		right.Repository.CredentialVaultRef.Mount &&
+		left.Repository.CredentialVaultRef.Path == right.Repository.CredentialVaultRef.Path
+	return sameRepository || sameCredentials
+}
+
+func tdeClaimsConflict(left, right multisitepostgresv1alpha1.TDESpec) bool {
+	if !left.Enabled || !right.Enabled || left.Vault == nil || right.Vault == nil {
+		return false
+	}
+	return left.Vault.KVMount == right.Vault.KVMount &&
+		left.Vault.KeyPath == right.Vault.KeyPath &&
+		left.Vault.ProviderName == right.Vault.ProviderName &&
+		left.Vault.PrincipalKeyName == right.Vault.PrincipalKeyName
 }
 
 func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
