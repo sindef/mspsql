@@ -38,6 +38,9 @@ spec:
           mkdir -p /run/mspsql/wireguard
           cat /etc/wireguard/interface.conf /etc/wireguard-peers/peers.conf \
             > /run/mspsql/wireguard/wg0.conf
+          chmod 0600 /run/mspsql/wireguard/wg0.conf
+          wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null ||
+            ip link delete wg0 2>/dev/null || true
           wireguard-go wg0 &
           wireguard_pid="$!"
           wg-quick up /run/mspsql/wireguard/wg0.conf

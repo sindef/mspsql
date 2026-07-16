@@ -244,6 +244,8 @@ func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
 		!*agent.SecurityContext.ReadOnlyRootFilesystem {
 		t.Fatalf("site agent security context = %#v", agent.SecurityContext)
 	}
+	assertAgentVolumeAccess(t, deployment.Spec.Template.Spec.SecurityContext,
+		deployment.Spec.Template.Spec.Volumes)
 	if agent.ReadinessProbe == nil || agent.ReadinessProbe.Exec == nil ||
 		len(agent.ReadinessProbe.Exec.Command) != 2 ||
 		agent.ReadinessProbe.Exec.Command[0] != "/site-agent" {
@@ -264,6 +266,22 @@ func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
 	}
 }
 
+func assertAgentVolumeAccess(t *testing.T, securityContext *corev1.PodSecurityContext,
+	volumes []corev1.Volume,
+) {
+	t.Helper()
+	if securityContext == nil || securityContext.FSGroup == nil || *securityContext.FSGroup != 65532 {
+		t.Fatalf("agent pod fsGroup = %#v", securityContext)
+	}
+	for _, volume := range volumes {
+		if (volume.Name == "bootstrap" || volume.Name == "identity") &&
+			(volume.Secret == nil || volume.Secret.DefaultMode == nil ||
+				*volume.Secret.DefaultMode != 0o440) {
+			t.Fatalf("%s Secret mode = %#v", volume.Name, volume.Secret)
+		}
+	}
+}
+
 func TestAgentWireGuardStopsOnLeadershipLoss(t *testing.T) {
 	site := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
 		Name: "vic", UID: types.UID("site-uid"),
@@ -277,7 +295,8 @@ func TestAgentWireGuardStopsOnLeadershipLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := deployment.Spec.Template.Spec.Containers[1].Command
-	if len(command) != 3 || !strings.Contains(command[2], "wg-quick down") ||
+	if len(command) != 3 || !strings.Contains(command[2], "ip link delete wg0") ||
+		!strings.Contains(command[2], "wg-quick down") ||
 		!strings.Contains(command[2], "while [ -f /run/mspsql/leader ]") {
 		t.Fatalf("WireGuard leadership cleanup command = %#v", command)
 	}

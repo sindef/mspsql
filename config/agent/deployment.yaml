@@ -17,6 +17,7 @@ spec:
     spec:
       serviceAccountName: mspsql-agent
       securityContext:
+        fsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
       affinity:
         podAntiAffinity:
@@ -68,11 +69,16 @@ spec:
         - -ec
         - |
           while [ ! -f /run/mspsql/leader ]; do sleep 1; done
+          mkdir -p /run/mspsql/wireguard
+          cp /etc/wireguard/wg0.conf /run/mspsql/wireguard/wg0.conf
+          chmod 0600 /run/mspsql/wireguard/wg0.conf
+          wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null ||
+            ip link delete wg0 2>/dev/null || true
           wireguard-go wg0 &
           wireguard_pid="$!"
-          wg-quick up /etc/wireguard/wg0.conf
+          wg-quick up /run/mspsql/wireguard/wg0.conf
           cleanup() {
-            wg-quick down /etc/wireguard/wg0.conf 2>/dev/null || true
+            wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null || true
             kill "${wireguard_pid}" 2>/dev/null || true
           }
           trap cleanup EXIT
@@ -95,10 +101,11 @@ spec:
       - name: bootstrap
         secret:
           secretName: mspsql-agent-bootstrap
+          defaultMode: 0440
       - name: identity
         secret:
           secretName: mspsql-agent-identity
           optional: true
-          defaultMode: 0400
+          defaultMode: 0440
       - {name: runtime, emptyDir: {medium: Memory}}
       - {name: wireguard-runtime, emptyDir: {medium: Memory}}

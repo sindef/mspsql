@@ -450,9 +450,9 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 	}}
 	volumes := []any{
 		map[string]any{"name": "bootstrap", "secret": map[string]any{
-			"secretName": "mspsql-agent-bootstrap", "defaultMode": 256}},
+			"secretName": "mspsql-agent-bootstrap", "defaultMode": 288}},
 		map[string]any{"name": "identity", "secret": map[string]any{
-			"secretName": "mspsql-agent-identity", "optional": true, "defaultMode": 256}},
+			"secretName": "mspsql-agent-identity", "optional": true, "defaultMode": 288}},
 		map[string]any{"name": "runtime", "emptyDir": map[string]any{"medium": "Memory"}},
 	}
 	if wireGuardImage != "" {
@@ -460,9 +460,14 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 			"name": "wireguard", "image": wireGuardImage,
 			"command": []any{"/bin/sh", "-ec",
 				"while [ ! -f /run/mspsql/leader ]; do sleep 1; done; " +
+					"mkdir -p /run/mspsql/wireguard; " +
+					"cp /etc/wireguard/wg0.conf /run/mspsql/wireguard/wg0.conf; " +
+					"chmod 0600 /run/mspsql/wireguard/wg0.conf; " +
+					"wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null || " +
+					"ip link delete wg0 2>/dev/null || true; " +
 					"wireguard-go wg0 & wireguard_pid=$!; " +
-					"wg-quick up /etc/wireguard/wg0.conf; " +
-					"cleanup() { wg-quick down /etc/wireguard/wg0.conf 2>/dev/null || true; " +
+					"wg-quick up /run/mspsql/wireguard/wg0.conf; " +
+					"cleanup() { wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null || true; " +
 					"kill \"$wireguard_pid\" 2>/dev/null || true; }; " +
 					"trap cleanup EXIT; trap 'exit 0' TERM INT; " +
 					"while [ -f /run/mspsql/leader ]; do sleep 1; done"},
@@ -504,6 +509,7 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 					"serviceAccountName":            "mspsql-agent",
 					"terminationGracePeriodSeconds": 30,
 					"securityContext": map[string]any{
+						"fsGroup":        65532,
 						"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 					},
 					"affinity": map[string]any{"podAntiAffinity": map[string]any{
