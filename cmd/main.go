@@ -38,6 +38,7 @@ import (
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/control"
 	"github.com/sindef/mspsql/internal/controller"
+	"github.com/sindef/mspsql/internal/registration"
 	webhookv1alpha1 "github.com/sindef/mspsql/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -65,6 +66,8 @@ func main() {
 	var enableHTTP2 bool
 	var systemNamespace, registrationPublicURL string
 	var controlAddress, controlCertificate, controlPrivateKey, controlClientCA string
+	var registrationAddress, hubDomain, hubControlAddress, agentImage, wireGuardImage string
+	var wireGuardPeerConfiguration string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -76,6 +79,17 @@ func main() {
 		"Namespace containing hub identity and signing Secrets.")
 	flag.StringVar(&registrationPublicURL, "registration-public-url", "",
 		"Public HTTPS base URL used in registration capability URLs.")
+	flag.StringVar(&registrationAddress, "registration-address", ":8082",
+		"Internal HTTP address for registration bundle retrieval and binding.")
+	flag.StringVar(&hubDomain, "hub-domain", "", "Stable ownership domain recorded on target namespaces.")
+	flag.StringVar(&hubControlAddress, "hub-control-address", "",
+		"Hub gRPC address placed in registration bundles.")
+	flag.StringVar(&agentImage, "site-agent-image", "ghcr.io/sindef/mspsql-agent:latest",
+		"Site agent image placed in registration bundles.")
+	flag.StringVar(&wireGuardImage, "wireguard-image", "ghcr.io/wireguard/wireguard-go:latest",
+		"WireGuard userspace image placed in registration bundles.")
+	flag.StringVar(&wireGuardPeerConfiguration, "wireguard-peer-configuration", "",
+		"WireGuard peer stanza and interface address returned after registration.")
 	flag.StringVar(&controlAddress, "control-address", ":9444", "Address for the agent gRPC control service.")
 	flag.StringVar(&controlCertificate, "control-certificate", "/etc/mspsql/control/tls.crt",
 		"Agent gRPC server certificate.")
@@ -152,14 +166,6 @@ func main() {
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -238,13 +244,26 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "postgresupgrade")
 		os.Exit(1)
 	}
-	if err := mgr.Add(&control.RunnableServer{
-		Address: controlAddress, Certificate: controlCertificate,
-		PrivateKey: controlPrivateKey, ClientCA: controlClientCA,
-		Service: &control.Server{Client: mgr.GetClient()},
-	}); err != nil {
-		setupLog.Error(err, "Failed to add agent control server")
-		os.Exit(1)
+	if controlAddress != "" {
+		if err := mgr.Add(&control.RunnableServer{
+			Address: controlAddress, Certificate: controlCertificate,
+			PrivateKey: controlPrivateKey, ClientCA: controlClientCA,
+			Service: &control.Server{Client: mgr.GetClient()},
+		}); err != nil {
+			setupLog.Error(err, "Failed to add agent control server")
+			os.Exit(1)
+		}
+	}
+	if registrationAddress != "" {
+		if err := mgr.Add(&registration.HTTPServer{
+			Address: registrationAddress, Client: mgr.GetClient(), SystemNamespace: systemNamespace,
+			PublicURL: registrationPublicURL, HubDomain: hubDomain, HubAddress: hubControlAddress,
+			AgentImage: agentImage, WireGuardImage: wireGuardImage,
+			WireGuardPeerConfiguration: wireGuardPeerConfiguration,
+		}); err != nil {
+			setupLog.Error(err, "Failed to add registration server")
+			os.Exit(1)
+		}
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {

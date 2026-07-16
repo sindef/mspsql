@@ -59,6 +59,7 @@ var version = "dev"
 func main() {
 	var target, namespace, registrationUID, hubDomain, publicKeyPath string
 	var certificatePath, privateKeyPath, caPath, activationPath string
+	var bootstrapPath string
 	var etcdImage, pgpoolImage string
 	flag.StringVar(&target, "hub-address", "", "Hub gRPC address reachable through WireGuard.")
 	flag.StringVar(&namespace, "namespace", envOrDefault("POD_NAMESPACE", "mspsql-agent"), "Agent system namespace.")
@@ -69,6 +70,7 @@ func main() {
 	flag.StringVar(&privateKeyPath, "tls-private-key", "/etc/mspsql/identity/tls.key", "Agent mTLS private key.")
 	flag.StringVar(&caPath, "tls-ca", "/etc/mspsql/identity/ca.crt", "Hub control CA.")
 	flag.StringVar(&activationPath, "wireguard-activation-file", "/run/mspsql/leader", "WireGuard leader activation file.")
+	flag.StringVar(&bootstrapPath, "bootstrap-path", "/etc/mspsql/bootstrap", "Registration bootstrap Secret path.")
 	flag.StringVar(&etcdImage, "etcd-image", "quay.io/coreos/etcd:v3.6.6", "etcd image.")
 	flag.StringVar(&pgpoolImage, "pgpool-image", "bitnami/pgpool:4.6.3", "Pgpool image.")
 	zapOptions := zap.Options{Development: false}
@@ -83,9 +85,19 @@ func main() {
 
 	config := ctrl.GetConfigOrDie()
 	kube := clients(config)
+	clusterUID := clusterUID(context.Background(), kube)
+	bootstrapped, err := bootstrapIfRequired(context.Background(), kube, namespace, publicKeyPath,
+		bootstrapPath, string(clusterUID))
+	if err != nil {
+		log.Error(err, "Site registration failed")
+		os.Exit(1)
+	}
+	if bootstrapped {
+		log.Info("Site identity created; restarting to mount it")
+		return
+	}
 	publicKey := readPublicKey(publicKeyPath)
 	tlsConfig := clientTLS(certificatePath, privateKeyPath, caPath)
-	clusterUID := clusterUID(context.Background(), kube)
 	cache := &agent.Cache{
 		Client: kube, Namespace: namespace, PublicKey: publicKey, SiteUID: registrationUID,
 	}
