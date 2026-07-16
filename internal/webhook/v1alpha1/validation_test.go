@@ -70,6 +70,19 @@ func TestValidateInstance(t *testing.T) {
 		t.Fatalf("valid topology rejected: %v", err)
 	}
 
+	base.Spec.TDE = api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
+		KVMount: "mspsql", KeyPath: "../shared", ProviderName: "orders",
+		PrincipalKeyName: "orders-principal",
+	}}
+	if err := validateInstance(base); err == nil {
+		t.Fatal("unsafe TDE Vault path was accepted")
+	}
+	base.Spec.TDE.Vault.KeyPath = "postgres/orders/tde"
+	if err := validateInstance(base); err != nil {
+		t.Fatalf("valid TDE Vault identity rejected: %v", err)
+	}
+	base.Spec.TDE = api.TDESpec{}
+
 	base.Spec.Sites[2].Components.PostgresReplicas = 1
 	if err := validateInstance(base); err == nil {
 		t.Fatal("witness with PostgreSQL was accepted")

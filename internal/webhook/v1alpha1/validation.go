@@ -139,8 +139,36 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 		errs = append(errs, field.Invalid(specPath.Child("postgres", "synchronousStandbyCount"),
 			obj.Spec.Postgres.SynchronousStandbyCount, "must be lower than total PostgreSQL replicas"))
 	}
-	if obj.Spec.TDE.Enabled && obj.Spec.TDE.Vault == nil {
-		errs = append(errs, field.Required(specPath.Child("tde", "vault"), "TDE requires a Vault key identity"))
+	if obj.Spec.TDE.Enabled {
+		tdePath := specPath.Child("tde", "vault")
+		if obj.Spec.TDE.Vault == nil {
+			errs = append(errs, field.Required(tdePath, "TDE requires a Vault key identity"))
+		} else {
+			for name, value := range map[string]string{
+				"kvMount": obj.Spec.TDE.Vault.KVMount,
+				"keyPath": obj.Spec.TDE.Vault.KeyPath,
+			} {
+				trimmed := strings.Trim(value, "/")
+				if trimmed == "" {
+					errs = append(errs, field.Required(tdePath.Child(name), "required"))
+				} else if strings.ContainsAny(value, "\r\n") ||
+					strings.Contains(value, "//") || slices.Contains(strings.Split(value, "/"), "..") {
+					errs = append(errs, field.Invalid(tdePath.Child(name), value,
+						"must be a normalized single-line Vault path"))
+				}
+			}
+			for name, value := range map[string]string{
+				"providerName":     obj.Spec.TDE.Vault.ProviderName,
+				"principalKeyName": obj.Spec.TDE.Vault.PrincipalKeyName,
+			} {
+				if value == "" {
+					errs = append(errs, field.Required(tdePath.Child(name), "required"))
+				} else if len(value) > 63 || strings.ContainsAny(value, "\r\n") {
+					errs = append(errs, field.Invalid(tdePath.Child(name), value,
+						"must be a single-line name no longer than 63 bytes"))
+				}
+			}
+		}
 	}
 	if obj.Spec.Credentials.PostgresVaultRef.Mount == "" ||
 		obj.Spec.Credentials.PostgresVaultRef.Path == "" {
