@@ -49,6 +49,11 @@ func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
 			t.Fatalf("database SQL is missing %q:\n%s", expected, sql)
 		}
 	}
+	createOwner := strings.Index(sql, `CREATE ROLE "orders_owner" NOLOGIN`)
+	changeOwner := strings.Index(sql, `ALTER DATABASE "orders-api" OWNER TO "orders_owner"`)
+	if createOwner == -1 || changeOwner == -1 || createOwner > changeOwner {
+		t.Fatalf("owner role must be created before database ownership changes:\n%s", sql)
+	}
 }
 
 func TestUserSQLReadsPasswordFromEnvironment(t *testing.T) {

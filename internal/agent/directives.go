@@ -543,14 +543,14 @@ func databaseSQL(spec api.PostgresDatabaseSpec, tdeEnabled, deleting bool) (stri
 	fmt.Fprintf(&sql, "SELECT format('CREATE DATABASE %%I TEMPLATE template1', %s) "+
 		"WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = %s) \\gexec\n",
 		quoteLiteral(spec.DatabaseName), quoteLiteral(spec.DatabaseName))
-	if owner != "" {
-		fmt.Fprintf(&sql, "ALTER DATABASE %s OWNER TO %s;\n", database, quoteIdentifier(owner))
-	}
-	fmt.Fprintf(&sql, "\\connect %s\n", database)
 	for _, role := range spec.Roles {
 		fmt.Fprintf(&sql, "DO $$BEGIN CREATE ROLE %s NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END$$;\n",
 			quoteIdentifier(role.Name))
 	}
+	if owner != "" {
+		fmt.Fprintf(&sql, "ALTER DATABASE %s OWNER TO %s;\n", database, quoteIdentifier(owner))
+	}
+	fmt.Fprintf(&sql, "\\connect %s\n", database)
 	schemas := slices.Clone(spec.Schemas)
 	slices.Sort(schemas)
 	for _, schema := range schemas {
