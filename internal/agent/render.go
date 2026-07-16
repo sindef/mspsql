@@ -59,7 +59,7 @@ func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
-		objects = append(objects, memberService(desired.Site.Namespace, name, name, labels,
+		objects = append(objects, memberService(desired.Site.Namespace, name, name+"-0", labels,
 			desired.Site.LoadBalancer, []corev1.ServicePort{
 				{Name: "postgres", Port: 5432, TargetPort: intstr.FromInt32(5432)},
 				{Name: "patroni", Port: 8008, TargetPort: intstr.FromInt32(8008)},
@@ -118,7 +118,15 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 		return objects, nil
 	}
 	patroniConfig := r.patroniConfig(desired, labels)
-	objects = append(objects, patroniConfig, r.postgresStatefulSet(desired, labels))
+	objects = append(objects, patroniConfig)
+	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
+		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
+		address := desired.MemberAddresses[name]
+		if address == "" {
+			return nil, fmt.Errorf("address for %s is not allocated", name)
+		}
+		objects = append(objects, r.postgresStatefulSet(desired, name, address, labels))
+	}
 	if desired.Site.Components.PgpoolReplicas > 0 {
 		objects = append(objects, r.pgpoolConfig(desired, labels), r.pgpoolDeployment(desired, labels))
 	}
@@ -246,10 +254,10 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 	}
 	slices.Sort(endpoints)
 	config := fmt.Sprintf(`scope: %s
-name: ${POD_NAME}
+name: ${MEMBER_NAME}
 restapi:
   listen: 0.0.0.0:8008
-  connect_address: ${POD_IP}:8008
+  connect_address: ${PATRONI_CONNECT_ADDRESS}:8008
 etcd3:
   hosts: %s
   protocol: https
@@ -258,8 +266,13 @@ etcd3:
   key: /etcd-tls/tls.key
 postgresql:
   listen: 0.0.0.0:5432
-  connect_address: ${POD_IP}:5432
+  connect_address: ${PATRONI_CONNECT_ADDRESS}:5432
   data_dir: /var/lib/postgresql/data
+  parameters:
+    ssl: "on"
+    ssl_cert_file: /postgres-tls/tls.crt
+    ssl_key_file: /postgres-tls/tls.key
+    ssl_ca_file: /postgres-tls/ca.crt
   authentication:
     superuser:
       username: postgres
@@ -278,20 +291,25 @@ tags:
 	}
 }
 
-func (r Renderer) postgresStatefulSet(desired plan.SitePlan, labels map[string]string) *appsv1.StatefulSet {
+func (r Renderer) postgresStatefulSet(desired plan.SitePlan, name, address string,
+	labels map[string]string,
+) *appsv1.StatefulSet {
 	workloadLabels := copyMap(labels)
 	workloadLabels["multisite-postgres.dev/component"] = "postgres"
-	replicas := desired.Site.Components.PostgresReplicas
-	command := `export POSTGRES_SUPERUSER_PASSWORD="$(cat /credentials/superuser-password)"
+	workloadLabels["multisite-postgres.dev/member"] = name
+	replicas := int32(1)
+	command := fmt.Sprintf(`export POSTGRES_SUPERUSER_PASSWORD="$(cat /credentials/superuser-password)"
 export POSTGRES_REPLICATION_PASSWORD="$(cat /credentials/replication-password)"
+export MEMBER_NAME=%q
+export PATRONI_CONNECT_ADDRESS=%q
 envsubst < /config/patroni.yml > /tmp/patroni.yml
-exec patroni /tmp/patroni.yml`
+exec patroni /tmp/patroni.yml`, name, address)
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: desired.Site.Namespace, Name: "postgres-" + desired.Site.Name, Labels: copyMap(labels),
+			Namespace: desired.Site.Namespace, Name: name, Labels: copyMap(labels),
 		},
 		Spec: appsv1.StatefulSetSpec{
-			ServiceName: "postgres-" + desired.Site.Name, Replicas: &replicas,
+			ServiceName: name, Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: workloadLabels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels},
@@ -305,15 +323,7 @@ exec patroni /tmp/patroni.yml`
 					Containers: []corev1.Container{{
 						Name: "postgres-patroni", Image: desired.Postgres.Image,
 						Command: []string{"/bin/bash", "-ec", command},
-						Env: []corev1.EnvVar{
-							{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
-								FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
-							}},
-							{Name: "POD_IP", ValueFrom: &corev1.EnvVarSource{
-								FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
-							}},
-						},
-						Ports: []corev1.ContainerPort{{Name: "postgres", ContainerPort: 5432}, {Name: "patroni", ContainerPort: 8008}},
+						Ports:   []corev1.ContainerPort{{Name: "postgres", ContainerPort: 5432}, {Name: "patroni", ContainerPort: 8008}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 								Path: "/readiness", Port: intstr.FromString("patroni"),
@@ -326,6 +336,7 @@ exec patroni /tmp/patroni.yml`
 							{Name: "config", MountPath: "/config", ReadOnly: true},
 							{Name: "credentials", MountPath: "/credentials", ReadOnly: true},
 							{Name: "etcd-tls", MountPath: "/etcd-tls", ReadOnly: true},
+							{Name: "postgres-tls", MountPath: "/postgres-tls", ReadOnly: true},
 						},
 					}},
 					Volumes: []corev1.Volume{
@@ -339,6 +350,9 @@ exec patroni /tmp/patroni.yml`
 						}},
 						{Name: "etcd-tls", VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{SecretName: "patroni-etcd-client-tls"},
+						}},
+						{Name: "postgres-tls", VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: name + "-tls"},
 						}},
 					},
 				},

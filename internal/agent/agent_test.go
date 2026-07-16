@@ -22,10 +22,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -118,8 +120,21 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 			deployments++
 		}
 	}
-	if statefulSets != 3 || deployments != 1 {
+	if statefulSets != 4 || deployments != 1 {
 		t.Fatalf("statefulSets=%d deployments=%d", statefulSets, deployments)
+	}
+	for _, object := range objects {
+		statefulSet, ok := object.(*appsv1.StatefulSet)
+		if !ok || statefulSet.Name != "postgres-vic-0" {
+			continue
+		}
+		if *statefulSet.Spec.Replicas != 1 {
+			t.Fatalf("member replicas = %d", *statefulSet.Spec.Replicas)
+		}
+		command := statefulSet.Spec.Template.Spec.Containers[0].Command[2]
+		if !strings.Contains(command, "10.0.0.10") {
+			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
+		}
 	}
 }
 
@@ -212,5 +227,57 @@ func TestDiscoverInventoryReportsStorageAndIssuers(t *testing.T) {
 	}
 	if len(inventory.Issuers) != 1 || inventory.Issuers[0].Name != "etcd-root" {
 		t.Fatalf("issuer inventory = %#v", inventory.Issuers)
+	}
+}
+
+func TestPruneDeletesOnlyObjectsFromOlderRevisions(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	certificateGVK := schema.GroupVersionKind{
+		Group: "cert-manager.io", Version: "v1", Kind: "Certificate",
+	}
+	scheme.AddKnownTypeWithName(certificateGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(certificateGVK.GroupVersion().WithKind("CertificateList"),
+		&unstructured.UnstructuredList{})
+	labels := func(revision string) map[string]string {
+		return map[string]string{
+			"app.kubernetes.io/managed-by":            "mspsql-agent",
+			"multisite-postgres.dev/instance-uid":     "instance",
+			"multisite-postgres.dev/desired-revision": revision,
+		}
+	}
+	stale := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "orders", Name: "postgres-old", Labels: labels("1"),
+	}}
+	current := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "orders", Name: "patroni", Labels: labels("2"),
+	}}
+	unmanaged := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "orders", Name: "application",
+	}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stale, current, unmanaged).Build()
+	reconciler := Reconciler{Client: kube}
+	if err := reconciler.pruneStaleObjects(context.Background(), plan.SitePlan{
+		InstanceUID: "instance", Revision: 2,
+		Site: api.PostgresSiteSpec{Namespace: "orders"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(stale), &appsv1.StatefulSet{}); err == nil {
+		t.Fatal("stale StatefulSet was not deleted")
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(current), &corev1.ConfigMap{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(unmanaged), &corev1.Service{}); err != nil {
+		t.Fatal(err)
 	}
 }

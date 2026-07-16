@@ -23,11 +23,13 @@ import (
 	"maps"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -134,6 +136,9 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 			"WorkloadsProgressing", message)
 		return result, nil
 	}
+	if err := r.pruneStaleObjects(ctx, desired); err != nil {
+		return result, err
+	}
 	result.Phase = "Ready"
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
@@ -147,6 +152,46 @@ func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 	}
 	return r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
 		client.FieldOwner("mspsql-agent"))
+}
+
+func (r *Reconciler) pruneStaleObjects(ctx context.Context, desired plan.SitePlan) error {
+	certificates := &unstructured.UnstructuredList{}
+	certificates.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "cert-manager.io", Version: "v1", Kind: "CertificateList",
+	})
+	lists := []client.ObjectList{
+		&corev1.ServiceList{},
+		&corev1.ConfigMapList{},
+		&appsv1.StatefulSetList{},
+		&appsv1.DeploymentList{},
+		&batchv1.JobList{},
+		&batchv1.CronJobList{},
+		certificates,
+	}
+	labels := client.MatchingLabels{
+		"app.kubernetes.io/managed-by":        "mspsql-agent",
+		"multisite-postgres.dev/instance-uid": desired.InstanceUID,
+	}
+	revision := fmt.Sprintf("%d", desired.Revision)
+	for _, list := range lists {
+		if err := r.Client.List(ctx, list, client.InNamespace(desired.Site.Namespace), labels); err != nil {
+			return err
+		}
+		objects, err := meta.ExtractList(list)
+		if err != nil {
+			return err
+		}
+		for _, object := range objects {
+			managed, ok := object.(client.Object)
+			if !ok || managed.GetLabels()["multisite-postgres.dev/desired-revision"] == revision {
+				continue
+			}
+			if err := r.Client.Delete(ctx, managed); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Reconciler) certificatesReady(ctx context.Context, certificates []client.Object) (bool, string, error) {
