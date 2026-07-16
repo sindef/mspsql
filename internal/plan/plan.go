@@ -41,6 +41,7 @@ type SitePlan struct {
 	Site                     api.PostgresSiteSpec        `json:"site"`
 	Postgres                 api.PostgresSpec            `json:"postgres"`
 	TDE                      api.TDESpec                 `json:"tde,omitempty"`
+	TDEKeyCreator            bool                        `json:"tdeKeyCreator,omitempty"`
 	Backup                   *api.BackupSpec             `json:"backup,omitempty"`
 	Credentials              api.InstanceCredentialsSpec `json:"credentials"`
 	MemberAddresses          map[string]string           `json:"memberAddresses,omitempty"`

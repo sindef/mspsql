@@ -737,15 +737,47 @@ key_path="$(cat /vault/key-path)"
 
 psql "$dsn" -v ON_ERROR_STOP=1 \
   -v provider="$provider" \
-  -v principal_key="$principal_key" \
   -v vault_address="$vault_address" \
   -v key_path="$key_path" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS pg_tde;
 SELECT pg_tde_add_global_key_provider_vault_v2(
   :'provider', :'vault_address', :'key_path', '/vault/token', __CA_ARGUMENT__
+) WHERE NOT EXISTS (
+  SELECT 1 FROM pg_tde_list_all_global_key_providers() WHERE name = :'provider'
 );
-SELECT pg_tde_create_key_using_global_key_provider(:'principal_key', :'provider');
+SELECT pg_tde_change_global_key_provider_vault_v2(
+  :'provider', :'vault_address', :'key_path', '/vault/token', __CA_ARGUMENT__
+);
+SQL
+
+set_default_key() {
+  psql "$dsn" -v ON_ERROR_STOP=1 \
+    -v provider="$provider" -v principal_key="$principal_key" <<'SQL'
 SELECT pg_tde_set_default_key_using_global_key_provider(:'principal_key', :'provider');
+SQL
+}
+
+if __KEY_CREATOR__; then
+  if ! set_default_key; then
+    psql "$dsn" -v ON_ERROR_STOP=1 \
+      -v provider="$provider" -v principal_key="$principal_key" <<'SQL'
+SELECT pg_tde_create_key_using_global_key_provider(:'principal_key', :'provider');
+SQL
+    set_default_key
+  fi
+else
+  attached=false
+  for attempt in $(seq 1 60); do
+    if set_default_key; then
+      attached=true
+      break
+    fi
+    sleep 5
+  done
+  test "$attached" = true
+fi
+
+psql "$dsn" -v ON_ERROR_STOP=1 <<'SQL'
 ALTER DATABASE postgres SET default_table_access_method = tde_heap;
 ALTER DATABASE postgres SET pg_tde.enforce_encryption = on;
 SQL
@@ -761,6 +793,7 @@ SQL
 		caArgument = "'/vault/ca.crt'"
 	}
 	script = strings.ReplaceAll(script, "__CA_ARGUMENT__", caArgument)
+	script = strings.ReplaceAll(script, "__KEY_CREATOR__", strconv.FormatBool(desired.TDEKeyCreator))
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "pg-tde-bootstrap", Labels: copyMap(labels),

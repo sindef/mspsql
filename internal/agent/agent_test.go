@@ -584,7 +584,8 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
 			},
 		},
-		Postgres: api.PostgresSpec{Image: "percona-postgres:17", SynchronousStandbyCount: 1},
+		Postgres:      api.PostgresSpec{Image: "percona-postgres:17", SynchronousStandbyCount: 1},
+		TDEKeyCreator: true,
 		TDE: api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
 			KVMount: "tde", KeyPath: "postgres/orders",
 		}},
@@ -624,11 +625,19 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{
-		"pg_tde_add_global_key_provider_vault_v2", "pg_tde.enforce_encryption", "template1",
+		"pg_tde_add_global_key_provider_vault_v2", "pg_tde_change_global_key_provider_vault_v2",
+		"pg_tde_create_key_using_global_key_provider", "if true; then",
+		"pg_tde.enforce_encryption", "template1",
 	} {
 		if !strings.Contains(bootstrapScript, expected) {
 			t.Fatalf("TDE bootstrap is missing %q", expected)
 		}
+	}
+	desired.TDEKeyCreator = false
+	followerScript := renderer.tdeBootstrapConfig(desired, nil).Data["tde-bootstrap.sh"]
+	if !strings.Contains(followerScript, "if false; then") ||
+		!strings.Contains(followerScript, "for attempt in $(seq 1 60)") {
+		t.Fatalf("TDE follower does not wait for the shared key:\n%s", followerScript)
 	}
 	if postgres == nil || !hasVolume(postgres.Spec.Template.Spec.Volumes, "pg-tde-vault") {
 		t.Fatal("PostgreSQL member does not mount the TDE Vault token")

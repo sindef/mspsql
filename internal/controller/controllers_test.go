@@ -242,6 +242,10 @@ func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 		},
 		Spec: api.MultiSitePostgresSpec{
 			Postgres: api.PostgresSpec{MajorVersion: 17, Image: "postgres:17", SynchronousStandbyCount: 1},
+			TDE: api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
+				KVMount: "mspsql", KeyPath: "postgres/orders/tde",
+				ProviderName: "orders-vault", PrincipalKeyName: "orders-principal",
+			}},
 			Sites: []api.PostgresSiteSpec{
 				{
 					Name: "vic", SiteRegistrationRef: "vic", Namespace: "orders",
@@ -282,6 +286,7 @@ func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
+	creators := 0
 	for _, site := range []string{"vic", "nsw"} {
 		var configMap corev1.ConfigMap
 		if err := kube.Get(context.Background(), types.NamespacedName{
@@ -292,6 +297,23 @@ func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 		if configMap.Data["envelope.json"] == "" {
 			t.Fatalf("site %s plan is empty", site)
 		}
+		var envelope plan.Envelope
+		if err := json.Unmarshal([]byte(configMap.Data["envelope.json"]), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		var desired plan.SitePlan
+		if err := json.Unmarshal(envelope.Plan, &desired); err != nil {
+			t.Fatal(err)
+		}
+		if desired.TDEKeyCreator {
+			creators++
+			if site != "vic" {
+				t.Fatalf("TDE key creator = %s", site)
+			}
+		}
+	}
+	if creators != 1 {
+		t.Fatalf("TDE key creator count = %d", creators)
 	}
 	var active api.MultiSitePostgres
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &active); err != nil {

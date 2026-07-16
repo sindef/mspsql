@@ -166,6 +166,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if r.Now != nil {
 		now = r.Now
 	}
+	tdeKeyCreator := tdeKeyCreatorName(instance.Spec.TDE.Enabled, instance.Spec.Sites)
 	siteStatuses := make([]multisitepostgresv1alpha1.SiteRevisionStatus, 0, len(instance.Spec.Sites))
 	for _, site := range instance.Spec.Sites {
 		registration := registrations[site.Name]
@@ -179,6 +180,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			Site:               site,
 			Postgres:           instance.Spec.Postgres,
 			TDE:                instance.Spec.TDE,
+			TDEKeyCreator:      site.Name == tdeKeyCreator,
 			Backup:             instance.Spec.Backup,
 			Credentials:        instance.Spec.Credentials,
 			MemberAddresses:    memberAddresses,
@@ -226,6 +228,18 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	return ctrl.Result{RequeueAfter: backupRequeue}, nil
+}
+
+func tdeKeyCreatorName(enabled bool, sites []multisitepostgresv1alpha1.PostgresSiteSpec) string {
+	if !enabled {
+		return ""
+	}
+	for _, site := range sites {
+		if site.Role == multisitepostgresv1alpha1.SiteRoleData {
+			return site.Name
+		}
+	}
+	return ""
 }
 
 func backupSchedulingReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
