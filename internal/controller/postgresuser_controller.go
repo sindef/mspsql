@@ -19,10 +19,12 @@ package controller
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 )
@@ -36,20 +38,52 @@ type PostgresUserReconciler struct {
 // +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresusers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=postgresusers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=multisite-postgres.multisite-postgres.dev,resources=multisitepostgres;postgresdatabases,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the PostgresUser object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
-
-	// TODO(user): your logic here
+	var user multisitepostgresv1alpha1.PostgresUser
+	if err := r.Get(ctx, req.NamespacedName, &user); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if user.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&user, childFinalizer) {
+		controllerutil.AddFinalizer(&user, childFinalizer)
+		return ctrl.Result{}, r.Update(ctx, &user)
+	}
+	if !user.DeletionTimestamp.IsZero() {
+		if user.Spec.DeletionPolicy == multisitepostgresv1alpha1.DeletionPolicyRetain ||
+			user.Status.Phase == "Deleted" {
+			controllerutil.RemoveFinalizer(&user, childFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &user)
+		}
+		if err := reconcileDirective(ctx, r.Client, r.Scheme, &user,
+			"mspsql-user-"+user.Name, "User", user.Spec.InstanceRef, user.Spec, true); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+	for _, membership := range user.Spec.MemberOf {
+		var database multisitepostgresv1alpha1.PostgresDatabase
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: user.Namespace, Name: membership.DatabaseRef,
+		}, &database); err != nil {
+			user.Status.Phase = "Pending"
+			setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
+				"DatabaseUnavailable", err.Error())
+			return ctrl.Result{}, r.Status().Update(ctx, &user)
+		}
+	}
+	if err := reconcileDirective(ctx, r.Client, r.Scheme, &user,
+		"mspsql-user-"+user.Name, "User", user.Spec.InstanceRef, user.Spec, false); err != nil {
+		return ctrl.Result{}, err
+	}
+	user.Status.ObservedGeneration = user.Generation
+	user.Status.Phase = "Reconciling"
+	setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
+		"DeclarationIssued", "Waiting for a site agent to reconcile the login role")
+	if err := r.Status().Update(ctx, &user); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -58,6 +92,7 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *PostgresUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&multisitepostgresv1alpha1.PostgresUser{}).
+		Owns(&corev1.ConfigMap{}).
 		Named("postgresuser").
 		Complete(r)
 }
