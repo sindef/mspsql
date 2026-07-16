@@ -31,6 +31,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -181,6 +182,26 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
 		}
+	}
+}
+
+func TestPVCTemplateUsesClusterDefaultStorageClass(t *testing.T) {
+	defaulted := pvcTemplate(nil, nil)
+	if defaulted.Spec.StorageClassName != nil {
+		t.Fatalf("default StorageClass disabled with %q", *defaulted.Spec.StorageClassName)
+	}
+	if defaulted.Spec.Resources.Requests.Storage().String() != "1Gi" {
+		t.Fatalf("default storage request = %s", defaulted.Spec.Resources.Requests.Storage())
+	}
+
+	explicit := pvcTemplate(&api.StorageRequest{
+		StorageClassName: "standard", Size: resource.MustParse("2Gi"),
+	}, nil)
+	if explicit.Spec.StorageClassName == nil || *explicit.Spec.StorageClassName != "standard" {
+		t.Fatalf("explicit StorageClass = %v", explicit.Spec.StorageClassName)
+	}
+	if explicit.Spec.Resources.Requests.Storage().String() != "2Gi" {
+		t.Fatalf("explicit storage request = %s", explicit.Spec.Resources.Requests.Storage())
 	}
 }
 

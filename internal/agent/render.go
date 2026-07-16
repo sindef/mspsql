@@ -1214,16 +1214,16 @@ func etcdInitialCluster(desired plan.SitePlan) (string, error) {
 
 func pvcTemplate(storage *api.StorageRequest, labels map[string]string) corev1.PersistentVolumeClaim {
 	requests := corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}
-	className := ""
+	var className *string
 	if storage != nil {
 		requests[corev1.ResourceStorage] = storage.Size
-		className = storage.StorageClassName
+		className = &storage.StorageClassName
 	}
 	return corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "data", Labels: copyMap(labels)},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			StorageClassName: &className,
+			StorageClassName: className,
 			Resources:        corev1.VolumeResourceRequirements{Requests: requests},
 		},
 	}
