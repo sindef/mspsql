@@ -144,6 +144,24 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if site.Status.ClusterUID != "" {
 		setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionTrue,
 			"ClusterBound", "Registration is bound to an immutable Kubernetes cluster UID")
+		switch {
+		case site.Status.AgentCertificateExpiresAt == nil:
+			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+				"CertificateExpiryUnknown", "The agent has not reported its certificate expiry")
+		case !now().Before(site.Status.AgentCertificateExpiresAt.Time):
+			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+				"CertificateExpired", "The agent mTLS certificate has expired")
+		case now().Add(2 * time.Hour).After(site.Status.AgentCertificateExpiresAt.Time):
+			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+				"CertificateExpiring", "The agent mTLS certificate is approaching expiry")
+			requeueAfter = minPositive(requeueAfter,
+				site.Status.AgentCertificateExpiresAt.Sub(now()))
+		default:
+			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionTrue,
+				"CertificateCurrent", "The agent mTLS certificate is current")
+			requeueAfter = minPositive(requeueAfter,
+				site.Status.AgentCertificateExpiresAt.Add(-2*time.Hour).Sub(now()))
+		}
 	}
 	var peer corev1.Secret
 	peerErr := r.Get(ctx, types.NamespacedName{
@@ -185,6 +203,8 @@ func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
 		"AdministrativelyRevoked", "The site identity has been revoked")
 	setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
 		"AdministrativelyRevoked", "Control connections from this site are rejected")
+	setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+		"AdministrativelyRevoked", "The site identity has been revoked")
 	setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionFalse,
 		"AdministrativelyRevoked", "The WireGuard peer has been removed")
 	return r.Status().Update(ctx, site)
@@ -197,6 +217,16 @@ func tokenExpired(secret *corev1.Secret, now time.Time) bool {
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, string(encoded))
 	return err != nil || !now.Before(expiresAt)
+}
+
+func minPositive(current, candidate time.Duration) time.Duration {
+	if candidate <= 0 {
+		return current
+	}
+	if current == 0 || candidate < current {
+		return candidate
+	}
+	return current
 }
 
 func ptr[T any](value T) *T {

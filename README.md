@@ -186,6 +186,12 @@ until its `MultiSitePostgres` backup specification is configured.
   instance identities, and non-decreasing revisions.
 - gRPC requires TLS 1.3 and a client certificate identity matching the
   immutable `SiteRegistration` UID.
+- Agent certificates are valid for 24 hours and renew within their final eight
+  hours through a CSR sent on the existing authenticated stream. The agent
+  validates the returned chain and SPIFFE identity, creates an immutable
+  versioned identity Secret, and rolls its Deployment without replacing an
+  in-use private key Secret. `SiteRegistration.status.agentCertificateExpiresAt`
+  and the `IdentityReady` condition expose renewal health.
 - Setting `SiteRegistration.spec.revoked` is irreversible. It removes bootstrap
   and WireGuard peer credentials and terminates control access without deleting
   workloads in the target cluster.

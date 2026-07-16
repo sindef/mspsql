@@ -178,6 +178,9 @@ spec:
           status:
             description: status defines the observed state of SiteRegistration
             properties:
+              agentCertificateExpiresAt:
+                format: date-time
+                type: string
               agentVersion:
                 type: string
               capabilities:

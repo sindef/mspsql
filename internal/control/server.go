@@ -22,12 +22,14 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +47,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Server struct {
@@ -52,6 +55,18 @@ type Server struct {
 	Client          client.Client
 	Now             func() time.Time
 	SystemNamespace string
+	SignCertificate func(context.Context, *api.SiteRegistration, []byte) ([]byte, []byte, error)
+}
+
+type lockedControlStream struct {
+	controlv1.AgentControl_ConnectServer
+	sendMu sync.Mutex
+}
+
+func (s *lockedControlStream) Send(message *controlv1.HubMessage) error {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return s.AgentControl_ConnectServer.Send(message)
 }
 
 func (s *Server) Connect(stream controlv1.AgentControl_ConnectServer) error {
@@ -66,19 +81,21 @@ func (s *Server) Connect(stream controlv1.AgentControl_ConnectServer) error {
 	if hello.ProtocolVersion != plan.ProtocolVersion {
 		return status.Errorf(codes.FailedPrecondition, "unsupported protocol version %q", hello.ProtocolVersion)
 	}
-	if err := validatePeerIdentity(stream.Context(), hello.RegistrationUid); err != nil {
+	peerCertificate, err := validatePeerIdentity(stream.Context(), hello.RegistrationUid)
+	if err != nil {
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
-	site, err := s.bindSite(stream.Context(), hello)
+	site, err := s.bindSite(stream.Context(), hello, peerCertificate.NotAfter)
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	lockedStream := &lockedControlStream{AgentControl_ConnectServer: stream}
 	errs := make(chan error, 2)
-	go func() { errs <- s.sendPlans(ctx, stream, site.Name, string(site.UID)) }()
-	go func() { errs <- s.receive(ctx, stream, site.Name) }()
+	go func() { errs <- s.sendPlans(ctx, lockedStream, site.Name, string(site.UID)) }()
+	go func() { errs <- s.receive(ctx, lockedStream, site) }()
 	err = <-errs
 	cancel()
 	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
@@ -87,7 +104,9 @@ func (s *Server) Connect(stream controlv1.AgentControl_ConnectServer) error {
 	return err
 }
 
-func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello) (*api.SiteRegistration, error) {
+func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello,
+	certificateNotAfter time.Time,
+) (*api.SiteRegistration, error) {
 	var sites api.SiteRegistrationList
 	if err := s.Client.List(ctx, &sites); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -111,8 +130,12 @@ func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello) (*ap
 			current.Status.AgentVersion = hello.AgentVersion
 			current.Status.Capabilities = append([]string(nil), hello.Capabilities...)
 			current.Status.LastHeartbeatTime = &now
+			expiresAt := metav1.NewTime(certificateNotAfter)
+			current.Status.AgentCertificateExpiresAt = &expiresAt
 			setSiteCondition(&current.Status.Conditions, "Connected", metav1.ConditionTrue,
 				"ControlStreamEstablished", "The authenticated agent control stream is active")
+			setSiteCondition(&current.Status.Conditions, "IdentityReady", metav1.ConditionTrue,
+				"CertificateAuthenticated", "The agent presented a valid site identity certificate")
 			return nil
 		})
 		if err != nil {
@@ -343,7 +366,7 @@ func (s *Server) signingKey(ctx context.Context) (ed25519.PrivateKey, error) {
 }
 
 func (s *Server) receive(ctx context.Context, stream controlv1.AgentControl_ConnectServer,
-	siteName string,
+	site *api.SiteRegistration,
 ) error {
 	for {
 		message, err := stream.Recv()
@@ -351,28 +374,75 @@ func (s *Server) receive(ctx context.Context, stream controlv1.AgentControl_Conn
 			return err
 		}
 		switch {
+		case message.GetCertificateSigningRequest() != nil:
+			if err := s.rotateCertificate(ctx, stream, site,
+				message.GetCertificateSigningRequest()); err != nil {
+				return err
+			}
 		case message.GetHeartbeat() != nil:
-			if err := s.recordHeartbeat(ctx, siteName, message.GetHeartbeat()); err != nil {
+			if err := s.recordHeartbeat(ctx, site.Name, message.GetHeartbeat()); err != nil {
 				return err
 			}
 		case message.GetAcknowledgement() != nil:
-			if err := s.recordAcknowledgement(ctx, siteName, message.GetAcknowledgement()); err != nil {
+			if err := s.recordAcknowledgement(ctx, site.Name, message.GetAcknowledgement()); err != nil {
 				return err
 			}
 		case message.GetProgress() != nil:
-			if err := s.recordProgress(ctx, siteName, message.GetProgress()); err != nil {
+			if err := s.recordProgress(ctx, site.Name, message.GetProgress()); err != nil {
 				return err
 			}
 		case message.GetResult() != nil:
-			if err := s.recordResult(ctx, siteName, message.GetResult()); err != nil {
+			if err := s.recordResult(ctx, site.Name, message.GetResult()); err != nil {
 				return err
 			}
 		case message.GetInventory() != nil:
-			if err := s.recordInventory(ctx, siteName, message.GetInventory()); err != nil {
+			if err := s.recordInventory(ctx, site.Name, message.GetInventory()); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func (s *Server) rotateCertificate(ctx context.Context, stream controlv1.AgentControl_ConnectServer,
+	site *api.SiteRegistration, request *controlv1.CertificateSigningRequest,
+) error {
+	if s.SignCertificate == nil {
+		return status.Error(codes.FailedPrecondition, "certificate renewal is not configured")
+	}
+	if request.RequestId == "" || len(request.RequestId) > 128 ||
+		len(request.CsrPem) == 0 || len(request.CsrPem) > 16<<10 {
+		return status.Error(codes.InvalidArgument, "certificate signing request is invalid")
+	}
+	if err := s.ensureSiteActive(ctx, site.Name, string(site.UID)); err != nil {
+		return err
+	}
+	certificatePEM, caPEM, err := s.SignCertificate(ctx, site, request.CsrPem)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	block, _ := pem.Decode(certificatePEM)
+	if block == nil {
+		return status.Error(codes.Internal, "certificate signer returned invalid PEM")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return status.Error(codes.Internal, "certificate signer returned an invalid certificate")
+	}
+	if err := stream.Send(&controlv1.HubMessage{
+		Message: &controlv1.HubMessage_Certificate{Certificate: &controlv1.CertificateResponse{
+			RequestId: request.RequestId, CertificatePem: certificatePEM, CaBundlePem: caPEM,
+			NotAfter: timestamppb.New(certificate.NotAfter),
+		}},
+	}); err != nil {
+		return err
+	}
+	_, err = s.updateSiteStatus(ctx, site.Name, func(current *api.SiteRegistration) error {
+		setSiteCondition(&current.Status.Conditions, "IdentityReady", metav1.ConditionTrue,
+			"CertificateIssued",
+			"A renewed agent mTLS certificate was issued over the authenticated stream")
+		return nil
+	})
+	return err
 }
 
 func (s *Server) recordHeartbeat(ctx context.Context, siteName string,
@@ -872,20 +942,20 @@ func (s *Server) triggerInstanceReconcile(ctx context.Context, instanceUID strin
 	})
 }
 
-func validatePeerIdentity(ctx context.Context, registrationUID string) error {
+func validatePeerIdentity(ctx context.Context, registrationUID string) (*x509.Certificate, error) {
 	peerInfo, ok := peer.FromContext(ctx)
 	if !ok {
-		return errors.New("mTLS peer information is missing")
+		return nil, errors.New("mTLS peer information is missing")
 	}
 	tlsInfo, ok := peerInfo.AuthInfo.(credentials.TLSInfo)
 	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return errors.New("mTLS client certificate is missing")
+		return nil, errors.New("mTLS client certificate is missing")
 	}
 	certificate := tlsInfo.State.PeerCertificates[0]
 	if certificate.Subject.CommonName == registrationUID || certificateHasURI(certificate, registrationUID) {
-		return nil
+		return certificate, nil
 	}
-	return errors.New("mTLS certificate identity does not match registration UID")
+	return nil, errors.New("mTLS certificate identity does not match registration UID")
 }
 
 func certificateHasURI(certificate *x509.Certificate, identity string) bool {

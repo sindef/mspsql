@@ -17,6 +17,7 @@ limitations under the License.
 package registration
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -247,7 +248,7 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 		http.Error(response, "cluster UID is already registered", http.StatusConflict)
 		return
 	}
-	certificatePEM, caPEM, err := s.signCSR(request.Context(), site, binding.CSRPEM)
+	certificatePEM, caPEM, err := s.SignCSR(request.Context(), site, []byte(binding.CSRPEM))
 	if err != nil {
 		http.Error(response, "CSR validation or signing failed", http.StatusBadRequest)
 		return
@@ -281,29 +282,38 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 	}
 	response.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(response).Encode(BindResponse{
-		CertificatePEM: certificatePEM, CABundlePEM: caPEM,
+		CertificatePEM: string(certificatePEM), CABundlePEM: string(caPEM),
 		PlanPublicKey:      string(signingKey.Data["publicKey"]),
 		WireGuardPeerState: peerConfiguration,
 	})
 }
 
-func (s *HTTPServer) signCSR(ctx context.Context, site *api.SiteRegistration, csrPEM string) (string, string, error) {
+func (s *HTTPServer) SignCSR(ctx context.Context, site *api.SiteRegistration,
+	csrPEM []byte,
+) ([]byte, []byte, error) {
 	caCertificate, caKey, caPEM, err := s.ensureCA(ctx)
 	if err != nil {
-		return "", "", err
+		return nil, nil, err
 	}
-	block, _ := pem.Decode([]byte(csrPEM))
+	block, trailing := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		return "", "", fmt.Errorf("CSR PEM is invalid")
+		return nil, nil, fmt.Errorf("CSR PEM is invalid")
+	}
+	if len(bytes.TrimSpace(trailing)) != 0 {
+		return nil, nil, fmt.Errorf("CSR PEM contains trailing data")
 	}
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil || csr.CheckSignature() != nil {
-		return "", "", fmt.Errorf("CSR signature is invalid")
+		return nil, nil, fmt.Errorf("CSR signature is invalid")
+	}
+	publicKey, ok := csr.PublicKey.(*ecdsa.PublicKey)
+	if !ok || publicKey.Curve != elliptic.P256() {
+		return nil, nil, fmt.Errorf("CSR must use an ECDSA P-256 key")
 	}
 	identity, _ := url.Parse("spiffe://multisite-postgres.dev/site/" + string(site.UID))
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return "", "", err
+		return nil, nil, err
 	}
 	template := &x509.Certificate{
 		SerialNumber: serial, Subject: pkix.Name{CommonName: string(site.UID)},
@@ -313,9 +323,9 @@ func (s *HTTPServer) signCSR(ctx context.Context, site *api.SiteRegistration, cs
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, caCertificate, csr.PublicKey, caKey)
 	if err != nil {
-		return "", "", err
+		return nil, nil, err
 	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(caPEM), nil
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), caPEM, nil
 }
 
 func (s *HTTPServer) ensureCA(ctx context.Context) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {

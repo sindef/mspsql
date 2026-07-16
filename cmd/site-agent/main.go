@@ -51,6 +51,7 @@ import (
 	"github.com/sindef/mspsql/internal/agent"
 	"github.com/sindef/mspsql/internal/control"
 	"github.com/sindef/mspsql/internal/plan"
+	"github.com/sindef/mspsql/internal/siteidentity"
 	vaultclient "github.com/sindef/mspsql/internal/vault"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -144,6 +145,10 @@ func main() {
 				}
 				defer func() { _ = os.Remove(activationPath) }()
 				runControlLoop(leaderCtx, target, tlsConfig, cache, reconciler, directiveExecutor,
+					&siteidentity.Rotator{
+						Client: kube, Namespace: namespace, DeploymentName: "mspsql-agent",
+						MountPath: "/etc/mspsql/identity", RegistrationUID: registrationUID,
+					},
 					registrationUID, string(clusterUID))
 			},
 			OnStoppedLeading: func() {
@@ -189,6 +194,7 @@ func vaultServiceAccountToken(kube client.Client) func(context.Context, string, 
 
 func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, cache *agent.Cache,
 	reconciler *agent.Reconciler, directiveExecutor *agent.DirectiveExecutor,
+	certificates control.CertificateRotator,
 	registrationUID, clusterUID string,
 ) {
 	log := crlog.FromContext(ctx).WithName("control")
@@ -211,6 +217,7 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 				},
 			},
 			Cache: cache, Reconciler: reconciler, Directives: directiveExecutor,
+			Certificates: certificates,
 			Inventory: func(inventoryCtx context.Context) ([]byte, error) {
 				return agent.DiscoverInventory(inventoryCtx, cache.Client)
 			},
@@ -277,6 +284,11 @@ func readPublicKey(path string) ed25519.PublicKey {
 
 func clientTLS(certificatePath, privateKeyPath, caPath string) *tls.Config {
 	certificate, err := tls.LoadX509KeyPair(certificatePath, privateKeyPath)
+	must(err)
+	if len(certificate.Certificate) == 0 {
+		panic("agent certificate chain is empty")
+	}
+	certificate.Leaf, err = x509.ParseCertificate(certificate.Certificate[0])
 	must(err)
 	caPEM, err := os.ReadFile(caPath)
 	must(err)

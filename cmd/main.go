@@ -251,23 +251,27 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "postgresupgrade")
 		os.Exit(1)
 	}
+	registrationServer := &registration.HTTPServer{
+		Address: registrationAddress, Client: mgr.GetClient(), SystemNamespace: systemNamespace,
+		PublicURL: registrationPublicURL, HubDomain: hubDomain, HubAddress: hubControlAddress,
+		AgentImage: agentImage, WireGuardImage: wireGuardImage,
+		WireGuardNetworkCIDR: wireGuardNetworkCIDR, WireGuardEndpoint: wireGuardEndpoint,
+	}
 	if controlAddress != "" {
 		if err := mgr.Add(&control.RunnableServer{
 			Address: controlAddress, Certificate: controlCertificate,
 			PrivateKey: controlPrivateKey, ClientCA: controlClientCA,
-			Service: &control.Server{Client: mgr.GetClient(), SystemNamespace: systemNamespace},
+			Service: &control.Server{
+				Client: mgr.GetClient(), SystemNamespace: systemNamespace,
+				SignCertificate: registrationServer.SignCSR,
+			},
 		}); err != nil {
 			setupLog.Error(err, "Failed to add agent control server")
 			os.Exit(1)
 		}
 	}
 	if registrationAddress != "" {
-		if err := mgr.Add(&registration.HTTPServer{
-			Address: registrationAddress, Client: mgr.GetClient(), SystemNamespace: systemNamespace,
-			PublicURL: registrationPublicURL, HubDomain: hubDomain, HubAddress: hubControlAddress,
-			AgentImage: agentImage, WireGuardImage: wireGuardImage,
-			WireGuardNetworkCIDR: wireGuardNetworkCIDR, WireGuardEndpoint: wireGuardEndpoint,
-		}); err != nil {
+		if err := mgr.Add(registrationServer); err != nil {
 			setupLog.Error(err, "Failed to add registration server")
 			os.Exit(1)
 		}

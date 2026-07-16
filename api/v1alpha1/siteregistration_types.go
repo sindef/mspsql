@@ -38,6 +38,7 @@ type SiteRegistrationStatus struct {
 	RegistrationURL                 string                         `json:"registrationURL,omitempty"`
 	RegistrationExpiresAt           *metav1.Time                   `json:"registrationExpiresAt,omitempty"`
 	LastHeartbeatTime               *metav1.Time                   `json:"lastHeartbeatTime,omitempty"`
+	AgentCertificateExpiresAt       *metav1.Time                   `json:"agentCertificateExpiresAt,omitempty"`
 	AgentVersion                    string                         `json:"agentVersion,omitempty"`
 	DiscoveredStorageClasses        []StorageClassInventory        `json:"discoveredStorageClasses,omitempty"`
 	DiscoveredVolumeSnapshotClasses []VolumeSnapshotClassInventory `json:"discoveredVolumeSnapshotClasses,omitempty"`

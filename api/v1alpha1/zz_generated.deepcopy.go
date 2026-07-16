@@ -1121,6 +1121,10 @@ func (in *SiteRegistrationStatus) DeepCopyInto(out *SiteRegistrationStatus) {
 		in, out := &in.LastHeartbeatTime, &out.LastHeartbeatTime
 		*out = (*in).DeepCopy()
 	}
+	if in.AgentCertificateExpiresAt != nil {
+		in, out := &in.AgentCertificateExpiresAt, &out.AgentCertificateExpiresAt
+		*out = (*in).DeepCopy()
+	}
 	if in.DiscoveredStorageClasses != nil {
 		in, out := &in.DiscoveredStorageClasses, &out.DiscoveredStorageClasses
 		*out = make([]StorageClassInventory, len(*in))

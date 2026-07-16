@@ -32,6 +32,7 @@ type AgentMessage struct {
 	//	*AgentMessage_Progress
 	//	*AgentMessage_Result
 	//	*AgentMessage_Inventory
+	//	*AgentMessage_CertificateSigningRequest
 	Message       isAgentMessage_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -128,6 +129,15 @@ func (x *AgentMessage) GetInventory() *InventoryUpdate {
 	return nil
 }
 
+func (x *AgentMessage) GetCertificateSigningRequest() *CertificateSigningRequest {
+	if x != nil {
+		if x, ok := x.Message.(*AgentMessage_CertificateSigningRequest); ok {
+			return x.CertificateSigningRequest
+		}
+	}
+	return nil
+}
+
 type isAgentMessage_Message interface {
 	isAgentMessage_Message()
 }
@@ -156,6 +166,10 @@ type AgentMessage_Inventory struct {
 	Inventory *InventoryUpdate `protobuf:"bytes,6,opt,name=inventory,proto3,oneof"`
 }
 
+type AgentMessage_CertificateSigningRequest struct {
+	CertificateSigningRequest *CertificateSigningRequest `protobuf:"bytes,7,opt,name=certificate_signing_request,json=certificateSigningRequest,proto3,oneof"`
+}
+
 func (*AgentMessage_Hello) isAgentMessage_Message() {}
 
 func (*AgentMessage_Heartbeat) isAgentMessage_Message() {}
@@ -167,6 +181,8 @@ func (*AgentMessage_Progress) isAgentMessage_Message() {}
 func (*AgentMessage_Result) isAgentMessage_Message() {}
 
 func (*AgentMessage_Inventory) isAgentMessage_Message() {}
+
+func (*AgentMessage_CertificateSigningRequest) isAgentMessage_Message() {}
 
 type AgentHello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -807,6 +823,8 @@ type CertificateResponse struct {
 	CertificatePem             []byte                 `protobuf:"bytes,1,opt,name=certificate_pem,json=certificatePem,proto3" json:"certificate_pem,omitempty"`
 	CaBundlePem                []byte                 `protobuf:"bytes,2,opt,name=ca_bundle_pem,json=caBundlePem,proto3" json:"ca_bundle_pem,omitempty"`
 	WireguardPeerConfiguration string                 `protobuf:"bytes,3,opt,name=wireguard_peer_configuration,json=wireguardPeerConfiguration,proto3" json:"wireguard_peer_configuration,omitempty"`
+	RequestId                  string                 `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	NotAfter                   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=not_after,json=notAfter,proto3" json:"not_after,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }
@@ -862,6 +880,72 @@ func (x *CertificateResponse) GetWireguardPeerConfiguration() string {
 	return ""
 }
 
+func (x *CertificateResponse) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CertificateResponse) GetNotAfter() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NotAfter
+	}
+	return nil
+}
+
+type CertificateSigningRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	CsrPem        []byte                 `protobuf:"bytes,2,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CertificateSigningRequest) Reset() {
+	*x = CertificateSigningRequest{}
+	mi := &file_control_v1_control_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CertificateSigningRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CertificateSigningRequest) ProtoMessage() {}
+
+func (x *CertificateSigningRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_v1_control_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CertificateSigningRequest.ProtoReflect.Descriptor instead.
+func (*CertificateSigningRequest) Descriptor() ([]byte, []int) {
+	return file_control_v1_control_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *CertificateSigningRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CertificateSigningRequest) GetCsrPem() []byte {
+	if x != nil {
+		return x.CsrPem
+	}
+	return nil
+}
+
 type CancelOperation struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OperationUid  string                 `protobuf:"bytes,1,opt,name=operation_uid,json=operationUid,proto3" json:"operation_uid,omitempty"`
@@ -872,7 +956,7 @@ type CancelOperation struct {
 
 func (x *CancelOperation) Reset() {
 	*x = CancelOperation{}
-	mi := &file_control_v1_control_proto_msgTypes[11]
+	mi := &file_control_v1_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -884,7 +968,7 @@ func (x *CancelOperation) String() string {
 func (*CancelOperation) ProtoMessage() {}
 
 func (x *CancelOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_control_v1_control_proto_msgTypes[11]
+	mi := &file_control_v1_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -897,7 +981,7 @@ func (x *CancelOperation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelOperation.ProtoReflect.Descriptor instead.
 func (*CancelOperation) Descriptor() ([]byte, []int) {
-	return file_control_v1_control_proto_rawDescGZIP(), []int{11}
+	return file_control_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CancelOperation) GetOperationUid() string {
@@ -927,7 +1011,7 @@ type Condition struct {
 
 func (x *Condition) Reset() {
 	*x = Condition{}
-	mi := &file_control_v1_control_proto_msgTypes[12]
+	mi := &file_control_v1_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -939,7 +1023,7 @@ func (x *Condition) String() string {
 func (*Condition) ProtoMessage() {}
 
 func (x *Condition) ProtoReflect() protoreflect.Message {
-	mi := &file_control_v1_control_proto_msgTypes[12]
+	mi := &file_control_v1_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -952,7 +1036,7 @@ func (x *Condition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Condition.ProtoReflect.Descriptor instead.
 func (*Condition) Descriptor() ([]byte, []int) {
-	return file_control_v1_control_proto_rawDescGZIP(), []int{12}
+	return file_control_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Condition) GetType() string {
@@ -994,14 +1078,15 @@ var File_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x18control/v1/control.proto\x12\x11mspsql.control.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa3\x03\n" +
+	"\x18control/v1/control.proto\x12\x11mspsql.control.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x93\x04\n" +
 	"\fAgentMessage\x125\n" +
 	"\x05hello\x18\x01 \x01(\v2\x1d.mspsql.control.v1.AgentHelloH\x00R\x05hello\x12A\n" +
 	"\theartbeat\x18\x02 \x01(\v2!.mspsql.control.v1.AgentHeartbeatH\x00R\theartbeat\x12R\n" +
 	"\x0facknowledgement\x18\x03 \x01(\v2&.mspsql.control.v1.PlanAcknowledgementH\x00R\x0facknowledgement\x12=\n" +
 	"\bprogress\x18\x04 \x01(\v2\x1f.mspsql.control.v1.PlanProgressH\x00R\bprogress\x127\n" +
 	"\x06result\x18\x05 \x01(\v2\x1d.mspsql.control.v1.PlanResultH\x00R\x06result\x12B\n" +
-	"\tinventory\x18\x06 \x01(\v2\".mspsql.control.v1.InventoryUpdateH\x00R\tinventoryB\t\n" +
+	"\tinventory\x18\x06 \x01(\v2\".mspsql.control.v1.InventoryUpdateH\x00R\tinventory\x12n\n" +
+	"\x1bcertificate_signing_request\x18\a \x01(\v2,.mspsql.control.v1.CertificateSigningRequestH\x00R\x19certificateSigningRequestB\t\n" +
 	"\amessage\"\xcc\x01\n" +
 	"\n" +
 	"AgentHello\x12)\n" +
@@ -1057,11 +1142,18 @@ const file_control_v1_control_proto_rawDesc = "" +
 	"\roperation_uid\x18\x01 \x01(\tR\foperationUid\x12!\n" +
 	"\finstance_uid\x18\x02 \x01(\tR\vinstanceUid\x12\x12\n" +
 	"\x04type\x18\x03 \x01(\tR\x04type\x12%\n" +
-	"\x0edirective_json\x18\x04 \x01(\fR\rdirectiveJson\"\xa4\x01\n" +
+	"\x0edirective_json\x18\x04 \x01(\fR\rdirectiveJson\"\xfc\x01\n" +
 	"\x13CertificateResponse\x12'\n" +
 	"\x0fcertificate_pem\x18\x01 \x01(\fR\x0ecertificatePem\x12\"\n" +
 	"\rca_bundle_pem\x18\x02 \x01(\fR\vcaBundlePem\x12@\n" +
-	"\x1cwireguard_peer_configuration\x18\x03 \x01(\tR\x1awireguardPeerConfiguration\"N\n" +
+	"\x1cwireguard_peer_configuration\x18\x03 \x01(\tR\x1awireguardPeerConfiguration\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\tR\trequestId\x127\n" +
+	"\tnot_after\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"S\n" +
+	"\x19CertificateSigningRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
+	"\acsr_pem\x18\x02 \x01(\fR\x06csrPem\"N\n" +
 	"\x0fCancelOperation\x12#\n" +
 	"\roperation_uid\x18\x01 \x01(\tR\foperationUid\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xb7\x01\n" +
@@ -1086,24 +1178,25 @@ func file_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_control_v1_control_proto_rawDescData
 }
 
-var file_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_control_v1_control_proto_goTypes = []any{
-	(*AgentMessage)(nil),          // 0: mspsql.control.v1.AgentMessage
-	(*AgentHello)(nil),            // 1: mspsql.control.v1.AgentHello
-	(*AgentHeartbeat)(nil),        // 2: mspsql.control.v1.AgentHeartbeat
-	(*PlanAcknowledgement)(nil),   // 3: mspsql.control.v1.PlanAcknowledgement
-	(*PlanProgress)(nil),          // 4: mspsql.control.v1.PlanProgress
-	(*PlanResult)(nil),            // 5: mspsql.control.v1.PlanResult
-	(*InventoryUpdate)(nil),       // 6: mspsql.control.v1.InventoryUpdate
-	(*HubMessage)(nil),            // 7: mspsql.control.v1.HubMessage
-	(*DesiredSitePlan)(nil),       // 8: mspsql.control.v1.DesiredSitePlan
-	(*OperationDirective)(nil),    // 9: mspsql.control.v1.OperationDirective
-	(*CertificateResponse)(nil),   // 10: mspsql.control.v1.CertificateResponse
-	(*CancelOperation)(nil),       // 11: mspsql.control.v1.CancelOperation
-	(*Condition)(nil),             // 12: mspsql.control.v1.Condition
-	nil,                           // 13: mspsql.control.v1.AgentHeartbeat.ActiveRevisionsEntry
-	nil,                           // 14: mspsql.control.v1.PlanProgress.ResourceSummariesEntry
-	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
+	(*AgentMessage)(nil),              // 0: mspsql.control.v1.AgentMessage
+	(*AgentHello)(nil),                // 1: mspsql.control.v1.AgentHello
+	(*AgentHeartbeat)(nil),            // 2: mspsql.control.v1.AgentHeartbeat
+	(*PlanAcknowledgement)(nil),       // 3: mspsql.control.v1.PlanAcknowledgement
+	(*PlanProgress)(nil),              // 4: mspsql.control.v1.PlanProgress
+	(*PlanResult)(nil),                // 5: mspsql.control.v1.PlanResult
+	(*InventoryUpdate)(nil),           // 6: mspsql.control.v1.InventoryUpdate
+	(*HubMessage)(nil),                // 7: mspsql.control.v1.HubMessage
+	(*DesiredSitePlan)(nil),           // 8: mspsql.control.v1.DesiredSitePlan
+	(*OperationDirective)(nil),        // 9: mspsql.control.v1.OperationDirective
+	(*CertificateResponse)(nil),       // 10: mspsql.control.v1.CertificateResponse
+	(*CertificateSigningRequest)(nil), // 11: mspsql.control.v1.CertificateSigningRequest
+	(*CancelOperation)(nil),           // 12: mspsql.control.v1.CancelOperation
+	(*Condition)(nil),                 // 13: mspsql.control.v1.Condition
+	nil,                               // 14: mspsql.control.v1.AgentHeartbeat.ActiveRevisionsEntry
+	nil,                               // 15: mspsql.control.v1.PlanProgress.ResourceSummariesEntry
+	(*timestamppb.Timestamp)(nil),     // 16: google.protobuf.Timestamp
 }
 var file_control_v1_control_proto_depIdxs = []int32{
 	1,  // 0: mspsql.control.v1.AgentMessage.hello:type_name -> mspsql.control.v1.AgentHello
@@ -1112,22 +1205,24 @@ var file_control_v1_control_proto_depIdxs = []int32{
 	4,  // 3: mspsql.control.v1.AgentMessage.progress:type_name -> mspsql.control.v1.PlanProgress
 	5,  // 4: mspsql.control.v1.AgentMessage.result:type_name -> mspsql.control.v1.PlanResult
 	6,  // 5: mspsql.control.v1.AgentMessage.inventory:type_name -> mspsql.control.v1.InventoryUpdate
-	13, // 6: mspsql.control.v1.AgentHeartbeat.active_revisions:type_name -> mspsql.control.v1.AgentHeartbeat.ActiveRevisionsEntry
-	15, // 7: mspsql.control.v1.AgentHeartbeat.sent_at:type_name -> google.protobuf.Timestamp
-	14, // 8: mspsql.control.v1.PlanProgress.resource_summaries:type_name -> mspsql.control.v1.PlanProgress.ResourceSummariesEntry
-	12, // 9: mspsql.control.v1.PlanResult.conditions:type_name -> mspsql.control.v1.Condition
-	8,  // 10: mspsql.control.v1.HubMessage.plan:type_name -> mspsql.control.v1.DesiredSitePlan
-	9,  // 11: mspsql.control.v1.HubMessage.directive:type_name -> mspsql.control.v1.OperationDirective
-	10, // 12: mspsql.control.v1.HubMessage.certificate:type_name -> mspsql.control.v1.CertificateResponse
-	11, // 13: mspsql.control.v1.HubMessage.cancel:type_name -> mspsql.control.v1.CancelOperation
-	15, // 14: mspsql.control.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
-	0,  // 15: mspsql.control.v1.AgentControl.Connect:input_type -> mspsql.control.v1.AgentMessage
-	7,  // 16: mspsql.control.v1.AgentControl.Connect:output_type -> mspsql.control.v1.HubMessage
-	16, // [16:17] is the sub-list for method output_type
-	15, // [15:16] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	11, // 6: mspsql.control.v1.AgentMessage.certificate_signing_request:type_name -> mspsql.control.v1.CertificateSigningRequest
+	14, // 7: mspsql.control.v1.AgentHeartbeat.active_revisions:type_name -> mspsql.control.v1.AgentHeartbeat.ActiveRevisionsEntry
+	16, // 8: mspsql.control.v1.AgentHeartbeat.sent_at:type_name -> google.protobuf.Timestamp
+	15, // 9: mspsql.control.v1.PlanProgress.resource_summaries:type_name -> mspsql.control.v1.PlanProgress.ResourceSummariesEntry
+	13, // 10: mspsql.control.v1.PlanResult.conditions:type_name -> mspsql.control.v1.Condition
+	8,  // 11: mspsql.control.v1.HubMessage.plan:type_name -> mspsql.control.v1.DesiredSitePlan
+	9,  // 12: mspsql.control.v1.HubMessage.directive:type_name -> mspsql.control.v1.OperationDirective
+	10, // 13: mspsql.control.v1.HubMessage.certificate:type_name -> mspsql.control.v1.CertificateResponse
+	12, // 14: mspsql.control.v1.HubMessage.cancel:type_name -> mspsql.control.v1.CancelOperation
+	16, // 15: mspsql.control.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	16, // 16: mspsql.control.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
+	0,  // 17: mspsql.control.v1.AgentControl.Connect:input_type -> mspsql.control.v1.AgentMessage
+	7,  // 18: mspsql.control.v1.AgentControl.Connect:output_type -> mspsql.control.v1.HubMessage
+	18, // [18:19] is the sub-list for method output_type
+	17, // [17:18] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_control_v1_control_proto_init() }
@@ -1142,6 +1237,7 @@ func file_control_v1_control_proto_init() {
 		(*AgentMessage_Progress)(nil),
 		(*AgentMessage_Result)(nil),
 		(*AgentMessage_Inventory)(nil),
+		(*AgentMessage_CertificateSigningRequest)(nil),
 	}
 	file_control_v1_control_proto_msgTypes[7].OneofWrappers = []any{
 		(*HubMessage_Plan)(nil),
@@ -1155,7 +1251,7 @@ func file_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_v1_control_proto_rawDesc), len(file_control_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

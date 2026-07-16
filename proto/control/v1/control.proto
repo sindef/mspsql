@@ -18,6 +18,7 @@ message AgentMessage {
     PlanProgress progress = 4;
     PlanResult result = 5;
     InventoryUpdate inventory = 6;
+    CertificateSigningRequest certificate_signing_request = 7;
   }
 }
 
@@ -87,6 +88,13 @@ message CertificateResponse {
   bytes certificate_pem = 1;
   bytes ca_bundle_pem = 2;
   string wireguard_peer_configuration = 3;
+  string request_id = 4;
+  google.protobuf.Timestamp not_after = 5;
+}
+
+message CertificateSigningRequest {
+  string request_id = 1;
+  bytes csr_pem = 2;
 }
 
 message CancelOperation {

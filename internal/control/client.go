@@ -44,10 +44,16 @@ type AgentClient struct {
 	Reconciler   *agent.Reconciler
 	Directives   DirectiveExecutor
 	Inventory    func(context.Context) ([]byte, error)
+	Certificates CertificateRotator
 	sendMu       sync.Mutex
 	activeMu     sync.Mutex
 	active       map[string]int64
 	heartbeatNow func() time.Time
+}
+
+type CertificateRotator interface {
+	Request(context.Context) (*controlv1.CertificateSigningRequest, error)
+	Install(context.Context, *controlv1.CertificateResponse) error
 }
 
 type DirectiveExecutor interface {
@@ -78,6 +84,9 @@ func (c *AgentClient) Run(ctx context.Context) error {
 	if err := c.send(stream, &controlv1.AgentMessage{
 		Message: &controlv1.AgentMessage_Hello{Hello: c.Hello},
 	}); err != nil {
+		return err
+	}
+	if err := c.requestCertificate(ctx, stream); err != nil {
 		return err
 	}
 	if err := c.sendInventory(ctx, stream); err != nil {
@@ -126,13 +135,11 @@ func (c *AgentClient) Run(ctx context.Context) error {
 				return receive.err
 			}
 			message := receive.message
-			if message.GetDirective() != nil {
-				if err := c.applyDirective(ctx, stream, message.GetDirective()); err != nil {
-					return err
-				}
-				continue
+			handled, err := c.handleNonPlanMessage(ctx, stream, message)
+			if err != nil {
+				return err
 			}
-			if message.GetPlan() == nil {
+			if handled {
 				continue
 			}
 			desired := message.GetPlan()
@@ -175,6 +182,39 @@ func (c *AgentClient) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (c *AgentClient) requestCertificate(ctx context.Context,
+	stream controlv1.AgentControl_ConnectClient,
+) error {
+	if c.Certificates == nil {
+		return nil
+	}
+	request, err := c.Certificates.Request(ctx)
+	if err != nil || request == nil {
+		return err
+	}
+	return c.send(stream, &controlv1.AgentMessage{
+		Message: &controlv1.AgentMessage_CertificateSigningRequest{
+			CertificateSigningRequest: request,
+		},
+	})
+}
+
+func (c *AgentClient) handleNonPlanMessage(ctx context.Context,
+	stream controlv1.AgentControl_ConnectClient,
+	message *controlv1.HubMessage,
+) (bool, error) {
+	if message.GetCertificate() != nil {
+		if c.Certificates == nil {
+			return true, errors.New("hub sent a certificate response when rotation is disabled")
+		}
+		return true, c.Certificates.Install(ctx, message.GetCertificate())
+	}
+	if message.GetDirective() != nil {
+		return true, c.applyDirective(ctx, stream, message.GetDirective())
+	}
+	return message.GetPlan() == nil, nil
 }
 
 func (c *AgentClient) applyDirective(ctx context.Context, stream controlv1.AgentControl_ConnectClient,
