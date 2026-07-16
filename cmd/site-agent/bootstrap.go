@@ -36,6 +36,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/sindef/mspsql/internal/registration"
@@ -46,7 +47,7 @@ func bootstrapIfRequired(ctx context.Context, kube client.Client, namespace, ide
 	bootstrapPath, clusterUID string,
 ) (bool, error) {
 	if _, err := os.Stat(identityPath); err == nil {
-		return false, nil
+		return false, scrubBootstrapCredential(ctx, kube, namespace)
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
@@ -129,7 +130,25 @@ func bootstrapIfRequired(ctx context.Context, kube client.Client, namespace, ide
 	if err := kube.Create(ctx, identity); err != nil {
 		return false, err
 	}
-	return true, nil
+	return true, scrubBootstrapCredential(ctx, kube, namespace)
+}
+
+func scrubBootstrapCredential(ctx context.Context, kube client.Client, namespace string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var secret corev1.Secret
+		key := client.ObjectKey{Namespace: namespace, Name: "mspsql-agent-bootstrap"}
+		if err := kube.Get(ctx, key, &secret); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		_, hasToken := secret.Data["registration-token"]
+		_, hasApplyAnnotation := secret.Annotations["kubectl.kubernetes.io/last-applied-configuration"]
+		if !hasToken && !hasApplyAnnotation {
+			return nil
+		}
+		delete(secret.Data, "registration-token")
+		delete(secret.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		return kube.Update(ctx, &secret)
+	})
 }
 
 func readTrimmed(path string) (string, error) {
