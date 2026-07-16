@@ -10,6 +10,17 @@ spec:
         args:
         - --leader-elect
         - --health-probe-bind-address=:8081
-        - --control-address=
+        - --control-address=:9444
+        - --registration-public-url=http://HUB_NODE_IP:30082
+        - --hub-control-address=HUB_NODE_IP:30444
+        - --hub-domain=kind.mspsql.test
+        - --site-agent-image=SITE_AGENT_IMAGE
+        - --wireguard-image=
         env:
         - {name: ENABLE_WEBHOOKS, value: "false"}
+        volumeMounts:
+        - {name: control-tls, mountPath: /etc/mspsql/control, readOnly: true}
+      volumes:
+      - name: control-tls
+        secret:
+          secretName: mspsql-control-tls

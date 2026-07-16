@@ -14,8 +14,8 @@ if ! "${kubectl[@]}" -n vault rollout status deployment/vault --timeout=180s; th
   "${kubectl[@]}" -n vault logs deployment/vault --all-containers || true
   exit 1
 fi
-"${kubectl[@]}" create namespace orders-postgres
-"${kubectl[@]}" -n orders-postgres create serviceaccount mspsql-workload
+"${kubectl[@]}" create namespace vault-auth-test
+"${kubectl[@]}" -n vault-auth-test create serviceaccount mspsql-workload
 
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault secrets enable -path=mspsql kv-v2
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault auth enable -path=kubernetes kubernetes
@@ -40,7 +40,7 @@ EOF
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault write \
   auth/kubernetes/role/orders-"${site}" \
   bound_service_account_names=mspsql-workload \
-  bound_service_account_namespaces=orders-postgres \
+  bound_service_account_namespaces=orders-postgres,vault-auth-test \
   audience=vault \
   policies=orders \
   ttl=10m
@@ -52,9 +52,10 @@ EOF
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
   mspsql/postgres/orders/backup s3AccessKey=access s3SecretKey=secret repositoryCipherPassphrase=cipher
 
-jwt="$("${kubectl[@]}" -n orders-postgres create token mspsql-workload --audience=vault --duration=10m)"
+jwt="$("${kubectl[@]}" -n vault-auth-test create token mspsql-workload --audience=vault --duration=10m)"
 client_token="$("${kubectl[@]}" -n vault exec deployment/vault -- env VAULT_ADDR=http://127.0.0.1:8200 \
   vault write -field=token auth/kubernetes/login role=orders-"${site}" jwt="${jwt}")"
 "${kubectl[@]}" -n vault exec deployment/vault -- env VAULT_ADDR=http://127.0.0.1:8200 \
   VAULT_TOKEN="${client_token}" vault kv get -field=superuserPassword mspsql/postgres/orders/bootstrap |
   grep -qx super
+"${kubectl[@]}" delete namespace vault-auth-test --wait=true

@@ -6,6 +6,7 @@ resources:
 - ../../../config/crd
 - ../../../config/rbac
 - ../../../config/manager
+- service.yaml
 patches:
 - path: manager_patch.yaml
   target:

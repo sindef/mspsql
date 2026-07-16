@@ -4,6 +4,7 @@ set -euo pipefail
 
 clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
 image="${IMG:-mspsql:test}"
+agent_image="${AGENT_IMG:-mspsql-agent:test}"
 vault_image="hashicorp/vault:1.21.4"
 
 cleanup() {
@@ -28,7 +29,11 @@ for site in vic nsw qld; do
 done
 
 docker build -t "${image}" .
+docker build -f Dockerfile.agent -t "${agent_image}" .
 kind load docker-image "${image}" --name mspsql-hub
+for site in vic nsw qld; do
+  kind load docker-image "${agent_image}" --name "mspsql-${site}"
+done
 
 export KUBECONFIG
 KUBECONFIG="$(kind get kubeconfig-path --name mspsql-hub 2>/dev/null || true)"
@@ -38,13 +43,17 @@ if [[ -z "${KUBECONFIG}" ]]; then
 fi
 
 make kustomize
+hub_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  mspsql-hub-control-plane)"
 ./bin/kustomize build test/kind/hub |
   sed "s|image: controller:latest|image: ${image}|" |
+  sed "s|HUB_NODE_IP|${hub_ip}|g" |
+  sed "s|SITE_AGENT_IMAGE|${agent_image}|g" |
   kubectl apply -f -
+./test/kind/create-control-tls.sh mspsql-system "${hub_ip}"
 kubectl -n mspsql-system rollout status deployment/mspsql-controller-manager --timeout=180s
 
 for site in vic nsw qld; do
-  uid="$(kind get kubeconfig --name "mspsql-${site}" | kubectl --kubeconfig=/dev/stdin get namespace kube-system -o jsonpath='{.metadata.uid}')"
   kubectl apply -f - <<EOF
 apiVersion: multisite-postgres.dev/v1alpha1
 kind: SiteRegistration
@@ -63,12 +72,43 @@ spec:
     - {name: test, kind: ClusterIssuer, group: cert-manager.io}
   metallbAddressPools: [database-services]
 EOF
-  kubectl patch siteregistration "${site}" --type=merge --subresource=status -p "$(jq -cn \
-    --arg uid "${uid}" '{status:{clusterUID:$uid,phase:"Connected",discoveredStorageClasses:[{name:"standard",provisioner:"kind"}]}}')"
+  for _ in $(seq 1 60); do
+    registration_url="$(kubectl get siteregistration "${site}" -o jsonpath='{.status.registrationURL}')"
+    [[ -n "${registration_url}" ]] && break
+    sleep 1
+  done
+  test -n "${registration_url}"
+  site_kubeconfig="$(mktemp)"
+  kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
+  curl -fsS "${registration_url}" | kubectl --kubeconfig="${site_kubeconfig}" apply -f -
+  rm -f "${site_kubeconfig}"
+  for _ in $(seq 1 120); do
+    phase="$(kubectl get siteregistration "${site}" -o jsonpath='{.status.phase}')"
+    [[ "${phase}" == "Connected" ]] && break
+    sleep 2
+  done
+  test "${phase}" = "Connected"
 done
 
 kubectl create namespace database-platform
 kubectl apply -f test/kind/instance.yaml
+
+for site in vic nsw qld; do
+  site_kubeconfig="$(mktemp)"
+  kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
+  for _ in $(seq 1 90); do
+    namespace_uid="$(kubectl --kubeconfig="${site_kubeconfig}" get namespace orders-postgres \
+      -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+    [[ -n "${namespace_uid}" ]] && break
+    sleep 2
+  done
+  test -n "${namespace_uid}"
+  if [[ "${site}" != "qld" ]]; then
+    kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres get secret postgres-auth \
+      -o jsonpath='{.data.superuser-password}' | base64 -d | grep -qx super
+  fi
+  rm -f "${site_kubeconfig}"
+done
 
 for _ in $(seq 1 60); do
   count="$(kubectl -n database-platform get configmap \
@@ -94,7 +134,8 @@ kubectl -n database-platform get configmap mspsql-plan-orders-vic -o jsonpath='{
   grep -q '10.0.0.1'
 
 kubectl -n database-platform delete multisitepostgres orders --wait=false
-sleep 2
-test "$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.phase}')" = "Deleting"
-kubectl -n database-platform annotate multisitepostgres orders multisite-postgres.dev/force-orphan=true --overwrite
-kubectl -n database-platform wait --for=delete multisitepostgres/orders --timeout=60s
+kubectl -n database-platform wait --for=delete multisitepostgres/orders --timeout=180s
+for site in vic nsw qld; do
+  kind get kubeconfig --name "mspsql-${site}" |
+    kubectl --kubeconfig=/dev/stdin get namespace orders-postgres >/dev/null
+done

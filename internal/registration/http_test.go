@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -126,5 +127,27 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 		Namespace: "system", Name: tokenSecret.Name,
 	}, &consumed); !apierrors.IsNotFound(err) {
 		t.Fatalf("token Secret still exists: %v", err)
+	}
+}
+
+func TestAgentDeploymentCanUseDirectNetwork(t *testing.T) {
+	site := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "vic", UID: types.UID("site-uid"),
+	}}
+	raw, err := json.Marshal(agentDeployment(site, "agent:test", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := json.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("containers = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
+	}
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == "tun" {
+			t.Fatal("direct-network deployment contains tun volume")
+		}
 	}
 }

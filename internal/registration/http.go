@@ -394,6 +394,50 @@ func rule(groups, resources, verbs []string) map[string]any {
 }
 
 func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage string) map[string]any {
+	containers := []any{map[string]any{
+		"name": "site-agent", "image": agentImage,
+		"args": []any{
+			"--hub-address=$(HUB_ADDRESS)", "--hub-domain=$(HUB_DOMAIN)",
+			"--registration-uid=" + string(site.UID),
+		},
+		"env": []any{
+			map[string]any{"name": "HUB_ADDRESS", "valueFrom": map[string]any{
+				"secretKeyRef": map[string]any{"name": "mspsql-agent-bootstrap", "key": "hub-address"}}},
+			map[string]any{"name": "HUB_DOMAIN", "valueFrom": map[string]any{
+				"secretKeyRef": map[string]any{"name": "mspsql-agent-bootstrap", "key": "hub-domain"}}},
+		},
+		"volumeMounts": []any{
+			map[string]any{"name": "bootstrap", "mountPath": "/etc/mspsql/bootstrap", "readOnly": true},
+			map[string]any{"name": "identity", "mountPath": "/etc/mspsql/identity", "readOnly": true},
+			map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
+		},
+	}}
+	volumes := []any{
+		map[string]any{"name": "bootstrap", "secret": map[string]any{"secretName": "mspsql-agent-bootstrap"}},
+		map[string]any{"name": "identity", "secret": map[string]any{
+			"secretName": "mspsql-agent-identity", "optional": true}},
+		map[string]any{"name": "runtime", "emptyDir": map[string]any{"medium": "Memory"}},
+	}
+	if wireGuardImage != "" {
+		containers = append(containers, map[string]any{
+			"name": "wireguard", "image": wireGuardImage,
+			"command": []any{"/bin/sh", "-ec",
+				"while [ ! -f /run/mspsql/leader ]; do sleep 1; done; " +
+					"wireguard-go wg0; wg-quick up /etc/wireguard/wg0.conf; " +
+					"while true; do sleep 3600; done"},
+			"securityContext": map[string]any{
+				"allowPrivilegeEscalation": false,
+				"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_ADMIN"}},
+			},
+			"volumeMounts": []any{
+				map[string]any{"name": "identity", "mountPath": "/etc/wireguard", "readOnly": true},
+				map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
+				map[string]any{"name": "tun", "mountPath": "/dev/net/tun"},
+			},
+		})
+		volumes = append(volumes, map[string]any{"name": "tun", "hostPath": map[string]any{
+			"path": "/dev/net/tun", "type": "CharDevice"}})
+	}
 	return map[string]any{
 		"apiVersion": "apps/v1", "kind": "Deployment",
 		"metadata": map[string]any{"name": "mspsql-agent", "namespace": "mspsql-agent"},
@@ -404,50 +448,8 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 				"metadata": map[string]any{"labels": map[string]any{"app": "mspsql-agent"}},
 				"spec": map[string]any{
 					"serviceAccountName": "mspsql-agent",
-					"containers": []any{
-						map[string]any{
-							"name": "site-agent", "image": agentImage,
-							"args": []any{
-								"--hub-address=$(HUB_ADDRESS)", "--hub-domain=$(HUB_DOMAIN)",
-								"--registration-uid=" + string(site.UID),
-							},
-							"env": []any{
-								map[string]any{"name": "HUB_ADDRESS", "valueFrom": map[string]any{
-									"secretKeyRef": map[string]any{"name": "mspsql-agent-bootstrap", "key": "hub-address"}}},
-								map[string]any{"name": "HUB_DOMAIN", "valueFrom": map[string]any{
-									"secretKeyRef": map[string]any{"name": "mspsql-agent-bootstrap", "key": "hub-domain"}}},
-							},
-							"volumeMounts": []any{
-								map[string]any{"name": "bootstrap", "mountPath": "/etc/mspsql/bootstrap", "readOnly": true},
-								map[string]any{"name": "identity", "mountPath": "/etc/mspsql/identity", "readOnly": true},
-								map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
-							},
-						},
-						map[string]any{
-							"name": "wireguard", "image": wireGuardImage,
-							"command": []any{"/bin/sh", "-ec",
-								"while [ ! -f /run/mspsql/leader ]; do sleep 1; done; " +
-									"wireguard-go wg0; wg-quick up /etc/wireguard/wg0.conf; " +
-									"while true; do sleep 3600; done"},
-							"securityContext": map[string]any{
-								"allowPrivilegeEscalation": false,
-								"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_ADMIN"}},
-							},
-							"volumeMounts": []any{
-								map[string]any{"name": "identity", "mountPath": "/etc/wireguard", "readOnly": true},
-								map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
-								map[string]any{"name": "tun", "mountPath": "/dev/net/tun"},
-							},
-						},
-					},
-					"volumes": []any{
-						map[string]any{"name": "bootstrap", "secret": map[string]any{"secretName": "mspsql-agent-bootstrap"}},
-						map[string]any{"name": "identity", "secret": map[string]any{
-							"secretName": "mspsql-agent-identity", "optional": true}},
-						map[string]any{"name": "runtime", "emptyDir": map[string]any{"medium": "Memory"}},
-						map[string]any{"name": "tun", "hostPath": map[string]any{
-							"path": "/dev/net/tun", "type": "CharDevice"}},
-					},
+					"containers":         containers,
+					"volumes":            volumes,
 				},
 			},
 		},
