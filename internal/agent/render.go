@@ -77,12 +77,19 @@ func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 
 func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	labels := resourceLabels(desired)
-	var objects []client.Object
+	objects := []client.Object{
+		clientCertificate(desired.Site.Namespace, "etcd-maintenance-client",
+			"etcd-maintenance-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels),
+	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
 		name := fmt.Sprintf("etcd-%s-%d", desired.Site.Name, ordinal)
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
 			desired.Site.Certificates.EtcdIssuerRef, labels, desired.MemberAddresses[name],
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
+	}
+	if desired.Site.Role == api.SiteRoleData {
+		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-etcd-client",
+			"patroni-etcd-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels))
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
@@ -131,6 +138,26 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 		objects = append(objects, r.pgpoolConfig(desired, labels), r.pgpoolDeployment(desired, labels))
 	}
 	return objects, nil
+}
+
+func clientCertificate(namespace, name, secretName string, issuer api.IssuerReference,
+	labels map[string]string,
+) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "cert-manager.io/v1",
+		"kind":       "Certificate",
+		"metadata": map[string]any{
+			"namespace": namespace, "name": name, "labels": stringMapAny(labels),
+		},
+		"spec": map[string]any{
+			"secretName": secretName,
+			"issuerRef": map[string]any{
+				"name": issuer.Name, "kind": issuer.Kind, "group": issuer.Group,
+			},
+			"commonName": name,
+			"usages":     []any{"digital signature", "client auth"},
+		},
+	}}
 }
 
 func memberService(namespace, name, podName string, labels map[string]string, loadBalancer *api.LoadBalancerSpec,

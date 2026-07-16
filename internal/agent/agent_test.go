@@ -108,6 +108,22 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	if got := len(renderer.LoadBalancers(desired)); got != 5 {
 		t.Fatalf("LoadBalancer count = %d", got)
 	}
+	certificates := renderer.Certificates(desired)
+	if got := len(certificates); got != 7 {
+		t.Fatalf("Certificate count = %d", got)
+	}
+	clientSecrets := map[string]bool{}
+	for _, object := range certificates {
+		certificate := object.(*unstructured.Unstructured)
+		secretName, _, err := unstructured.NestedString(certificate.Object, "spec", "secretName")
+		if err != nil {
+			t.Fatal(err)
+		}
+		clientSecrets[secretName] = true
+	}
+	if !clientSecrets["patroni-etcd-client-tls"] || !clientSecrets["etcd-maintenance-client-tls"] {
+		t.Fatalf("client certificate Secrets = %#v", clientSecrets)
+	}
 	objects, err := renderer.Workloads(desired)
 	if err != nil {
 		t.Fatal(err)
