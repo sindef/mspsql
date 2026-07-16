@@ -24,6 +24,9 @@ import (
 )
 
 func validateSitePolicy(site api.PostgresSiteSpec, registration *api.SiteRegistration) error {
+	if registration.Spec.Revoked {
+		return fmt.Errorf("site registration %q is revoked", registration.Name)
+	}
 	if site.Storage.Etcd != nil &&
 		!contains(registration.Spec.PermittedStorageClasses.Etcd, site.Storage.Etcd.StorageClassName) {
 		return fmt.Errorf("etcd StorageClass %q is not permitted", site.Storage.Etcd.StorageClassName)

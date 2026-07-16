@@ -97,6 +97,9 @@ func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello) (*ap
 		if string(site.UID) != hello.RegistrationUid {
 			continue
 		}
+		if site.Spec.Revoked {
+			return nil, status.Error(codes.PermissionDenied, "site registration is revoked")
+		}
 		updated, err := s.updateSiteStatus(ctx, site.Name, func(current *api.SiteRegistration) error {
 			if current.Status.ClusterUID != "" && current.Status.ClusterUID != hello.ClusterUid {
 				return status.Error(codes.PermissionDenied,
@@ -129,6 +132,9 @@ func (s *Server) sendPlans(ctx context.Context, stream controlv1.AgentControl_Co
 	sent := map[string]int64{}
 	sentDirectives := map[string]struct{}{}
 	for {
+		if err := s.ensureSiteActive(ctx, siteName, siteUID); err != nil {
+			return err
+		}
 		var configMaps corev1.ConfigMapList
 		if err := s.Client.List(ctx, &configMaps, client.MatchingLabels{
 			"multisite-postgres.dev/site-registration-uid": siteUID,
@@ -170,6 +176,20 @@ func (s *Server) sendPlans(ctx context.Context, stream controlv1.AgentControl_Co
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Server) ensureSiteActive(ctx context.Context, name, uid string) error {
+	var site api.SiteRegistration
+	if err := s.Client.Get(ctx, client.ObjectKey{Name: name}, &site); err != nil {
+		if apierrors.IsNotFound(err) {
+			return status.Error(codes.PermissionDenied, "site registration no longer exists")
+		}
+		return err
+	}
+	if string(site.UID) != uid || site.Spec.Revoked {
+		return status.Error(codes.PermissionDenied, "site registration is revoked")
+	}
+	return nil
 }
 
 func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentControl_ConnectServer,

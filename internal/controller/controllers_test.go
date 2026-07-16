@@ -25,6 +25,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -90,6 +92,62 @@ func TestSiteRegistrationIssuesHashedToken(t *testing.T) {
 	}
 	if updated.Status.RegistrationURL == "" {
 		t.Fatal("registration URL was not published")
+	}
+}
+
+func TestSiteRegistrationRevocationRemovesCredentials(t *testing.T) {
+	scheme := testScheme(t)
+	site := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "vic", UID: types.UID("site-uid"), Generation: 2},
+		Spec:       api.SiteRegistrationSpec{Revoked: true},
+		Status: api.SiteRegistrationStatus{
+			ClusterUID: "cluster-uid", RegistrationURL: "https://hub.example/token/registration.yaml",
+		},
+	}
+	token := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "system", Name: "registration-site-uid",
+	}}
+	peer := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "system", Name: "wireguard-peer-site-uid",
+	}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.SiteRegistration{}).WithObjects(site, token, peer).Build()
+	reconciler := SiteRegistrationReconciler{
+		Client: kube, Scheme: scheme, SystemNamespace: "system",
+	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{token.Name, peer.Name} {
+		var secret corev1.Secret
+		err := kube.Get(context.Background(), types.NamespacedName{Namespace: "system", Name: name}, &secret)
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("%s still exists: %v", name, err)
+		}
+	}
+	var updated api.SiteRegistration
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: "vic"}, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != "Revoked" || updated.Status.RegistrationURL != "" {
+		t.Fatalf("revoked status = %#v", updated.Status)
+	}
+	condition := meta.FindStatusCondition(updated.Status.Conditions, "Connected")
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != "AdministrativelyRevoked" {
+		t.Fatalf("Connected condition = %#v", condition)
+	}
+}
+
+func TestRevokedRegistrationFailsSitePolicy(t *testing.T) {
+	err := validateSitePolicy(api.PostgresSiteSpec{Name: "vic"}, &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "production-vic"},
+		Spec:       api.SiteRegistrationSpec{Revoked: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("policy error = %v", err)
 	}
 }
 

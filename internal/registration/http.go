@@ -151,6 +151,9 @@ func (s *HTTPServer) authorize(ctx context.Context, value string) (*api.SiteRegi
 			if site.UID != owner.UID {
 				return nil, nil, fmt.Errorf("registration owner UID changed")
 			}
+			if site.Spec.Revoked {
+				return nil, nil, fmt.Errorf("site registration is revoked")
+			}
 			return &site, secret, nil
 		}
 	}
@@ -250,6 +253,11 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 	peer := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: s.SystemNamespace, Name: "wireguard-peer-" + string(site.UID),
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: api.GroupVersion.String(), Kind: "SiteRegistration",
+				Name: site.Name, UID: site.UID,
+				Controller: boolPointer(true), BlockOwnerDeletion: boolPointer(true),
+			}},
 		},
 		StringData: map[string]string{"publicKey": binding.WireGuardPublicKey, "state": "authorized"},
 	}
@@ -463,4 +471,8 @@ func (s *HTTPServer) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }

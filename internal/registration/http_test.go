@@ -28,6 +28,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,6 +128,54 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 		Namespace: "system", Name: tokenSecret.Name,
 	}, &consumed); !apierrors.IsNotFound(err) {
 		t.Fatalf("token Secret still exists: %v", err)
+	}
+	var peer corev1.Secret
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: "system", Name: "wireguard-peer-site-uid",
+	}, &peer); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.OwnerReferences) != 1 || peer.OwnerReferences[0].UID != site.UID {
+		t.Fatalf("peer owner references = %#v", peer.OwnerReferences)
+	}
+}
+
+func TestRevokedRegistrationTokenIsRejected(t *testing.T) {
+	now := time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC)
+	token, err := NewToken(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	site := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "vic", UID: types.UID("site-uid")},
+		Spec:       api.SiteRegistrationSpec{Revoked: true},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "system", Name: "registration-site-uid",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: api.GroupVersion.String(), Kind: "SiteRegistration",
+				Name: site.Name, UID: site.UID,
+			}},
+		},
+		Data: map[string][]byte{
+			"sha256": token.Hash, "expiresAt": []byte(token.ExpiresAt.Format(time.RFC3339Nano)),
+		},
+	}
+	server := HTTPServer{
+		Client:          fake.NewClientBuilder().WithScheme(scheme).WithObjects(site, secret).Build(),
+		SystemNamespace: "system", Now: func() time.Time { return now },
+	}
+	if _, _, err := server.authorize(context.Background(), token.Value); err == nil ||
+		!strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("authorize error = %v", err)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 
 type SiteRegistrationSpec struct {
 	DisplayName             string             `json:"displayName,omitempty"`
+	Revoked                 bool               `json:"revoked,omitempty"`
 	PermittedStorageClasses StorageClassPolicy `json:"permittedStorageClasses"`
 	// +listType=map
 	// +listMapKey=storageClassName

@@ -186,6 +186,9 @@ until its `MultiSitePostgres` backup specification is configured.
   instance identities, and non-decreasing revisions.
 - gRPC requires TLS 1.3 and a client certificate identity matching the
   immutable `SiteRegistration` UID.
+- Setting `SiteRegistration.spec.revoked` is irreversible. It removes bootstrap
+  and WireGuard peer credentials and terminates control access without deleting
+  workloads in the target cluster.
 - Existing namespaces are never adopted. All four ownership labels must
   already match exactly.
 - Disconnected agents do not recreate LoadBalancer Services or apply

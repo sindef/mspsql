@@ -136,3 +136,13 @@ func TestRollbackPolicyRequiresPermittedStorage(t *testing.T) {
 		t.Fatal("rollback policy for unapproved storage was accepted")
 	}
 }
+
+func TestSiteRegistrationRevocationCannotBeCleared(t *testing.T) {
+	validator := &SiteRegistrationCustomValidator{}
+	oldObject := &api.SiteRegistration{Spec: api.SiteRegistrationSpec{Revoked: true}}
+	newObject := oldObject.DeepCopy()
+	newObject.Spec.Revoked = false
+	if _, err := validator.ValidateUpdate(context.Background(), oldObject, newObject); err == nil {
+		t.Fatal("clearing revocation was accepted")
+	}
+}

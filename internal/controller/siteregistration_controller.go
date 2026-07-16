@@ -56,13 +56,16 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if !site.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
-	now := time.Now
-	if r.Now != nil {
-		now = r.Now
-	}
 	systemNamespace := r.SystemNamespace
 	if systemNamespace == "" {
 		systemNamespace = "mspsql-system"
+	}
+	if site.Spec.Revoked {
+		return ctrl.Result{}, r.reconcileRevoked(ctx, &site, systemNamespace)
+	}
+	now := time.Now
+	if r.Now != nil {
+		now = r.Now
 	}
 	if _, err := ensureSigningKey(ctx, r.Client, systemNamespace); err != nil {
 		return ctrl.Result{}, err
@@ -125,6 +128,28 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
+	site *multisitepostgresv1alpha1.SiteRegistration, systemNamespace string,
+) error {
+	for _, name := range []string{
+		"registration-" + string(site.UID),
+		"wireguard-peer-" + string(site.UID),
+	} {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: systemNamespace, Name: name}}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	site.Status.Phase = "Revoked"
+	site.Status.RegistrationURL = ""
+	site.Status.RegistrationExpiresAt = nil
+	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionFalse,
+		"AdministrativelyRevoked", "The site identity has been revoked")
+	setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
+		"AdministrativelyRevoked", "Control connections from this site are rejected")
+	return r.Status().Update(ctx, site)
 }
 
 func tokenExpired(secret *corev1.Secret, now time.Time) bool {

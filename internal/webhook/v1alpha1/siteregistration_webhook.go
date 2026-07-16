@@ -78,6 +78,10 @@ func (v *SiteRegistrationCustomValidator) ValidateUpdate(_ context.Context, oldO
 	if oldObj.Status.ClusterUID != "" && newObj.Status.ClusterUID != oldObj.Status.ClusterUID {
 		return nil, field.Forbidden(field.NewPath("status", "clusterUID"), "cluster binding is immutable")
 	}
+	if oldObj.Spec.Revoked && !newObj.Spec.Revoked {
+		return nil, field.Forbidden(field.NewPath("spec", "revoked"),
+			"revocation is irreversible; create a new registration")
+	}
 	return nil, validateSiteRegistration(newObj)
 }
 
