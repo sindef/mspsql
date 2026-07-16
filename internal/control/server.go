@@ -584,13 +584,9 @@ func (s *Server) rotateCertificate(ctx context.Context, stream controlv1.AgentCo
 }
 
 func (s *Server) recordHeartbeat(ctx context.Context, siteName string,
-	heartbeat *controlv1.AgentHeartbeat,
+	_ *controlv1.AgentHeartbeat,
 ) error {
-	heartbeatTime := s.now()
-	if heartbeat.SentAt != nil && heartbeat.SentAt.IsValid() {
-		heartbeatTime = heartbeat.SentAt.AsTime()
-	}
-	now := metav1.NewTime(heartbeatTime)
+	now := metav1.NewTime(s.now())
 	_, err := s.updateSiteStatus(ctx, siteName, func(site *api.SiteRegistration) error {
 		site.Status.LastHeartbeatTime = &now
 		site.Status.Phase = "Connected"
@@ -649,6 +645,9 @@ func (s *Server) recordAcknowledgement(ctx context.Context, siteName string,
 	ack *controlv1.PlanAcknowledgement,
 ) error {
 	return s.updateInstanceSite(ctx, ack.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
+		if ack.Revision != site.DesiredRevision {
+			return
+		}
 		if ack.Accepted {
 			site.AcknowledgedRevision = ack.Revision
 			site.Phase = "Applying"
@@ -673,6 +672,9 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 	}
 	slices.Sort(synchronousStandbys)
 	err := s.updateInstanceSite(ctx, progress.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
+		if progress.Revision != site.DesiredRevision {
+			return
+		}
 		site.Phase = progress.Phase
 		if site.Addresses == nil {
 			site.Addresses = map[string]string{}
@@ -713,6 +715,9 @@ func (s *Server) recordResult(ctx context.Context, siteName string, result *cont
 		return s.recordDirectiveResult(ctx, result)
 	}
 	return s.updateInstanceSite(ctx, result.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
+		if result.AppliedRevision != site.DesiredRevision {
+			return
+		}
 		site.AppliedRevision = result.AppliedRevision
 		site.Phase = "Ready"
 		for _, condition := range result.Conditions {
@@ -1135,18 +1140,8 @@ func allApplied(sites []api.SiteRevisionStatus, revision int64) bool {
 func setSiteCondition(conditions *[]metav1.Condition, conditionType string,
 	conditionStatus metav1.ConditionStatus, reason, message string,
 ) {
-	for i := range *conditions {
-		if (*conditions)[i].Type == conditionType {
-			(*conditions)[i].Status = conditionStatus
-			(*conditions)[i].Reason = reason
-			(*conditions)[i].Message = message
-			(*conditions)[i].LastTransitionTime = metav1.NewTime(time.Now())
-			return
-		}
-	}
-	*conditions = append(*conditions, metav1.Condition{
+	meta.SetStatusCondition(conditions, metav1.Condition{
 		Type: conditionType, Status: conditionStatus, Reason: reason, Message: message,
-		LastTransitionTime: metav1.NewTime(time.Now()),
 	})
 }
 

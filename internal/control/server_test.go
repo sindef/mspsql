@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -30,6 +31,22 @@ import (
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 )
+
+func TestSiteConditionTransitionTimeChangesOnlyWithStatus(t *testing.T) {
+	original := metav1.NewTime(time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC))
+	conditions := []metav1.Condition{{
+		Type: "Ready", Status: metav1.ConditionFalse, Reason: "Pending",
+		LastTransitionTime: original,
+	}}
+	setSiteCondition(&conditions, "Ready", metav1.ConditionFalse, "StillPending", "waiting")
+	if !conditions[0].LastTransitionTime.Equal(&original) {
+		t.Fatalf("transition time changed without a status transition: %v", conditions[0].LastTransitionTime)
+	}
+	setSiteCondition(&conditions, "Ready", metav1.ConditionTrue, "Completed", "ready")
+	if conditions[0].LastTransitionTime.Equal(&original) {
+		t.Fatal("transition time did not change when status transitioned")
+	}
+}
 
 func TestDirectiveOwnerMustMatchAuthoritativeObject(t *testing.T) {
 	scheme := runtime.NewScheme()
