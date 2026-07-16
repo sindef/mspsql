@@ -128,6 +128,13 @@ converged, the agent requests an mTLS-authenticated Patroni switchover and
 verifies the new primary before replacing every remaining member. Scheduled
 backups pause until the stable target-image plan is applied everywhere.
 
+LoadBalancer address changes are serialized one member per signed revision.
+The affected certificate overlaps the old and new SANs. For an etcd voter, a
+maintenance Job first proves that a quorum of the other endpoints is healthy,
+looks up the member by name, and runs `etcdctl member update` before the
+StatefulSet is rolled. The configured etcd image must contain `etcdctl`, a
+POSIX shell, `awk`, and `grep`; the default image satisfies this contract.
+
 ## Restore contract
 
 `PostgresRestore` performs time-based PITR into a new instance. Patroni starts

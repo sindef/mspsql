@@ -127,7 +127,11 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "Upgrading"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
-	fingerprint, err := planFingerprint(&instance)
+	memberAddresses, addressCandidates, addressMigration, err := r.addressPlan(ctx, &instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	fingerprint, err := planFingerprint(&instance, memberAddresses, addressCandidates, addressMigration)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -151,27 +155,25 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		now = r.Now
 	}
 	siteStatuses := make([]multisitepostgresv1alpha1.SiteRevisionStatus, 0, len(instance.Spec.Sites))
-	memberAddresses := make(map[string]string)
-	for _, siteStatus := range instance.Status.Sites {
-		maps.Copy(memberAddresses, siteStatus.Addresses)
-	}
 	for _, site := range instance.Spec.Sites {
 		registration := registrations[site.Name]
 		desired := plan.SitePlan{
-			SiteUID:         string(registration.UID),
-			InstanceUID:     string(instance.UID),
-			HubNamespace:    instance.Namespace,
-			HubName:         instance.Name,
-			Revision:        instance.Status.ActiveRevision,
-			GeneratedAt:     now().UTC(),
-			Site:            site,
-			Postgres:        instance.Spec.Postgres,
-			TDE:             instance.Spec.TDE,
-			Backup:          instance.Spec.Backup,
-			Credentials:     instance.Spec.Credentials,
-			MemberAddresses: memberAddresses,
-			Restore:         restorePlan,
-			Upgrade:         upgradePlan,
+			SiteUID:           string(registration.UID),
+			InstanceUID:       string(instance.UID),
+			HubNamespace:      instance.Namespace,
+			HubName:           instance.Name,
+			Revision:          instance.Status.ActiveRevision,
+			GeneratedAt:       now().UTC(),
+			Site:              site,
+			Postgres:          instance.Spec.Postgres,
+			TDE:               instance.Spec.TDE,
+			Backup:            instance.Spec.Backup,
+			Credentials:       instance.Spec.Credentials,
+			MemberAddresses:   memberAddresses,
+			AddressCandidates: addressCandidates,
+			AddressMigration:  addressMigration,
+			Restore:           restorePlan,
+			Upgrade:           upgradePlan,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
@@ -574,42 +576,139 @@ func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (string, error) {
+func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	addresses, candidates map[string]string, migration *plan.AddressMigrationPlan,
+) (string, error) {
 	payload, err := json.Marshal(struct {
-		Generation      int64
-		Addresses       map[string]map[string]string
-		RestoreUID      string
-		RestorePhase    string
-		UpgradeUID      string
-		UpgradePhase    string
-		UpgradeMember   string
-		UpgradedMembers string
+		Generation        int64
+		Addresses         map[string]string
+		AddressCandidates map[string]string
+		AddressMigration  *plan.AddressMigrationPlan
+		RestoreUID        string
+		RestorePhase      string
+		UpgradeUID        string
+		UpgradePhase      string
+		UpgradeMember     string
+		UpgradedMembers   string
 	}{
-		Generation:      instance.Generation,
-		RestoreUID:      instance.Annotations[restoreUIDAnnotation],
-		RestorePhase:    instance.Annotations[restorePhaseAnnotation],
-		UpgradeUID:      instance.Annotations[upgradeUIDAnnotation],
-		UpgradePhase:    instance.Annotations[upgradePhaseAnnotation],
-		UpgradeMember:   instance.Annotations[upgradeMemberAnnotation],
-		UpgradedMembers: instance.Annotations[upgradeMembersAnnotation],
-		Addresses: func() map[string]map[string]string {
-			addresses := make(map[string]map[string]string, len(instance.Spec.Sites))
-			for _, desiredSite := range instance.Spec.Sites {
-				addresses[desiredSite.Name] = map[string]string{}
-			}
-			for _, observedSite := range instance.Status.Sites {
-				if observedSite.Addresses != nil {
-					addresses[observedSite.Name] = observedSite.Addresses
-				}
-			}
-			return addresses
-		}(),
+		Generation:        instance.Generation,
+		Addresses:         addresses,
+		AddressCandidates: candidates,
+		AddressMigration:  migration,
+		RestoreUID:        instance.Annotations[restoreUIDAnnotation],
+		RestorePhase:      instance.Annotations[restorePhaseAnnotation],
+		UpgradeUID:        instance.Annotations[upgradeUIDAnnotation],
+		UpgradePhase:      instance.Annotations[upgradePhaseAnnotation],
+		UpgradeMember:     instance.Annotations[upgradeMemberAnnotation],
+		UpgradedMembers:   instance.Annotations[upgradeMembersAnnotation],
 	})
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func (r *MultiSitePostgresReconciler) addressPlan(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) (map[string]string, map[string]string, *plan.AddressMigrationPlan, error) {
+	observed := make(map[string]string)
+	for _, site := range instance.Status.Sites {
+		maps.Copy(observed, site.Addresses)
+	}
+	previous, err := r.activeSitePlan(ctx, instance)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if previous.AddressMigration != nil &&
+		!allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
+		return previous.MemberAddresses, observed, previous.AddressMigration, nil
+	}
+	expected := expectedAddressMembers(instance.Spec.Sites)
+	if !addressesComplete(previous.MemberAddresses, expected) {
+		return observed, observed, nil, nil
+	}
+	addresses := make(map[string]string, len(previous.MemberAddresses))
+	maps.Copy(addresses, previous.MemberAddresses)
+	var changed []string
+	for _, member := range expected {
+		if current := observed[member]; current != "" && current != previous.MemberAddresses[member] {
+			changed = append(changed, member)
+		}
+	}
+	if len(changed) == 0 {
+		return addresses, observed, nil, nil
+	}
+	slices.Sort(changed)
+	member := changed[0]
+	oldAddress := previous.MemberAddresses[member]
+	newAddress := observed[member]
+	addresses[member] = newAddress
+	sum := sha256.Sum256([]byte(string(instance.UID) + "\x00" + member + "\x00" +
+		oldAddress + "\x00" + newAddress))
+	return addresses, observed, &plan.AddressMigrationPlan{
+		OperationUID: hex.EncodeToString(sum[:16]),
+		Member:       member,
+		OldAddress:   oldAddress,
+		NewAddress:   newAddress,
+	}, nil
+}
+
+func (r *MultiSitePostgresReconciler) activeSitePlan(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) (plan.SitePlan, error) {
+	if len(instance.Spec.Sites) == 0 {
+		return plan.SitePlan{}, nil
+	}
+	var configMap corev1.ConfigMap
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: instance.Namespace,
+		Name:      fmt.Sprintf("mspsql-plan-%s-%s", instance.Name, instance.Spec.Sites[0].Name),
+	}, &configMap)
+	if apierrors.IsNotFound(err) {
+		return plan.SitePlan{}, nil
+	}
+	if err != nil {
+		return plan.SitePlan{}, err
+	}
+	var envelope plan.Envelope
+	if err := json.Unmarshal([]byte(configMap.Data["envelope.json"]), &envelope); err != nil {
+		return plan.SitePlan{}, fmt.Errorf("decode active site plan envelope: %w", err)
+	}
+	var desired plan.SitePlan
+	if err := json.Unmarshal(envelope.Plan, &desired); err != nil {
+		return plan.SitePlan{}, fmt.Errorf("decode active site plan: %w", err)
+	}
+	return desired, nil
+}
+
+func expectedAddressMembers(sites []multisitepostgresv1alpha1.PostgresSiteSpec) []string {
+	var members []string
+	for _, site := range sites {
+		for ordinal := int32(0); ordinal < site.Components.EtcdReplicas; ordinal++ {
+			members = append(members, fmt.Sprintf("etcd-%s-%d", site.Name, ordinal))
+		}
+		for ordinal := int32(0); ordinal < site.Components.PostgresReplicas; ordinal++ {
+			members = append(members, fmt.Sprintf("postgres-%s-%d", site.Name, ordinal))
+		}
+		if site.Components.PgpoolReplicas > 0 {
+			members = append(members, "pgpool-"+site.Name)
+		}
+	}
+	slices.Sort(members)
+	return members
+}
+
+func addressesComplete(addresses map[string]string, expected []string) bool {
+	if len(expected) == 0 {
+		return false
+	}
+	for _, member := range expected {
+		if addresses[member] == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *MultiSitePostgresReconciler) upgradePlan(ctx context.Context,

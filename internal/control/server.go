@@ -404,6 +404,7 @@ func (s *Server) recordAcknowledgement(ctx context.Context, siteName string,
 
 func (s *Server) recordProgress(ctx context.Context, siteName string, progress *controlv1.PlanProgress) error {
 	hasAddresses := false
+	hasConditions := false
 	primary, hasTopology := progress.ResourceSummaries["topology/primary"]
 	var synchronousStandbys []string
 	for key, value := range progress.ResourceSummaries {
@@ -423,6 +424,18 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 				site.Addresses[member] = value
 				hasAddresses = true
 			}
+			if conditionType, ok := strings.CutPrefix(key, "condition/"); ok {
+				var condition struct {
+					Status  metav1.ConditionStatus `json:"status"`
+					Reason  string                 `json:"reason"`
+					Message string                 `json:"message"`
+				}
+				if json.Unmarshal([]byte(value), &condition) == nil {
+					setSiteCondition(&site.Conditions, conditionType, condition.Status,
+						condition.Reason, condition.Message)
+					hasConditions = true
+				}
+			}
 		}
 		if hasTopology {
 			site.Primary = primary
@@ -431,7 +444,7 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 			site.TopologyObservedAt = &now
 		}
 	})
-	if err != nil || (!hasAddresses && !hasTopology) {
+	if err != nil || (!hasAddresses && !hasTopology && !hasConditions) {
 		return err
 	}
 	return s.triggerInstanceReconcile(ctx, progress.InstanceUid)

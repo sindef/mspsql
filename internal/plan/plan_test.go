@@ -64,4 +64,12 @@ func TestClassify(t *testing.T) {
 	if got := Classify(previous, next); got != MutationCoordinated {
 		t.Fatalf("image rollout classified as %s", got)
 	}
+	next.Postgres.Image = previous.Postgres.Image
+	next.AddressMigration = &AddressMigrationPlan{
+		OperationUID: "migration", Member: "etcd-vic-0",
+		OldAddress: "10.0.0.1", NewAddress: "10.0.0.2",
+	}
+	if got := Classify(previous, next); got != MutationCoordinated {
+		t.Fatalf("address migration classified as %s", got)
+	}
 }

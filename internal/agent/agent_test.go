@@ -158,6 +158,66 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	}
 }
 
+func TestRendererStagesEtcdAddressMigration(t *testing.T) {
+	desired := plan.SitePlan{
+		InstanceUID: "instance", Revision: 2,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders",
+			Components: api.SiteComponents{EtcdReplicas: 1},
+		},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.9",
+			"etcd-nsw-0": "10.0.1.1",
+			"etcd-qld-0": "10.0.2.1",
+		},
+		AddressMigration: &plan.AddressMigrationPlan{
+			OperationUID: "migration", Member: "etcd-vic-0",
+			OldAddress: "10.0.0.1", NewAddress: "10.0.0.9",
+		},
+	}
+	renderer := Renderer{Images: Images{Etcd: "etcd:3.6"}}
+	certificates := renderer.Certificates(desired)
+	var addresses []any
+	for _, object := range certificates {
+		certificate := object.(*unstructured.Unstructured)
+		if certificate.GetName() == "etcd-vic-0" {
+			var found bool
+			addresses, found, _ = unstructured.NestedSlice(certificate.Object, "spec", "ipAddresses")
+			if !found {
+				t.Fatal("migration certificate has no IP SANs")
+			}
+		}
+	}
+	if len(addresses) != 2 {
+		t.Fatalf("migration certificate IP SANs = %#v", addresses)
+	}
+	job, err := renderer.AddressMigrationJob(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job == nil {
+		t.Fatal("affected site has no migration Job")
+	}
+	command := job.Spec.Template.Spec.Containers[0].Command[2]
+	if strings.Contains(command, "https://10.0.0.9:2379") ||
+		!strings.Contains(command, "member update") ||
+		!strings.Contains(command, "https://10.0.0.9:2380") {
+		t.Fatalf("migration command = %s", command)
+	}
+}
+
+func TestFillMissingAddressesPreservesSerializedPlan(t *testing.T) {
+	planned := map[string]string{"etcd-vic-0": "10.0.0.1"}
+	observed := map[string]string{
+		"etcd-vic-0": "10.0.0.9",
+		"etcd-nsw-0": "10.0.1.1",
+	}
+	merged := fillMissingAddresses(planned, observed)
+	if merged["etcd-vic-0"] != "10.0.0.1" || merged["etcd-nsw-0"] != "10.0.1.1" {
+		t.Fatalf("merged addresses = %#v", merged)
+	}
+}
+
 func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
 	desired := plan.SitePlan{
 		SiteUID: "site", InstanceUID: "target", Revision: 1,

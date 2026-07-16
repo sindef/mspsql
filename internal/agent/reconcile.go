@@ -128,38 +128,25 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		return result, nil
 	}
 	if connected {
-		desired.MemberAddresses = mergeAddresses(desired.MemberAddresses, result.Addresses)
+		desired.MemberAddresses = fillMissingAddresses(desired.MemberAddresses, result.Addresses)
+		desired.AddressCandidates = mergeAddresses(desired.AddressCandidates, result.Addresses)
 		result.Phase = "IssuingCertificates"
-		for _, object := range r.Renderer.Certificates(desired) {
-			if err := r.apply(ctx, object); err != nil {
-				return result, err
-			}
-		}
-		ready, message, err := r.certificatesReady(ctx, r.Renderer.Certificates(desired))
-		if err != nil {
+		ready, err := r.reconcileCertificates(ctx, desired, &result)
+		if err != nil || !ready {
 			return result, err
 		}
-		if !ready {
-			setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionFalse,
-				"IssuancePending", message)
-			return result, nil
-		}
-		setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionTrue,
-			"CertificatesIssued", "All workload certificates are Ready")
-		if desired.Backup != nil {
-			fingerprint, fingerprintErr := r.backupTrustBundleFingerprint(ctx, desired)
-			if fingerprintErr != nil {
-				setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionFalse,
-					"TrustBundleInvalid", fingerprintErr.Error())
-				return result, fingerprintErr
-			}
-			setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionTrue,
-				"TrustBundleObserved", fingerprint)
+	}
+
+	if desired.AddressMigration != nil {
+		result.Phase = "MigratingAddress"
+		ready, err := r.reconcileAddressMigration(ctx, desired, &result)
+		if err != nil || !ready {
+			return result, err
 		}
 	}
 
 	result.Phase = "ReconcilingWorkloads"
-	desired.MemberAddresses = mergeAddresses(desired.MemberAddresses, result.Addresses)
+	desired.MemberAddresses = fillMissingAddresses(desired.MemberAddresses, result.Addresses)
 	objects, err := r.Renderer.Workloads(desired)
 	if err != nil {
 		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse, "GlobalAddressesPending", err.Error())
@@ -181,6 +168,12 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	}
 	setLocalCondition(&result.Conditions, "EtcdQuorate", metav1.ConditionTrue,
 		"AllMembersHealthy", "All etcd member readiness checks are passing")
+	if desired.AddressMigration != nil {
+		setLocalCondition(&result.Conditions, "AddressMigrated", metav1.ConditionTrue,
+			"ConsumersUpdated", fmt.Sprintf("%s migrated from %s to %s",
+				desired.AddressMigration.Member, desired.AddressMigration.OldAddress,
+				desired.AddressMigration.NewAddress))
+	}
 	if err := r.setDataPlaneConditions(ctx, desired, &result); err != nil {
 		return result, err
 	}
@@ -191,6 +184,68 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
 	return result, nil
+}
+
+func (r *Reconciler) reconcileCertificates(ctx context.Context, desired plan.SitePlan,
+	result *ApplyResult,
+) (bool, error) {
+	certificates := r.Renderer.Certificates(desired)
+	for _, object := range certificates {
+		if err := r.apply(ctx, object); err != nil {
+			return false, err
+		}
+	}
+	ready, message, err := r.certificatesReady(ctx, certificates)
+	if err != nil {
+		return false, err
+	}
+	if !ready {
+		setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionFalse,
+			"IssuancePending", message)
+		return false, nil
+	}
+	setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionTrue,
+		"CertificatesIssued", "All workload certificates are Ready")
+	if desired.Backup == nil {
+		return true, nil
+	}
+	fingerprint, err := r.backupTrustBundleFingerprint(ctx, desired)
+	if err != nil {
+		setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionFalse,
+			"TrustBundleInvalid", err.Error())
+		return false, err
+	}
+	setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionTrue,
+		"TrustBundleObserved", fingerprint)
+	return true, nil
+}
+
+func (r *Reconciler) reconcileAddressMigration(ctx context.Context, desired plan.SitePlan,
+	result *ApplyResult,
+) (bool, error) {
+	job, err := r.Renderer.AddressMigrationJob(desired)
+	if err != nil {
+		setLocalCondition(&result.Conditions, "AddressChangeBlocked", metav1.ConditionTrue,
+			"QuorumUnsafe", err.Error())
+		return false, err
+	}
+	if job != nil {
+		if err := r.apply(ctx, job); err != nil {
+			return false, err
+		}
+		ready, message, err := r.workloadsReady(ctx, []client.Object{job})
+		if err != nil {
+			return false, err
+		}
+		if !ready {
+			setLocalCondition(&result.Conditions, "AddressChangeBlocked", metav1.ConditionTrue,
+				"MembershipUpdatePending", message)
+			return false, nil
+		}
+	}
+	setLocalCondition(&result.Conditions, "AddressChangeBlocked", metav1.ConditionFalse,
+		"MembershipUpdated", "Address migration preconditions and etcd membership update completed")
+	return true, nil
 }
 
 func (r *Reconciler) backupTrustBundleFingerprint(ctx context.Context,
@@ -521,6 +576,17 @@ func mergeAddresses(first, second map[string]string) map[string]string {
 	merged := make(map[string]string, len(first)+len(second))
 	maps.Copy(merged, first)
 	maps.Copy(merged, second)
+	return merged
+}
+
+func fillMissingAddresses(planned, observed map[string]string) map[string]string {
+	merged := make(map[string]string, len(planned)+len(observed))
+	maps.Copy(merged, planned)
+	for member, address := range observed {
+		if merged[member] == "" {
+			merged[member] = address
+		}
+	}
 	return merged
 }
 

@@ -31,22 +31,31 @@ import (
 const ProtocolVersion = "v1alpha1"
 
 type SitePlan struct {
-	ProtocolVersion string                      `json:"protocolVersion"`
-	SiteUID         string                      `json:"siteUID"`
-	InstanceUID     string                      `json:"instanceUID"`
-	HubNamespace    string                      `json:"hubNamespace"`
-	HubName         string                      `json:"hubName"`
-	Revision        int64                       `json:"revision"`
-	GeneratedAt     time.Time                   `json:"generatedAt"`
-	Site            api.PostgresSiteSpec        `json:"site"`
-	Postgres        api.PostgresSpec            `json:"postgres"`
-	TDE             api.TDESpec                 `json:"tde,omitempty"`
-	Backup          *api.BackupSpec             `json:"backup,omitempty"`
-	Credentials     api.InstanceCredentialsSpec `json:"credentials"`
-	MemberAddresses map[string]string           `json:"memberAddresses,omitempty"`
-	Restore         *RestorePlan                `json:"restore,omitempty"`
-	Upgrade         *UpgradePlan                `json:"upgrade,omitempty"`
-	Deletion        *DeletionPlan               `json:"deletion,omitempty"`
+	ProtocolVersion   string                      `json:"protocolVersion"`
+	SiteUID           string                      `json:"siteUID"`
+	InstanceUID       string                      `json:"instanceUID"`
+	HubNamespace      string                      `json:"hubNamespace"`
+	HubName           string                      `json:"hubName"`
+	Revision          int64                       `json:"revision"`
+	GeneratedAt       time.Time                   `json:"generatedAt"`
+	Site              api.PostgresSiteSpec        `json:"site"`
+	Postgres          api.PostgresSpec            `json:"postgres"`
+	TDE               api.TDESpec                 `json:"tde,omitempty"`
+	Backup            *api.BackupSpec             `json:"backup,omitempty"`
+	Credentials       api.InstanceCredentialsSpec `json:"credentials"`
+	MemberAddresses   map[string]string           `json:"memberAddresses,omitempty"`
+	AddressCandidates map[string]string           `json:"addressCandidates,omitempty"`
+	AddressMigration  *AddressMigrationPlan       `json:"addressMigration,omitempty"`
+	Restore           *RestorePlan                `json:"restore,omitempty"`
+	Upgrade           *UpgradePlan                `json:"upgrade,omitempty"`
+	Deletion          *DeletionPlan               `json:"deletion,omitempty"`
+}
+
+type AddressMigrationPlan struct {
+	OperationUID string `json:"operationUID"`
+	Member       string `json:"member"`
+	OldAddress   string `json:"oldAddress"`
+	NewAddress   string `json:"newAddress"`
 }
 
 type RestorePhase string
@@ -182,6 +191,8 @@ func Classify(previous, next SitePlan) MutationClass {
 	if !bytes.Equal(mustCanonical(previous.Backup), mustCanonical(next.Backup)) ||
 		!bytes.Equal(mustCanonical(previous.TDE), mustCanonical(next.TDE)) ||
 		!bytes.Equal(mustCanonical(previous.Credentials), mustCanonical(next.Credentials)) ||
+		!bytes.Equal(mustCanonical(previous.AddressCandidates), mustCanonical(next.AddressCandidates)) ||
+		!bytes.Equal(mustCanonical(previous.AddressMigration), mustCanonical(next.AddressMigration)) ||
 		!bytes.Equal(mustCanonical(previous.Restore), mustCanonical(next.Restore)) ||
 		!bytes.Equal(mustCanonical(previous.Upgrade), mustCanonical(next.Upgrade)) ||
 		!bytes.Equal(mustCanonical(previous.Deletion), mustCanonical(next.Deletion)) {

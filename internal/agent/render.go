@@ -101,7 +101,7 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
 		name := fmt.Sprintf("etcd-%s-%d", desired.Site.Name, ordinal)
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
-			desired.Site.Certificates.EtcdIssuerRef, labels, desired.MemberAddresses[name],
+			desired.Site.Certificates.EtcdIssuerRef, labels, certificateAddresses(desired, name),
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 	}
 	if desired.Site.Role == api.SiteRoleData {
@@ -115,19 +115,19 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
-			desired.Site.Certificates.PostgresIssuerRef, labels, desired.MemberAddresses[name],
+			desired.Site.Certificates.PostgresIssuerRef, labels, certificateAddresses(desired, name),
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 		if desired.Backup != nil {
 			objects = append(objects, certificate(desired.Site.Namespace, name+"-pgbackrest",
 				name+"-pgbackrest-tls", desired.Site.Certificates.BackupIssuerRef, labels,
-				desired.MemberAddresses[name],
+				certificateAddresses(desired, name),
 				[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 		}
 	}
 	if desired.Site.Components.PgpoolReplicas > 0 {
 		name := "pgpool-" + desired.Site.Name
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
-			desired.Site.Certificates.PgpoolIssuerRef, labels, desired.MemberAddresses[name],
+			desired.Site.Certificates.PgpoolIssuerRef, labels, certificateAddresses(desired, name),
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 	}
 	return objects
@@ -196,6 +196,80 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	return objects, nil
 }
 
+func (r Renderer) AddressMigrationJob(desired plan.SitePlan) (*batchv1.Job, error) {
+	migration := desired.AddressMigration
+	if migration == nil || !strings.HasPrefix(migration.Member, "etcd-"+desired.Site.Name+"-") {
+		return nil, nil
+	}
+	var endpoints []string
+	for member, address := range desired.MemberAddresses {
+		if strings.HasPrefix(member, "etcd-") && member != migration.Member {
+			if candidate := desired.AddressCandidates[member]; candidate != "" {
+				address = candidate
+			}
+			endpoints = append(endpoints, "https://"+address+":2379")
+		}
+	}
+	slices.Sort(endpoints)
+	totalMembers := len(endpoints) + 1
+	quorum := totalMembers/2 + 1
+	if len(endpoints) < quorum {
+		return nil, fmt.Errorf("cannot migrate %s without %d healthy remaining voters",
+			migration.Member, quorum)
+	}
+	backoff := int32(1)
+	deadline := int64(300)
+	command := fmt.Sprintf(`set -eu
+export ETCDCTL_API=3
+endpoints=%q
+etcdctl --endpoints="${endpoints}" --cacert=/tls/ca.crt --cert=/tls/tls.crt \
+  --key=/tls/tls.key endpoint health
+member_id="$(etcdctl --endpoints="${endpoints}" --cacert=/tls/ca.crt --cert=/tls/tls.crt \
+  --key=/tls/tls.key member list | awk -F', ' -v name=%q '$3 == name {print $1}')"
+test -n "${member_id}"
+etcdctl --endpoints="${endpoints}" --cacert=/tls/ca.crt --cert=/tls/tls.crt \
+  --key=/tls/tls.key member update "${member_id}" --peer-urls=%q
+etcdctl --endpoints="${endpoints}" --cacert=/tls/ca.crt --cert=/tls/tls.crt \
+  --key=/tls/tls.key member list | grep -F -- %q
+`, strings.Join(endpoints, ","), migration.Member,
+		"https://"+migration.NewAddress+":2380", "https://"+migration.NewAddress+":2380")
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: desired.Site.Namespace,
+			Name:      "address-migration-" + operationHash(migration.OperationUID),
+			Labels:    resourceLabels(desired),
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: &backoff, ActiveDeadlineSeconds: &deadline,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: stableWorkloadLabels(resourceLabels(desired))},
+				Spec: corev1.PodSpec{
+					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           workloadServiceAccount,
+					AutomountServiceAccountToken: ptr(false),
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:   ptr(true),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					Containers: []corev1.Container{{
+						Name: "etcdctl", Image: r.Images.Etcd,
+						Command:         []string{"/bin/sh", "-ec", command},
+						SecurityContext: restrictedContainer(),
+						VolumeMounts: []corev1.VolumeMount{{
+							Name: "tls", MountPath: "/tls", ReadOnly: true,
+						}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "tls", VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: "etcd-maintenance-client-tls"},
+						},
+					}},
+				},
+			},
+		},
+	}, nil
+}
+
 func clientCertificate(namespace, name, secretName string, issuer api.IssuerReference,
 	labels map[string]string,
 ) *unstructured.Unstructured {
@@ -244,8 +318,15 @@ func loadBalancerService(namespace, name string, labels, selector map[string]str
 }
 
 func certificate(namespace, name, secretName string, issuer api.IssuerReference,
-	labels map[string]string, address string, dnsNames []string,
+	labels map[string]string, addresses []string, dnsNames []string,
 ) *unstructured.Unstructured {
+	for _, address := range addresses {
+		if address != "" && net.ParseIP(address) == nil {
+			dnsNames = append(dnsNames, address)
+		}
+	}
+	slices.Sort(dnsNames)
+	dnsNames = slices.Compact(dnsNames)
 	spec := map[string]any{
 		"secretName": secretName,
 		"issuerRef": map[string]any{
@@ -254,8 +335,14 @@ func certificate(namespace, name, secretName string, issuer api.IssuerReference,
 		"dnsNames": dnsNames,
 		"usages":   []any{"digital signature", "key encipherment", "server auth", "client auth"},
 	}
-	if net.ParseIP(address) != nil {
-		spec["ipAddresses"] = []any{address}
+	var ipAddresses []any
+	for _, address := range addresses {
+		if net.ParseIP(address) != nil {
+			ipAddresses = append(ipAddresses, address)
+		}
+	}
+	if len(ipAddresses) > 0 {
+		spec["ipAddresses"] = ipAddresses
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "cert-manager.io/v1",
@@ -265,6 +352,16 @@ func certificate(namespace, name, secretName string, issuer api.IssuerReference,
 		},
 		"spec": spec,
 	}}
+}
+
+func certificateAddresses(desired plan.SitePlan, member string) []string {
+	addresses := []string{desired.MemberAddresses[member], desired.AddressCandidates[member]}
+	if migration := desired.AddressMigration; migration != nil && migration.Member == member &&
+		migration.OldAddress != "" && migration.OldAddress != migration.NewAddress {
+		addresses = append(addresses, migration.OldAddress)
+	}
+	slices.Sort(addresses)
+	return slices.Compact(addresses)
 }
 
 func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialCluster string,

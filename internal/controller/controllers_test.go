@@ -216,7 +216,7 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 			},
 		},
 	}
-	before, err := planFingerprint(instance)
+	before, err := planFingerprint(instance, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,12 +224,62 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 		{Name: "vic"},
 		{Name: "nsw", Addresses: map[string]string{}},
 	}
-	after, err := planFingerprint(instance)
+	after, err := planFingerprint(instance, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if before != after {
 		t.Fatalf("empty observed addresses changed fingerprint: %s != %s", before, after)
+	}
+}
+
+func TestAddressPlanSerializesObservedChanges(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance"),
+		},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", Components: api.SiteComponents{EtcdReplicas: 1}},
+			{Name: "nsw", Components: api.SiteComponents{EtcdReplicas: 1}},
+			{Name: "qld", Components: api.SiteComponents{EtcdReplicas: 1}},
+		}},
+		Status: api.MultiSitePostgresStatus{Sites: []api.SiteRevisionStatus{
+			{Name: "vic", Addresses: map[string]string{"etcd-vic-0": "10.0.0.9"}},
+			{Name: "nsw", Addresses: map[string]string{"etcd-nsw-0": "10.0.1.9"}},
+			{Name: "qld", Addresses: map[string]string{"etcd-qld-0": "10.0.2.1"}},
+		}},
+	}
+	active := plan.SitePlan{MemberAddresses: map[string]string{
+		"etcd-vic-0": "10.0.0.1",
+		"etcd-nsw-0": "10.0.1.1",
+		"etcd-qld-0": "10.0.2.1",
+	}}
+	rawPlan, err := json.Marshal(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawEnvelope, err := json.Marshal(plan.Envelope{Plan: rawPlan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "mspsql-plan-orders-vic"},
+		Data:       map[string]string{"envelope.json": string(rawEnvelope)},
+	}
+	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(configMap).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube}
+	addresses, candidates, migration, err := reconciler.addressPlan(context.Background(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migration == nil || migration.Member != "etcd-nsw-0" {
+		t.Fatalf("migration = %#v", migration)
+	}
+	if addresses["etcd-nsw-0"] != "10.0.1.9" || addresses["etcd-vic-0"] != "10.0.0.1" {
+		t.Fatalf("serialized addresses = %#v", addresses)
+	}
+	if candidates["etcd-vic-0"] != "10.0.0.9" {
+		t.Fatalf("certificate candidates = %#v", candidates)
 	}
 }
 

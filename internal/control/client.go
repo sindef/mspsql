@@ -257,6 +257,17 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 		for _, member := range result.SynchronousStandbys {
 			summaries["topology/synchronous/"+member] = "healthy"
 		}
+		for _, condition := range result.Conditions {
+			encoded, marshalErr := json.Marshal(struct {
+				Status  metav1.ConditionStatus `json:"status"`
+				Reason  string                 `json:"reason"`
+				Message string                 `json:"message"`
+			}{Status: condition.Status, Reason: condition.Reason, Message: condition.Message})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			summaries["condition/"+condition.Type] = string(encoded)
+		}
 		if applyErr != nil {
 			summaries["error"] = applyErr.Error()
 			result.Phase = "Retrying"
