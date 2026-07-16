@@ -218,6 +218,16 @@ func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
 	if len(deployment.Spec.Template.Spec.Containers) != 2 {
 		t.Fatalf("containers = %d, want 2", len(deployment.Spec.Template.Spec.Containers))
 	}
+	if deployment.Spec.Strategy.RollingUpdate == nil ||
+		deployment.Spec.Strategy.RollingUpdate.MaxUnavailable == nil ||
+		deployment.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue() != 0 {
+		t.Fatalf("agent rolling strategy = %#v", deployment.Spec.Strategy)
+	}
+	if deployment.Spec.Template.Spec.SecurityContext == nil ||
+		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile == nil ||
+		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("agent pod security context = %#v", deployment.Spec.Template.Spec.SecurityContext)
+	}
 	wireGuard := deployment.Spec.Template.Spec.Containers[1]
 	if wireGuard.Resources.Limits.Name("multisite-postgres.dev/tun", resource.DecimalSI).String() != "1" {
 		t.Fatalf("WireGuard TUN limit = %s",
@@ -229,6 +239,16 @@ func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
 		}
 	}
 	agent := deployment.Spec.Template.Spec.Containers[0]
+	if agent.SecurityContext == nil || agent.SecurityContext.RunAsNonRoot == nil ||
+		!*agent.SecurityContext.RunAsNonRoot || agent.SecurityContext.ReadOnlyRootFilesystem == nil ||
+		!*agent.SecurityContext.ReadOnlyRootFilesystem {
+		t.Fatalf("site agent security context = %#v", agent.SecurityContext)
+	}
+	if agent.ReadinessProbe == nil || agent.ReadinessProbe.Exec == nil ||
+		len(agent.ReadinessProbe.Exec.Command) != 2 ||
+		agent.ReadinessProbe.Exec.Command[0] != "/site-agent" {
+		t.Fatalf("site agent readiness probe = %#v", agent.ReadinessProbe)
+	}
 	env := map[string]corev1.EnvVar{}
 	for _, variable := range agent.Env {
 		env[variable.Name] = variable

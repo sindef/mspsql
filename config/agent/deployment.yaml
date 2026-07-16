@@ -5,6 +5,8 @@ metadata:
   namespace: mspsql-agent
 spec:
   replicas: 2
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
   selector:
     matchLabels:
       app.kubernetes.io/name: mspsql-agent
@@ -15,7 +17,6 @@ spec:
     spec:
       serviceAccountName: mspsql-agent
       securityContext:
-        runAsNonRoot: true
         seccompProfile: {type: RuntimeDefault}
       affinity:
         podAntiAffinity:
@@ -50,7 +51,12 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
+          runAsNonRoot: true
           capabilities: {drop: [ALL]}
+        readinessProbe:
+          exec:
+            command: [/site-agent, --check-ready=/etc/mspsql/identity/tls.crt]
+          periodSeconds: 2
         volumeMounts:
         - {name: bootstrap, mountPath: /etc/mspsql/bootstrap, readOnly: true}
         - {name: identity, mountPath: /etc/mspsql/identity, readOnly: true}

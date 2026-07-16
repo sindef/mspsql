@@ -409,6 +409,7 @@ func rule(groups, resources, verbs []string) map[string]any {
 }
 
 func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage string) map[string]any {
+	agentLabels := map[string]any{"app.kubernetes.io/name": "mspsql-agent"}
 	containers := []any{map[string]any{
 		"name": "site-agent", "image": agentImage,
 		"args": []any{
@@ -430,11 +431,28 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 			map[string]any{"name": "identity", "mountPath": "/etc/mspsql/identity", "readOnly": true},
 			map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
 		},
+		"readinessProbe": map[string]any{
+			"exec": map[string]any{"command": []any{
+				"/site-agent", "--check-ready=/etc/mspsql/identity/tls.crt",
+			}},
+			"periodSeconds": 2,
+		},
+		"resources": map[string]any{
+			"requests": map[string]any{"cpu": "100m", "memory": "128Mi"},
+			"limits":   map[string]any{"cpu": "1", "memory": "512Mi"},
+		},
+		"securityContext": map[string]any{
+			"allowPrivilegeEscalation": false,
+			"readOnlyRootFilesystem":   true,
+			"runAsNonRoot":             true,
+			"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		},
 	}}
 	volumes := []any{
-		map[string]any{"name": "bootstrap", "secret": map[string]any{"secretName": "mspsql-agent-bootstrap"}},
+		map[string]any{"name": "bootstrap", "secret": map[string]any{
+			"secretName": "mspsql-agent-bootstrap", "defaultMode": 256}},
 		map[string]any{"name": "identity", "secret": map[string]any{
-			"secretName": "mspsql-agent-identity", "optional": true}},
+			"secretName": "mspsql-agent-identity", "optional": true, "defaultMode": 256}},
 		map[string]any{"name": "runtime", "emptyDir": map[string]any{"medium": "Memory"}},
 	}
 	if wireGuardImage != "" {
@@ -446,11 +464,16 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 					"while true; do sleep 3600; done"},
 			"securityContext": map[string]any{
 				"allowPrivilegeEscalation": false,
+				"readOnlyRootFilesystem":   true,
 				"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_ADMIN"}},
 			},
 			"resources": map[string]any{
-				"requests": map[string]any{"multisite-postgres.dev/tun": 1},
-				"limits":   map[string]any{"multisite-postgres.dev/tun": 1},
+				"requests": map[string]any{
+					"cpu": "25m", "memory": "32Mi", "multisite-postgres.dev/tun": 1,
+				},
+				"limits": map[string]any{
+					"cpu": "250m", "memory": "128Mi", "multisite-postgres.dev/tun": 1,
+				},
 			},
 			"volumeMounts": []any{
 				map[string]any{"name": "identity", "mountPath": "/etc/wireguard", "readOnly": true},
@@ -467,13 +490,31 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 		"metadata": map[string]any{"name": "mspsql-agent", "namespace": "mspsql-agent"},
 		"spec": map[string]any{
 			"replicas": 2,
-			"selector": map[string]any{"matchLabels": map[string]any{"app": "mspsql-agent"}},
+			"strategy": map[string]any{"rollingUpdate": map[string]any{
+				"maxUnavailable": 0, "maxSurge": 1,
+			}},
+			"selector": map[string]any{"matchLabels": agentLabels},
 			"template": map[string]any{
-				"metadata": map[string]any{"labels": map[string]any{"app": "mspsql-agent"}},
+				"metadata": map[string]any{"labels": agentLabels},
 				"spec": map[string]any{
-					"serviceAccountName": "mspsql-agent",
-					"containers":         containers,
-					"volumes":            volumes,
+					"serviceAccountName":            "mspsql-agent",
+					"terminationGracePeriodSeconds": 30,
+					"securityContext": map[string]any{
+						"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+					},
+					"affinity": map[string]any{"podAntiAffinity": map[string]any{
+						"preferredDuringSchedulingIgnoredDuringExecution": []any{
+							map[string]any{
+								"weight": 100,
+								"podAffinityTerm": map[string]any{
+									"topologyKey":   "kubernetes.io/hostname",
+									"labelSelector": map[string]any{"matchLabels": agentLabels},
+								},
+							},
+						},
+					}},
+					"containers": containers,
+					"volumes":    volumes,
 				},
 			},
 		},

@@ -64,6 +64,7 @@ func main() {
 	var target, namespace, registrationUID, hubDomain, publicKeyPath string
 	var certificatePath, privateKeyPath, caPath, activationPath string
 	var bootstrapPath string
+	var readinessFile string
 	var etcdImage, pgpoolImage string
 	flag.StringVar(&target, "hub-address", "", "Hub gRPC address reachable through WireGuard.")
 	flag.StringVar(&namespace, "namespace", envOrDefault("POD_NAMESPACE", "mspsql-agent"), "Agent system namespace.")
@@ -77,9 +78,18 @@ func main() {
 	flag.StringVar(&bootstrapPath, "bootstrap-path", "/etc/mspsql/bootstrap", "Registration bootstrap Secret path.")
 	flag.StringVar(&etcdImage, "etcd-image", "quay.io/coreos/etcd:v3.6.6", "etcd image.")
 	flag.StringVar(&pgpoolImage, "pgpool-image", "bitnami/pgpool:4.6.3", "Pgpool image.")
+	flag.StringVar(&readinessFile, "check-ready", "",
+		"Exit successfully when the given projected identity file is non-empty.")
 	zapOptions := zap.Options{Development: false}
 	zapOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
+	if readinessFile != "" {
+		info, err := os.Stat(readinessFile)
+		if err != nil || info.Size() == 0 {
+			os.Exit(1)
+		}
+		return
+	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 	log := ctrl.Log.WithName("site-agent")
 	if target == "" || registrationUID == "" || hubDomain == "" {
