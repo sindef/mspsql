@@ -6,6 +6,9 @@ clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
 image="${IMG:-mspsql:test}"
 agent_image="${AGENT_IMG:-mspsql-agent:test}"
 vault_image="hashicorp/vault:1.21.4"
+cert_manager_version="v1.21.0"
+metallb_version="v0.16.0"
+temp_dir="$(mktemp -d)"
 
 cleanup() {
   status=$?
@@ -30,20 +33,51 @@ cleanup() {
   for cluster in "${clusters[@]}"; do
     kind delete cluster --name "${cluster}" >/dev/null 2>&1 || true
   done
+  rm -rf "${temp_dir}"
 }
 trap cleanup EXIT
 
 docker pull "${vault_image}"
+curl -fsSL -o "${temp_dir}/cert-manager.yaml" \
+  "https://github.com/cert-manager/cert-manager/releases/download/${cert_manager_version}/cert-manager.yaml"
+echo "6e499c3f1ab356abe79a7853911f80cb09c213885bfdf81092fdff142ba63c4a  ${temp_dir}/cert-manager.yaml" |
+  sha256sum -c -
+curl -fsSL -o "${temp_dir}/metallb.yaml" \
+  "https://raw.githubusercontent.com/metallb/metallb/${metallb_version}/config/manifests/metallb-native.yaml"
+echo "b0b9be2802f10aa32d45308b4457d06cde0c70544712c8d0cf5511657ffd2b69  ${temp_dir}/metallb.yaml" |
+  sha256sum -c -
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=mspsql-kind-ca" \
+  -keyout "${temp_dir}/ca.key" -out "${temp_dir}/ca.crt" >/dev/null 2>&1
 
 for cluster in "${clusters[@]}"; do
   kind create cluster --name "${cluster}" --wait 120s
 done
 
+kind_subnet="$(docker network inspect kind --format '{{(index .IPAM.Config 0).Subnet}}')"
+subnet_address="${kind_subnet%/*}"
+prefix_length="${kind_subnet#*/}"
+IFS=. read -r subnet_a subnet_b _ _ <<<"${subnet_address}"
+if [[ "${prefix_length}" -gt 16 ]]; then
+  echo "KIND network ${kind_subnet} is too small for isolated MetalLB test pools" >&2
+  exit 1
+fi
+
+pool_offset=10
 for site in vic nsw qld; do
   kind load docker-image "${vault_image}" --name "mspsql-${site}"
   site_kubeconfig="$(mktemp)"
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
-  ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}"
+  ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}" &
+  vault_pid=$!
+  ./test/kind/configure-platform.sh "${site_kubeconfig}" \
+    "${subnet_a}.${subnet_b}.100.${pool_offset}" \
+    "${subnet_a}.${subnet_b}.100.$((pool_offset + 19))" \
+    "${temp_dir}/ca.crt" "${temp_dir}/ca.key" \
+    "${temp_dir}/cert-manager.yaml" "${temp_dir}/metallb.yaml" &
+  platform_pid=$!
+  wait "${vault_pid}"
+  wait "${platform_pid}"
+  pool_offset=$((pool_offset + 20))
   rm -f "${site_kubeconfig}"
 done
 
@@ -136,28 +170,43 @@ for site in vic nsw qld; do
   rm -f "${site_kubeconfig}"
 done
 
-for _ in $(seq 1 60); do
-  count="$(kubectl -n database-platform get configmap \
-    -l multisite-postgres.dev/instance-uid -o name | wc -l | tr -d ' ')"
-  [[ "${count}" == "3" ]] && break
+for _ in $(seq 1 450); do
+  phase="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.phase}')"
+  [[ "${phase}" == "Ready" ]] && break
   sleep 2
 done
-test "$(kubectl -n database-platform get configmap -l multisite-postgres.dev/instance-uid -o name | wc -l | tr -d ' ')" = "3"
-test "$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.activeRevision}')" = "1"
+test "${phase}" = "Ready"
+test "$(kubectl -n database-platform get configmap \
+  -l multisite-postgres.dev/instance-uid -o name | wc -l | tr -d ' ')" = "3"
 
-kubectl -n database-platform patch multisitepostgres orders --type=merge --subresource=status \
-  -p='{"status":{"sites":[{"name":"vic","siteRegistrationRef":"vic","addresses":{"etcd-vic-0":"10.0.0.1"}},{"name":"nsw","siteRegistrationRef":"nsw"},{"name":"qld","siteRegistrationRef":"qld"}]}}'
-kubectl -n database-platform annotate multisitepostgres orders \
-  multisite-postgres.dev/address-observation="$(date -u +%FT%TZ)" --overwrite
-
-for _ in $(seq 1 60); do
-  revision="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.activeRevision}')"
-  [[ "${revision}" == "2" ]] && break
+primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+case "${primary}" in
+  postgres-vic-*) primary_site=vic; replica_site=nsw ;;
+  postgres-nsw-*) primary_site=nsw; replica_site=vic ;;
+  *) echo "unexpected primary ${primary}" >&2; exit 1 ;;
+esac
+primary_kubeconfig="${temp_dir}/${primary_site}.kubeconfig"
+replica_kubeconfig="${temp_dir}/${replica_site}.kubeconfig"
+kind get kubeconfig --name "mspsql-${primary_site}" >"${primary_kubeconfig}"
+kind get kubeconfig --name "mspsql-${replica_site}" >"${replica_kubeconfig}"
+primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}" \
+  -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE TABLE mspsql_e2e (id integer PRIMARY KEY); INSERT INTO mspsql_e2e VALUES (1);'
+replica="postgres-${replica_site}-0"
+replica_password="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+for _ in $(seq 1 90); do
+  value="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica}" \
+    -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
+    psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
+    'SELECT id FROM mspsql_e2e' 2>/dev/null || true)"
+  [[ "${value}" == "1" ]] && break
   sleep 2
 done
-test "$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.activeRevision}')" = "2"
-kubectl -n database-platform get configmap mspsql-plan-orders-vic -o jsonpath='{.data.envelope\.json}' |
-  grep -q '10.0.0.1'
+test "${value}" = "1"
 
 kubectl -n database-platform delete multisitepostgres orders --wait=false
 kubectl -n database-platform wait --for=delete multisitepostgres/orders --timeout=180s
