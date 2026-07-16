@@ -297,6 +297,8 @@ func TestAgentWireGuardStopsOnLeadershipLoss(t *testing.T) {
 	command := deployment.Spec.Template.Spec.Containers[1].Command
 	if len(command) != 3 || !strings.Contains(command[2], "ip link delete wg0") ||
 		!strings.Contains(command[2], "wg-quick down") ||
+		!strings.Contains(command[2], "WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go") ||
+		strings.Contains(command[2], "wireguard-go wg0 &") ||
 		!strings.Contains(command[2], "while [ -f /run/mspsql/leader ]") {
 		t.Fatalf("WireGuard leadership cleanup command = %#v", command)
 	}
