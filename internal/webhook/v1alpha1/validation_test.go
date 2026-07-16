@@ -118,7 +118,7 @@ func TestValidateInstance(t *testing.T) {
 
 func TestValidateUserRejectsUnsafeVaultReference(t *testing.T) {
 	user := &api.PostgresUser{Spec: api.PostgresUserSpec{
-		RoleName: "orders_app",
+		InstanceRef: "orders", RoleName: "orders_app",
 		PasswordVaultRef: api.VaultSecretReference{
 			Mount: "secret", Path: "postgres/orders/users/orders-app", Key: "password\nother",
 		},
@@ -129,6 +129,13 @@ func TestValidateUserRejectsUnsafeVaultReference(t *testing.T) {
 	user.Spec.PasswordVaultRef.Key = "password"
 	if err := validateUser(user); err != nil {
 		t.Fatalf("valid Vault reference rejected: %v", err)
+	}
+	user.Spec.MemberOf = []api.RoleMembership{
+		{DatabaseRef: "orders-api", Role: "orders_rw"},
+		{DatabaseRef: "orders-api", Role: "orders_rw"},
+	}
+	if err := validateUser(user); err == nil {
+		t.Fatal("duplicate role membership was accepted")
 	}
 }
 

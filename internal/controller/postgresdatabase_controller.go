@@ -25,6 +25,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 )
@@ -34,6 +36,8 @@ type PostgresDatabaseReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+const databaseInstanceRefField = ".spec.instanceRef"
 
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresdatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresdatabases/status,verbs=get;update;patch
@@ -93,9 +97,35 @@ func (r *PostgresDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PostgresDatabaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&multisitepostgresv1alpha1.PostgresDatabase{}, databaseInstanceRefField,
+		func(object client.Object) []string {
+			return []string{object.(*multisitepostgresv1alpha1.PostgresDatabase).Spec.InstanceRef}
+		}); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&multisitepostgresv1alpha1.PostgresDatabase{}).
 		Owns(&corev1.ConfigMap{}).
+		Watches(&multisitepostgresv1alpha1.MultiSitePostgres{},
+			handler.EnqueueRequestsFromMapFunc(r.databasesForInstance)).
 		Named("postgresdatabase").
 		Complete(r)
+}
+
+func (r *PostgresDatabaseReconciler) databasesForInstance(ctx context.Context,
+	object client.Object,
+) []reconcile.Request {
+	var databases multisitepostgresv1alpha1.PostgresDatabaseList
+	if err := r.List(ctx, &databases, client.InNamespace(object.GetNamespace()),
+		client.MatchingFields{databaseInstanceRefField: object.GetName()}); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(databases.Items))
+	for i := range databases.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&databases.Items[i]),
+		})
+	}
+	return requests
 }

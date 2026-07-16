@@ -18,7 +18,7 @@ package controller
 
 import (
 	"context"
-	"time"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +26,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 )
@@ -35,6 +37,8 @@ type PostgresUserReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+const userDatabaseRefField = ".spec.memberOf.databaseRef"
 
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresusers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=postgresusers/status,verbs=get;update;patch
@@ -73,6 +77,21 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				"DatabaseUnavailable", err.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, &user)
 		}
+		if database.Spec.InstanceRef != user.Spec.InstanceRef {
+			user.Status.Phase = "Pending"
+			setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
+				"DatabaseInstanceMismatch", "Database "+membership.DatabaseRef+" belongs to another instance")
+			return ctrl.Result{}, r.Status().Update(ctx, &user)
+		}
+		roleDeclared := slices.ContainsFunc(database.Spec.Roles, func(role multisitepostgresv1alpha1.DatabaseRole) bool {
+			return role.Name == membership.Role
+		})
+		if !roleDeclared {
+			user.Status.Phase = "Pending"
+			setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
+				"DatabaseRoleUnavailable", "Database "+membership.DatabaseRef+" does not declare role "+membership.Role)
+			return ctrl.Result{}, r.Status().Update(ctx, &user)
+		}
 		if !conditionTrue(database.Status.Conditions, "Ready") {
 			user.Status.Phase = "Pending"
 			setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
@@ -80,7 +99,7 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			if err := r.Status().Update(ctx, &user); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{}, nil
 		}
 	}
 	if err := reconcileDirective(ctx, r.Client, r.Scheme, &user,
@@ -100,9 +119,60 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PostgresUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&multisitepostgresv1alpha1.PostgresUser{}, databaseInstanceRefField,
+		func(object client.Object) []string {
+			return []string{object.(*multisitepostgresv1alpha1.PostgresUser).Spec.InstanceRef}
+		}); err != nil {
+		return err
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&multisitepostgresv1alpha1.PostgresUser{}, userDatabaseRefField,
+		func(object client.Object) []string {
+			user := object.(*multisitepostgresv1alpha1.PostgresUser)
+			values := make([]string, 0, len(user.Spec.MemberOf))
+			for _, membership := range user.Spec.MemberOf {
+				values = append(values, membership.DatabaseRef)
+			}
+			return values
+		}); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&multisitepostgresv1alpha1.PostgresUser{}).
 		Owns(&corev1.ConfigMap{}).
+		Watches(&multisitepostgresv1alpha1.MultiSitePostgres{},
+			handler.EnqueueRequestsFromMapFunc(r.usersForInstance)).
+		Watches(&multisitepostgresv1alpha1.PostgresDatabase{},
+			handler.EnqueueRequestsFromMapFunc(r.usersForDatabase)).
 		Named("postgresuser").
 		Complete(r)
+}
+
+func (r *PostgresUserReconciler) usersForInstance(ctx context.Context,
+	object client.Object,
+) []reconcile.Request {
+	return r.usersForField(ctx, object.GetNamespace(), databaseInstanceRefField, object.GetName())
+}
+
+func (r *PostgresUserReconciler) usersForDatabase(ctx context.Context,
+	object client.Object,
+) []reconcile.Request {
+	return r.usersForField(ctx, object.GetNamespace(), userDatabaseRefField, object.GetName())
+}
+
+func (r *PostgresUserReconciler) usersForField(ctx context.Context, namespace, field, value string,
+) []reconcile.Request {
+	var users multisitepostgresv1alpha1.PostgresUserList
+	if err := r.List(ctx, &users, client.InNamespace(namespace),
+		client.MatchingFields{field: value}); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(users.Items))
+	for i := range users.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&users.Items[i]),
+		})
+	}
+	return requests
 }

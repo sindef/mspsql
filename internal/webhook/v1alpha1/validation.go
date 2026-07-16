@@ -351,6 +351,9 @@ func validateDatabase(obj *api.PostgresDatabase) error {
 
 func validateUser(obj *api.PostgresUser) error {
 	var errs field.ErrorList
+	if obj.Spec.InstanceRef == "" {
+		errs = append(errs, field.Required(field.NewPath("spec", "instanceRef"), "instance is required"))
+	}
 	errs = append(errs, validateSQLIdentifier(field.NewPath("spec", "roleName"), obj.Spec.RoleName)...)
 	if protectedRole(obj.Spec.RoleName) {
 		errs = append(errs, field.Forbidden(field.NewPath("spec", "roleName"),
@@ -358,9 +361,20 @@ func validateUser(obj *api.PostgresUser) error {
 	}
 	errs = append(errs, validateVaultSecretReference(
 		field.NewPath("spec", "passwordVaultRef"), obj.Spec.PasswordVaultRef, true)...)
+	seenMemberships := map[string]struct{}{}
 	for i, membership := range obj.Spec.MemberOf {
+		membershipPath := field.NewPath("spec", "memberOf").Index(i)
+		if messages := validation.IsDNS1123Subdomain(membership.DatabaseRef); len(messages) > 0 {
+			errs = append(errs, field.Invalid(membershipPath.Child("databaseRef"),
+				membership.DatabaseRef, strings.Join(messages, "; ")))
+		}
 		errs = append(errs, validateSQLIdentifier(
-			field.NewPath("spec", "memberOf").Index(i).Child("role"), membership.Role)...)
+			membershipPath.Child("role"), membership.Role)...)
+		key := membership.DatabaseRef + "\x00" + membership.Role
+		if _, found := seenMemberships[key]; found {
+			errs = append(errs, field.Duplicate(membershipPath, membership))
+		}
+		seenMemberships[key] = struct{}{}
 	}
 	return errs.ToAggregate()
 }

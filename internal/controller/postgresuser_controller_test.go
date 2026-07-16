@@ -42,6 +42,9 @@ func TestPostgresUserWaitsForMembershipDatabase(t *testing.T) {
 	}
 	database := &api.PostgresDatabase{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-api"},
+		Spec: api.PostgresDatabaseSpec{
+			InstanceRef: "orders", Roles: []api.DatabaseRole{{Name: "orders_rw", Profile: "ReadWrite"}},
+		},
 		Status: api.PostgresDatabaseStatus{Conditions: []metav1.Condition{{
 			Type: "Ready", Status: metav1.ConditionFalse, Reason: "Reconciling",
 		}}},
@@ -63,12 +66,9 @@ func TestPostgresUserWaitsForMembershipDatabase(t *testing.T) {
 		WithStatusSubresource(user, database).WithObjects(user, database).Build()
 	reconciler := &PostgresUserReconciler{Client: kube, Scheme: scheme}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(user)}
-	result, err := reconciler.Reconcile(context.Background(), request)
+	_, err := reconciler.Reconcile(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.RequeueAfter == 0 {
-		t.Fatal("user was not requeued while its membership database was pending")
 	}
 	var observed api.PostgresUser
 	if err := kube.Get(context.Background(), request.NamespacedName, &observed); err != nil {
@@ -84,5 +84,41 @@ func TestPostgresUserWaitsForMembershipDatabase(t *testing.T) {
 	}
 	if len(directives.Items) != 0 {
 		t.Fatal("user directive was issued before its membership database was ready")
+	}
+}
+
+func TestPostgresUserRejectsMembershipFromAnotherInstance(t *testing.T) {
+	scheme := testScheme(t)
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "reporting"},
+		Spec: api.PostgresDatabaseSpec{
+			InstanceRef: "reporting", Roles: []api.DatabaseRole{{Name: "reporting_ro", Profile: "ReadOnly"}},
+		},
+		Status: api.PostgresDatabaseStatus{Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionTrue, Reason: "Reconciled",
+		}}},
+	}
+	user := &api.PostgresUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-app", UID: "user-uid",
+			Finalizers: []string{childFinalizer}},
+		Spec: api.PostgresUserSpec{
+			InstanceRef: "orders", RoleName: "orders_app",
+			MemberOf: []api.RoleMembership{{DatabaseRef: "reporting", Role: "reporting_ro"}},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(user, database).WithObjects(user, database).Build()
+	reconciler := &PostgresUserReconciler{Client: kube, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(user)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.PostgresUser
+	if err := kube.Get(context.Background(), request.NamespacedName, &observed); err != nil {
+		t.Fatal(err)
+	}
+	ready := meta.FindStatusCondition(observed.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "DatabaseInstanceMismatch" {
+		t.Fatalf("user Ready condition = %#v", ready)
 	}
 }
