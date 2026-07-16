@@ -46,6 +46,7 @@ type MultiSitePostgresSpec struct {
 type MultiSitePostgresStatus struct {
 	ObservedGeneration  int64                `json:"observedGeneration,omitempty"`
 	ActiveRevision      int64                `json:"activeRevision,omitempty"`
+	PlanFingerprint     string               `json:"planFingerprint,omitempty"`
 	Phase               string               `json:"phase,omitempty"`
 	Primary             string               `json:"primary,omitempty"`
 	SynchronousStandbys []string             `json:"synchronousStandbys,omitempty"`

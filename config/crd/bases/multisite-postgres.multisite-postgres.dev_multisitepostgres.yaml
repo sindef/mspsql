@@ -399,6 +399,8 @@ spec:
                 type: integer
               phase:
                 type: string
+              planFingerprint:
+                type: string
               primary:
                 type: string
               recoveryWindowStart:

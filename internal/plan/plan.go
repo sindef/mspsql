@@ -42,6 +42,7 @@ type SitePlan struct {
 	Postgres        api.PostgresSpec     `json:"postgres"`
 	TDE             api.TDESpec          `json:"tde,omitempty"`
 	Backup          *api.BackupSpec      `json:"backup,omitempty"`
+	MemberAddresses map[string]string    `json:"memberAddresses,omitempty"`
 }
 
 type Envelope struct {

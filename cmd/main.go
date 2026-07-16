@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
+	"github.com/sindef/mspsql/internal/control"
 	"github.com/sindef/mspsql/internal/controller"
 	webhookv1alpha1 "github.com/sindef/mspsql/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -63,6 +64,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var systemNamespace, registrationPublicURL string
+	var controlAddress, controlCertificate, controlPrivateKey, controlClientCA string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -74,6 +76,13 @@ func main() {
 		"Namespace containing hub identity and signing Secrets.")
 	flag.StringVar(&registrationPublicURL, "registration-public-url", "",
 		"Public HTTPS base URL used in registration capability URLs.")
+	flag.StringVar(&controlAddress, "control-address", ":9444", "Address for the agent gRPC control service.")
+	flag.StringVar(&controlCertificate, "control-certificate", "/etc/mspsql/control/tls.crt",
+		"Agent gRPC server certificate.")
+	flag.StringVar(&controlPrivateKey, "control-private-key", "/etc/mspsql/control/tls.key",
+		"Agent gRPC server private key.")
+	flag.StringVar(&controlClientCA, "control-client-ca", "/etc/mspsql/control/ca.crt",
+		"CA used to authenticate site agents.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -227,6 +236,14 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "postgresupgrade")
+		os.Exit(1)
+	}
+	if err := mgr.Add(&control.RunnableServer{
+		Address: controlAddress, Certificate: controlCertificate,
+		PrivateKey: controlPrivateKey, ClientCA: controlClientCA,
+		Service: &control.Server{Client: mgr.GetClient()},
+	}); err != nil {
+		setupLog.Error(err, "Failed to add agent control server")
 		os.Exit(1)
 	}
 	// nolint:goconst

@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package mspsql.control.v1;
+
+option go_package = "github.com/sindef/mspsql/gen/control/v1;controlv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AgentControl {
+  rpc Connect(stream AgentMessage) returns (stream HubMessage);
+}
+
+message AgentMessage {
+  oneof message {
+    AgentHello hello = 1;
+    AgentHeartbeat heartbeat = 2;
+    PlanAcknowledgement acknowledgement = 3;
+    PlanProgress progress = 4;
+    PlanResult result = 5;
+    InventoryUpdate inventory = 6;
+  }
+}
+
+message AgentHello {
+  string registration_uid = 1;
+  string cluster_uid = 2;
+  string agent_version = 3;
+  repeated string capabilities = 4;
+  string protocol_version = 5;
+}
+
+message AgentHeartbeat {
+  map<string, int64> active_revisions = 1;
+  int64 hub_rtt_milliseconds = 2;
+  google.protobuf.Timestamp sent_at = 3;
+}
+
+message PlanAcknowledgement {
+  string instance_uid = 1;
+  int64 revision = 2;
+  bool accepted = 3;
+  repeated string validation_errors = 4;
+}
+
+message PlanProgress {
+  string operation_uid = 1;
+  string instance_uid = 2;
+  int64 revision = 3;
+  string phase = 4;
+  map<string, string> resource_summaries = 5;
+}
+
+message PlanResult {
+  string operation_uid = 1;
+  string instance_uid = 2;
+  int64 applied_revision = 3;
+  repeated Condition conditions = 4;
+}
+
+message InventoryUpdate {
+  bytes inventory_json = 1;
+}
+
+message HubMessage {
+  oneof message {
+    DesiredSitePlan plan = 1;
+    OperationDirective directive = 2;
+    CertificateResponse certificate = 3;
+    CancelOperation cancel = 4;
+  }
+}
+
+message DesiredSitePlan {
+  string instance_uid = 1;
+  int64 revision = 2;
+  bytes envelope_json = 3;
+}
+
+message OperationDirective {
+  string operation_uid = 1;
+  string instance_uid = 2;
+  string type = 3;
+  bytes directive_json = 4;
+}
+
+message CertificateResponse {
+  bytes certificate_pem = 1;
+  bytes ca_bundle_pem = 2;
+  string wireguard_peer_configuration = 3;
+}
+
+message CancelOperation {
+  string operation_uid = 1;
+  string reason = 2;
+}
+
+message Condition {
+  string type = 1;
+  string status = 2;
+  string reason = 3;
+  string message = 4;
+  google.protobuf.Timestamp last_transition_time = 5;
+}

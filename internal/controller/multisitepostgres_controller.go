@@ -18,6 +18,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -97,11 +100,16 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
 		metav1.ConditionTrue, "AllAgentsConnected", "All site agents are connected")
 
-	if instance.Status.ObservedGeneration != instance.Generation {
+	fingerprint, err := planFingerprint(&instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if instance.Status.PlanFingerprint != fingerprint {
 		instance.Status.ActiveRevision++
 		if instance.Status.ActiveRevision == 0 {
 			instance.Status.ActiveRevision = 1
 		}
+		instance.Status.PlanFingerprint = fingerprint
 	}
 	systemNamespace := r.SystemNamespace
 	if systemNamespace == "" {
@@ -116,25 +124,32 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		now = r.Now
 	}
 	siteStatuses := make([]multisitepostgresv1alpha1.SiteRevisionStatus, 0, len(instance.Spec.Sites))
+	memberAddresses := make(map[string]string)
+	for _, siteStatus := range instance.Status.Sites {
+		for member, address := range siteStatus.Addresses {
+			memberAddresses[member] = address
+		}
+	}
 	for _, site := range instance.Spec.Sites {
 		registration := registrations[site.Name]
 		desired := plan.SitePlan{
-			SiteUID:      string(registration.UID),
-			InstanceUID:  string(instance.UID),
-			HubNamespace: instance.Namespace,
-			HubName:      instance.Name,
-			Revision:     instance.Status.ActiveRevision,
-			GeneratedAt:  now().UTC(),
-			Site:         site,
-			Postgres:     instance.Spec.Postgres,
-			TDE:          instance.Spec.TDE,
-			Backup:       instance.Spec.Backup,
+			SiteUID:         string(registration.UID),
+			InstanceUID:     string(instance.UID),
+			HubNamespace:    instance.Namespace,
+			HubName:         instance.Name,
+			Revision:        instance.Status.ActiveRevision,
+			GeneratedAt:     now().UTC(),
+			Site:            site,
+			Postgres:        instance.Spec.Postgres,
+			TDE:             instance.Spec.TDE,
+			Backup:          instance.Spec.Backup,
+			MemberAddresses: memberAddresses,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.reconcilePlan(ctx, &instance, site.Name, envelope); err != nil {
+		if err := r.reconcilePlan(ctx, &instance, site.Name, string(registration.UID), envelope); err != nil {
 			return ctrl.Result{}, err
 		}
 		status := previousSiteStatus(instance.Status.Sites, site.Name)
@@ -164,7 +179,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
-	instance *multisitepostgresv1alpha1.MultiSitePostgres, siteName string, envelope plan.Envelope,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres, siteName, siteUID string, envelope plan.Envelope,
 ) error {
 	data, err := envelopeData(envelope)
 	if err != nil {
@@ -180,8 +195,9 @@ func (r *MultiSitePostgresReconciler) reconcilePlan(ctx context.Context,
 				Namespace: instance.Namespace,
 				Name:      name,
 				Labels: map[string]string{
-					"multisite-postgres.dev/instance-uid": string(instance.UID),
-					"multisite-postgres.dev/site-name":    siteName,
+					"multisite-postgres.dev/instance-uid":          string(instance.UID),
+					"multisite-postgres.dev/site-name":             siteName,
+					"multisite-postgres.dev/site-registration-uid": siteUID,
 				},
 			},
 			Data: data,
@@ -267,10 +283,32 @@ func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		WithEventFilter(predicate.Or(
 			predicate.GenerationChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
 			predicate.NewPredicateFuncs(func(object client.Object) bool {
 				return !object.GetDeletionTimestamp().IsZero()
 			}),
 		)).
 		Named("multisitepostgres").
 		Complete(r)
+}
+
+func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (string, error) {
+	payload, err := json.Marshal(struct {
+		Generation int64
+		Addresses  map[string]map[string]string
+	}{
+		Generation: instance.Generation,
+		Addresses: func() map[string]map[string]string {
+			addresses := make(map[string]map[string]string, len(instance.Status.Sites))
+			for _, site := range instance.Status.Sites {
+				addresses[site.Name] = site.Addresses
+			}
+			return addresses
+		}(),
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
