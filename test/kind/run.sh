@@ -8,6 +8,25 @@ agent_image="${AGENT_IMG:-mspsql-agent:test}"
 vault_image="hashicorp/vault:1.21.4"
 
 cleanup() {
+  status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    if [[ -n "${KUBECONFIG:-}" ]]; then
+      kubectl -n database-platform get multisitepostgres -o yaml || true
+      kubectl -n mspsql-system logs deployment/mspsql-controller-manager \
+        --all-containers --tail=200 || true
+    fi
+    for site in vic nsw qld; do
+      site_kubeconfig="$(mktemp)"
+      if kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}" 2>/dev/null; then
+        kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent get pods -o wide || true
+        kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent logs deployment/mspsql-agent \
+          --all-containers --tail=200 || true
+        kubectl --kubeconfig="${site_kubeconfig}" get events -A \
+          --sort-by=.lastTimestamp | tail -100 || true
+      fi
+      rm -f "${site_kubeconfig}"
+    done
+  fi
   for cluster in "${clusters[@]}"; do
     kind delete cluster --name "${cluster}" >/dev/null 2>&1 || true
   done

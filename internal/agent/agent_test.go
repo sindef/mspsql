@@ -218,6 +218,50 @@ func TestFillMissingAddressesPreservesSerializedPlan(t *testing.T) {
 	}
 }
 
+func TestRendererRollsOnlyCredentialTarget(t *testing.T) {
+	desired := plan.SitePlan{
+		InstanceUID: "instance", Revision: 4, RuntimeCredentialVersion: 1,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 2},
+			Storage: api.SiteStorage{
+				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
+			},
+		},
+		Postgres: api.PostgresSpec{Image: "postgres:17"},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0":     "10.0.0.1",
+			"etcd-nsw-0":     "10.0.1.1",
+			"etcd-qld-0":     "10.0.2.1",
+			"postgres-vic-0": "10.0.0.2", "postgres-vic-1": "10.0.0.3",
+		},
+		CredentialRotation: &plan.CredentialRotationPlan{
+			Version: 2, PreviousVersion: 1, Phase: plan.CredentialRotationPhaseMember,
+			TargetMember: "postgres-vic-1",
+		},
+	}
+	objects, err := (Renderer{Images: Images{Etcd: "etcd"}}).Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := map[string]string{}
+	for _, object := range objects {
+		statefulSet, ok := object.(*appsv1.StatefulSet)
+		if ok && strings.HasPrefix(statefulSet.Name, "postgres-") {
+			versions[statefulSet.Name] =
+				statefulSet.Spec.Template.Annotations["multisite-postgres.dev/credential-version"]
+		}
+	}
+	if versions["postgres-vic-0"] != "1" || versions["postgres-vic-1"] != "2" {
+		t.Fatalf("credential rollout versions = %#v", versions)
+	}
+	job := (Renderer{}).CredentialCatalogJob(desired, "postgres-vic-0")
+	command := job.Spec.Template.Spec.Containers[0].Command[2]
+	if strings.Contains(command, "new-repl") || !strings.Contains(command, `\getenv`) {
+		t.Fatalf("catalog command exposes credentials: %s", command)
+	}
+}
+
 func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
 	desired := plan.SitePlan{
 		SiteUID: "site", InstanceUID: "target", Revision: 1,

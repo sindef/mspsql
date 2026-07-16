@@ -46,7 +46,9 @@ EOF
   ttl=10m
 
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
-  mspsql/postgres/orders/bootstrap superuserPassword=super replicationPassword=replication
+  mspsql/postgres/orders/bootstrap \
+  superuserUsername=postgres superuserPassword=super \
+  replicationUsername=replication replicationPassword=replication
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
   mspsql/postgres/orders/pgpool adminUsername=admin adminPassword=pool
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \

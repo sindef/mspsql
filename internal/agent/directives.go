@@ -473,7 +473,8 @@ func sqlJob(desired plan.SitePlan, payload directive.Payload, name, sql string, 
 							{Name: "PGHOST", Value: host},
 							{Name: "PGPORT", Value: "5432"},
 							{Name: "PGDATABASE", Value: "postgres"},
-							{Name: "PGUSER", Value: "postgres"},
+							{Name: "PGUSER", ValueFrom: secretKeySelector(
+								"postgres-auth", "superuser-username")},
 							{Name: "PGSSLMODE", Value: "verify-full"},
 							{Name: "PGSSLROOTCERT", Value: "/tls/ca.crt"},
 							{Name: "PGPASSWORD", ValueFrom: secretKeySelector(

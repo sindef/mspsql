@@ -269,7 +269,7 @@ func validateDatabase(obj *api.PostgresDatabase) error {
 	for i, role := range obj.Spec.Roles {
 		p := field.NewPath("spec", "roles").Index(i).Child("name")
 		errs = append(errs, validateSQLIdentifier(p, role.Name)...)
-		if _, protected := protectedRoles[role.Name]; protected {
+		if protectedRole(role.Name) {
 			errs = append(errs, field.Forbidden(p, "infrastructure role is protected"))
 		}
 		if _, found := seen[role.Name]; found {
@@ -294,7 +294,7 @@ func validateDatabase(obj *api.PostgresDatabase) error {
 func validateUser(obj *api.PostgresUser) error {
 	var errs field.ErrorList
 	errs = append(errs, validateSQLIdentifier(field.NewPath("spec", "roleName"), obj.Spec.RoleName)...)
-	if _, protected := protectedRoles[obj.Spec.RoleName]; protected {
+	if protectedRole(obj.Spec.RoleName) {
 		errs = append(errs, field.Forbidden(field.NewPath("spec", "roleName"),
 			"infrastructure role is protected"))
 	}
@@ -308,6 +308,11 @@ func validateUser(obj *api.PostgresUser) error {
 			field.NewPath("spec", "memberOf").Index(i).Child("role"), membership.Role)...)
 	}
 	return errs.ToAggregate()
+}
+
+func protectedRole(name string) bool {
+	_, protected := protectedRoles[name]
+	return protected || strings.HasPrefix(name, "mspsql_")
 }
 
 func validateSQLIdentifier(identifierPath *field.Path, value string) field.ErrorList {

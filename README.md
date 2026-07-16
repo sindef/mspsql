@@ -94,10 +94,18 @@ The referenced records have these required string fields:
 
 | Reference | Fields |
 | --- | --- |
-| `credentials.postgresVaultRef` | `superuserPassword`, `replicationPassword` |
+| `credentials.postgresVaultRef` | `superuserUsername`, `superuserPassword`, `replicationUsername`, `replicationPassword` |
 | `credentials.pgpoolVaultRef` | `adminUsername`, `adminPassword` |
 | `backup.repository.credentialVaultRef` | `s3AccessKey`, `s3SecretKey`, `repositoryCipherPassphrase` |
 | `PostgresUser.passwordVaultRef` | The field selected by `key` |
+
+PostgreSQL infrastructure credential rotation uses alternating roles. The
+initial record may use `postgres` and `replication`; later Vault versions must
+use distinct `mspsql_admin_*` and `mspsql_replication_*` usernames. Agents
+stage the new version without changing live Secrets. The hub creates the new
+roles on the observed primary, rolls one synchronous standby and then every
+remaining member, disables the previous roles, and finally removes the staged
+and previous Secrets. Passwords remain site-local throughout the workflow.
 
 When TDE is enabled, `tde.vault.keyPath` is an instance-unique path under the
 configured KV v2 mount. `pg_tde` creates and retrieves principal keys there;

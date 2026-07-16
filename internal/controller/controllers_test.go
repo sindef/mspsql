@@ -93,6 +93,23 @@ func TestSiteRegistrationIssuesHashedToken(t *testing.T) {
 	}
 }
 
+func TestRegistrationStatusEnqueuesReferencingInstances(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{{
+			Name: "vic", SiteRegistrationRef: "production-vic",
+		}}},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube}
+	requests := reconciler.instancesForRegistration(context.Background(),
+		&api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{Name: "production-vic"}})
+	if len(requests) != 1 || requests[0].Name != "orders" || requests[0].Namespace != "platform" {
+		t.Fatalf("requests = %#v", requests)
+	}
+}
+
 func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 	scheme := testScheme(t)
 	issuer := api.IssuerReference{Name: "issuer", Kind: "ClusterIssuer", Group: "cert-manager.io"}
@@ -216,7 +233,7 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 			},
 		},
 	}
-	before, err := planFingerprint(instance, nil, nil, nil)
+	before, err := planFingerprint(instance, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +241,7 @@ func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
 		{Name: "vic"},
 		{Name: "nsw", Addresses: map[string]string{}},
 	}
-	after, err := planFingerprint(instance, nil, nil, nil)
+	after, err := planFingerprint(instance, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +297,52 @@ func TestAddressPlanSerializesObservedChanges(t *testing.T) {
 	}
 	if candidates["etcd-vic-0"] != "10.0.0.9" {
 		t.Fatalf("certificate candidates = %#v", candidates)
+	}
+}
+
+func TestCredentialRotationUsesCatalogThenStandby(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", Role: api.SiteRoleData, Components: api.SiteComponents{PostgresReplicas: 1}},
+			{Name: "qld", Role: api.SiteRoleData, Components: api.SiteComponents{PostgresReplicas: 1}},
+		}},
+		Status: api.MultiSitePostgresStatus{
+			Primary:             "postgres-qld-0",
+			SynchronousStandbys: []string{"postgres-vic-0"},
+			Sites: []api.SiteRevisionStatus{
+				{Name: "vic", Conditions: []metav1.Condition{{
+					Type: "CredentialRotationPending", Status: metav1.ConditionTrue, Message: "2",
+				}, {
+					Type: "PostgresCredentialsActive", Status: metav1.ConditionTrue, Message: "1",
+				}}},
+				{Name: "qld", Conditions: []metav1.Condition{{
+					Type: "CredentialRotationPending", Status: metav1.ConditionTrue, Message: "2",
+				}, {
+					Type: "PostgresCredentialsActive", Status: metav1.ConditionTrue, Message: "1",
+				}}},
+			},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube}
+	rotation, err := reconciler.credentialRotationPlan(context.Background(), instance, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotation == nil || rotation.Phase != plan.CredentialRotationPhaseCatalog {
+		t.Fatalf("catalog rotation = %#v", rotation)
+	}
+	instance.Status.Sites[1].Conditions = append(instance.Status.Sites[1].Conditions, metav1.Condition{
+		Type: "CredentialCatalogUpdated", Status: metav1.ConditionTrue, Message: "2",
+	})
+	rotation, err = reconciler.credentialRotationPlan(context.Background(), instance, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotation.Phase != plan.CredentialRotationPhaseMember ||
+		rotation.TargetMember != "postgres-vic-0" {
+		t.Fatalf("member rotation = %#v", rotation)
 	}
 }
 

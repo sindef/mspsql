@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -84,42 +85,16 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	}
 	if r.Secrets != nil {
 		result.Phase = "ResolvingSecrets"
-		if err := r.Secrets.Reconcile(ctx, desired); err != nil {
-			setLocalCondition(&result.Conditions, "VaultReady", metav1.ConditionFalse,
-				"SecretResolutionFailed", err.Error())
+		if err := r.reconcileSecrets(ctx, &desired, &result); err != nil {
 			return result, err
 		}
-		setLocalCondition(&result.Conditions, "VaultReady", metav1.ConditionTrue,
-			"SecretsResolved", "Required Vault references were resolved")
 	}
 
 	result.Phase = "AllocatingLoadBalancers"
-	for _, object := range r.Renderer.LoadBalancers(desired) {
-		if !connected {
-			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
-				if apierrors.IsNotFound(err) {
-					setLocalCondition(&result.Conditions, "AddressChangeBlocked", metav1.ConditionTrue,
-						"HubDisconnected", "LoadBalancer Services are not recreated while disconnected")
-				}
-				return result, err
-			}
-		} else if err := r.apply(ctx, object); err != nil {
-			return result, err
-		}
-		var service corev1.Service
-		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(object), &service); err != nil {
-			return result, err
-		}
-		address, err := loadBalancerAddress(&service)
-		if err != nil {
-			setLocalCondition(&result.Conditions, "LoadBalancersAllocated", metav1.ConditionFalse,
-				"AddressPending", err.Error())
-			return result, nil
-		}
-		result.Addresses[service.Name] = address
+	ready, err := r.reconcileLoadBalancers(ctx, desired, connected, &result)
+	if err != nil || !ready {
+		return result, err
 	}
-	setLocalCondition(&result.Conditions, "LoadBalancersAllocated", metav1.ConditionTrue,
-		"AddressesAllocated", "All member addresses are allocated")
 
 	if !connected && plan.Classify(previous, desired) == plan.MutationCoordinated {
 		result.Phase = "WaitingForHub"
@@ -140,6 +115,12 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	if desired.AddressMigration != nil {
 		result.Phase = "MigratingAddress"
 		ready, err := r.reconcileAddressMigration(ctx, desired, &result)
+		if err != nil || !ready {
+			return result, err
+		}
+	}
+	if desired.CredentialRotation != nil {
+		ready, err := r.prepareCredentialRotation(ctx, &desired, &result)
 		if err != nil || !ready {
 			return result, err
 		}
@@ -174,8 +155,12 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 				desired.AddressMigration.Member, desired.AddressMigration.OldAddress,
 				desired.AddressMigration.NewAddress))
 	}
+	r.setCredentialMemberCondition(desired, &result)
 	if err := r.setDataPlaneConditions(ctx, desired, &result); err != nil {
 		return result, err
+	}
+	if result.Phase == "RotatingCredentials" {
+		return result, nil
 	}
 	if err := r.pruneStaleObjects(ctx, desired); err != nil {
 		return result, err
@@ -184,6 +169,90 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
 	return result, nil
+}
+
+func (r *Reconciler) reconcileLoadBalancers(ctx context.Context, desired plan.SitePlan,
+	connected bool, result *ApplyResult,
+) (bool, error) {
+	for _, object := range r.Renderer.LoadBalancers(desired) {
+		if !connected {
+			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+				if apierrors.IsNotFound(err) {
+					setLocalCondition(&result.Conditions, "AddressChangeBlocked", metav1.ConditionTrue,
+						"HubDisconnected", "LoadBalancer Services are not recreated while disconnected")
+				}
+				return false, err
+			}
+		} else if err := r.apply(ctx, object); err != nil {
+			return false, err
+		}
+		var service corev1.Service
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(object), &service); err != nil {
+			return false, err
+		}
+		address, err := loadBalancerAddress(&service)
+		if err != nil {
+			setLocalCondition(&result.Conditions, "LoadBalancersAllocated", metav1.ConditionFalse,
+				"AddressPending", err.Error())
+			return false, nil
+		}
+		result.Addresses[service.Name] = address
+	}
+	setLocalCondition(&result.Conditions, "LoadBalancersAllocated", metav1.ConditionTrue,
+		"AddressesAllocated", "All member addresses are allocated")
+	return true, nil
+}
+
+func (r *Reconciler) reconcileSecrets(ctx context.Context, desired *plan.SitePlan,
+	result *ApplyResult,
+) error {
+	if err := r.Secrets.Reconcile(ctx, *desired); err != nil {
+		setLocalCondition(&result.Conditions, "VaultReady", metav1.ConditionFalse,
+			"SecretResolutionFailed", err.Error())
+		return err
+	}
+	setLocalCondition(&result.Conditions, "VaultReady", metav1.ConditionTrue,
+		"SecretsResolved", "Required Vault references were resolved")
+	if desired.Site.Role != api.SiteRoleData {
+		return nil
+	}
+	version, err := r.setCredentialConditions(ctx, *desired, result)
+	if err != nil {
+		return err
+	}
+	desired.RuntimeCredentialVersion = version
+	return nil
+}
+
+func (r *Reconciler) setCredentialConditions(ctx context.Context, desired plan.SitePlan,
+	result *ApplyResult,
+) (int64, error) {
+	var active corev1.Secret
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: desired.Site.Namespace, Name: "postgres-auth",
+	}, &active); err != nil {
+		return 0, err
+	}
+	activeVersion := active.Annotations["multisite-postgres.dev/vault-version"]
+	version, err := strconv.ParseInt(activeVersion, 10, 64)
+	if err != nil || version < 1 {
+		return 0, fmt.Errorf("postgres-auth has invalid Vault version %q", activeVersion)
+	}
+	setLocalCondition(&result.Conditions, "PostgresCredentialsActive", metav1.ConditionTrue,
+		"VaultVersionActive", activeVersion)
+	var pending corev1.Secret
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: desired.Site.Namespace, Name: "postgres-auth-pending",
+	}, &pending); err == nil {
+		setLocalCondition(&result.Conditions, "CredentialRotationPending", metav1.ConditionTrue,
+			"VaultVersionChanged", pending.Annotations["multisite-postgres.dev/vault-version"])
+	} else if !apierrors.IsNotFound(err) {
+		return 0, err
+	} else {
+		setLocalCondition(&result.Conditions, "CredentialRotationPending", metav1.ConditionFalse,
+			"ActiveVersionCurrent", activeVersion)
+	}
+	return version, nil
 }
 
 func (r *Reconciler) reconcileCertificates(ctx context.Context, desired plan.SitePlan,
@@ -289,6 +358,9 @@ func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.Si
 		setLocalCondition(&result.Conditions, "PatroniReady", metav1.ConditionTrue,
 			"AllMembersHealthy", "All Patroni member readiness checks are passing")
 		if err := r.observeTopology(ctx, desired, result); err != nil {
+			return err
+		}
+		if err := r.reconcileCredentialCatalog(ctx, desired, result); err != nil {
 			return err
 		}
 		if err := r.reconcileUpgradeAction(ctx, desired, result); err != nil {

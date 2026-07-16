@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -492,7 +493,7 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
         password_encryption: scram-sha-256
       pg_hba:
         - local all all peer
-        - hostssl replication replication 0.0.0.0/0 scram-sha-256
+        - hostssl replication all 0.0.0.0/0 scram-sha-256
         - hostssl all all 0.0.0.0/0 scram-sha-256
 %s`, synchronousConfig, bootstrapMethod)
 	config := fmt.Sprintf(`scope: %s
@@ -525,10 +526,10 @@ postgresql:
     ssl_ca_file: /postgres-tls/ca.crt
   authentication:
     superuser:
-      username: postgres
+      username: ${POSTGRES_SUPERUSER_USERNAME}
       password: ${POSTGRES_SUPERUSER_PASSWORD}
     replication:
-      username: replication
+      username: ${POSTGRES_REPLICATION_USERNAME}
       password: ${POSTGRES_REPLICATION_PASSWORD}
 tags:
   failover_priority: %d
@@ -710,17 +711,17 @@ func (r Renderer) tdeAuditJob(desired plan.SitePlan, labels map[string]string) *
 for host in "$@"; do
   ready=false
   for attempt in $(seq 1 60); do
-    if psql -X -h "$host" -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null 2>&1; then
+    if psql -X -h "$host" -d postgres -Atqc 'SELECT 1' >/dev/null 2>&1; then
       ready=true
       break
     fi
     sleep 10
   done
   test "$ready" = true
-  psql -X -h "$host" -U postgres -d postgres -Atqc \
+  psql -X -h "$host" -d postgres -Atqc \
     "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname" |
   while IFS= read -r database; do
-    psql -X -h "$host" -U postgres -d "$database" -v ON_ERROR_STOP=1 -Atq <<'SQL'
+    psql -X -h "$host" -d "$database" -v ON_ERROR_STOP=1 -Atq <<'SQL'
 SELECT 1 / ((SELECT count(*) FROM pg_extension WHERE extname = 'pg_tde') = 1)::int;
 SELECT 1 / (current_setting('default_table_access_method') = 'tde_heap')::int;
 SELECT 1 / (current_setting('pg_tde.enforce_encryption') = 'on')::int;
@@ -772,6 +773,8 @@ done
 						Command:         append([]string{"/bin/bash", "-ec", script, "tde-audit"}, members...),
 						SecurityContext: restrictedContainer(),
 						Env: []corev1.EnvVar{
+							{Name: "PGUSER", ValueFrom: secretKeySelector(
+								"postgres-auth", "superuser-username")},
 							{Name: "PGPASSWORD", ValueFrom: secretKeySelector("postgres-auth", "superuser-password")},
 							{Name: "PGSSLMODE", Value: "verify-full"},
 							{Name: "PGSSLROOTCERT", Value: "/postgres-tls/ca.crt"},
@@ -800,8 +803,14 @@ func (r Renderer) postgresStatefulSet(desired plan.SitePlan, name, address strin
 	workloadLabels := stableWorkloadLabels(labels)
 	workloadLabels["multisite-postgres.dev/component"] = "postgres"
 	workloadLabels["multisite-postgres.dev/member"] = name
+	podAnnotations := map[string]string{}
+	if version := credentialVersionForMember(desired, name); version != "" {
+		podAnnotations["multisite-postgres.dev/credential-version"] = version
+	}
 	replicas := int32(1)
-	command := fmt.Sprintf(`export POSTGRES_SUPERUSER_PASSWORD="$(cat /credentials/superuser-password)"
+	command := fmt.Sprintf(`export POSTGRES_SUPERUSER_USERNAME="$(cat /credentials/superuser-username)"
+export POSTGRES_SUPERUSER_PASSWORD="$(cat /credentials/superuser-password)"
+export POSTGRES_REPLICATION_USERNAME="$(cat /credentials/replication-username)"
 export POSTGRES_REPLICATION_PASSWORD="$(cat /credentials/replication-password)"
 export MEMBER_NAME=%q
 export PATRONI_CONNECT_ADDRESS=%q
@@ -948,7 +957,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 			ServiceName: name, Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: workloadLabels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels},
+				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels, Annotations: podAnnotations},
 				Spec: corev1.PodSpec{
 					ServiceAccountName:            workloadServiceAccount,
 					AutomountServiceAccountToken:  ptr(false),
@@ -968,6 +977,21 @@ exec patroni /tmp/patroni.yml`, name, address)
 			},
 		},
 	}
+}
+
+func credentialVersionForMember(desired plan.SitePlan, member string) string {
+	rotation := desired.CredentialRotation
+	if rotation != nil &&
+		(member == rotation.TargetMember || slices.Contains(rotation.UpdatedMembers, member)) {
+		return strconv.FormatInt(rotation.Version, 10)
+	}
+	if rotation != nil && rotation.PreviousVersion > 0 {
+		return strconv.FormatInt(rotation.PreviousVersion, 10)
+	}
+	if desired.RuntimeCredentialVersion > 0 {
+		return strconv.FormatInt(desired.RuntimeCredentialVersion, 10)
+	}
+	return ""
 }
 
 func postgresMemberImage(desired plan.SitePlan, member string) string {

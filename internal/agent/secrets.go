@@ -95,11 +95,15 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 	if err != nil {
 		return err
 	}
-	if err := vault.RequireFields(postgres, "superuserPassword", "replicationPassword"); err != nil {
+	if err := vault.RequireFields(postgres,
+		"superuserUsername", "superuserPassword",
+		"replicationUsername", "replicationPassword"); err != nil {
 		return fmt.Errorf("postgresql bootstrap credential schema: %w", err)
 	}
-	if err := m.reconcileSecret(ctx, desired, "postgres-auth", postgres.Version, map[string][]byte{
+	if err := m.reconcilePostgresCredentials(ctx, desired, postgres.Version, map[string][]byte{
+		"superuser-username":   []byte(postgres.Data["superuserUsername"]),
 		"superuser-password":   []byte(postgres.Data["superuserPassword"]),
+		"replication-username": []byte(postgres.Data["replicationUsername"]),
 		"replication-password": []byte(postgres.Data["replicationPassword"]),
 	}); err != nil {
 		return err
@@ -172,6 +176,43 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 		}
 	}
 	return nil
+}
+
+func (m *SecretMaterializer) reconcilePostgresCredentials(ctx context.Context,
+	desired plan.SitePlan, version int64, data map[string][]byte,
+) error {
+	key := client.ObjectKey{Namespace: desired.Site.Namespace, Name: "postgres-auth"}
+	var active corev1.Secret
+	if err := m.Client.Get(ctx, key, &active); apierrors.IsNotFound(err) {
+		return m.reconcileSecret(ctx, desired, key.Name, version, data)
+	} else if err != nil {
+		return err
+	}
+	activeVersion, _ := strconv.ParseInt(
+		active.Annotations["multisite-postgres.dev/vault-version"], 10, 64)
+	if activeVersion == version {
+		return m.reconcileSecret(ctx, desired, key.Name, version, data)
+	}
+	if activeVersion == 0 && secretDataEqual(active.Data, data) {
+		return m.reconcileSecret(ctx, desired, key.Name, version, data)
+	}
+	if !strings.HasPrefix(string(data["superuser-username"]), "mspsql_admin_") ||
+		!strings.HasPrefix(string(data["replication-username"]), "mspsql_replication_") {
+		return errors.New("rotated PostgreSQL usernames must use the reserved mspsql_admin_ and mspsql_replication_ prefixes")
+	}
+	return m.reconcileSecret(ctx, desired, "postgres-auth-pending", version, data)
+}
+
+func secretDataEqual(left, right map[string][]byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if string(right[key]) != string(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *SecretMaterializer) vaultCABundle(ctx context.Context, auth api.VaultAuthSpec) ([]byte, error) {

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,9 +33,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
@@ -131,7 +135,13 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	fingerprint, err := planFingerprint(&instance, memberAddresses, addressCandidates, addressMigration)
+	credentialRotation, err := r.credentialRotationPlan(ctx, &instance,
+		addressMigration, restorePlan, upgradePlan)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	fingerprint, err := planFingerprint(&instance, memberAddresses, addressCandidates,
+		addressMigration, credentialRotation)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -158,22 +168,23 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	for _, site := range instance.Spec.Sites {
 		registration := registrations[site.Name]
 		desired := plan.SitePlan{
-			SiteUID:           string(registration.UID),
-			InstanceUID:       string(instance.UID),
-			HubNamespace:      instance.Namespace,
-			HubName:           instance.Name,
-			Revision:          instance.Status.ActiveRevision,
-			GeneratedAt:       now().UTC(),
-			Site:              site,
-			Postgres:          instance.Spec.Postgres,
-			TDE:               instance.Spec.TDE,
-			Backup:            instance.Spec.Backup,
-			Credentials:       instance.Spec.Credentials,
-			MemberAddresses:   memberAddresses,
-			AddressCandidates: addressCandidates,
-			AddressMigration:  addressMigration,
-			Restore:           restorePlan,
-			Upgrade:           upgradePlan,
+			SiteUID:            string(registration.UID),
+			InstanceUID:        string(instance.UID),
+			HubNamespace:       instance.Namespace,
+			HubName:            instance.Name,
+			Revision:           instance.Status.ActiveRevision,
+			GeneratedAt:        now().UTC(),
+			Site:               site,
+			Postgres:           instance.Spec.Postgres,
+			TDE:                instance.Spec.TDE,
+			Backup:             instance.Spec.Backup,
+			Credentials:        instance.Spec.Credentials,
+			MemberAddresses:    memberAddresses,
+			AddressCandidates:  addressCandidates,
+			AddressMigration:   addressMigration,
+			CredentialRotation: credentialRotation,
+			Restore:            restorePlan,
+			Upgrade:            upgradePlan,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
@@ -563,50 +574,254 @@ func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, no
 // SetupWithManager sets up the controller with the Manager.
 func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&multisitepostgresv1alpha1.MultiSitePostgres{}).
-		Owns(&corev1.ConfigMap{}).
-		WithEventFilter(predicate.Or(
+		For(&multisitepostgresv1alpha1.MultiSitePostgres{}, builder.WithPredicates(predicate.Or(
 			predicate.GenerationChangedPredicate{},
 			predicate.AnnotationChangedPredicate{},
 			predicate.NewPredicateFuncs(func(object client.Object) bool {
 				return !object.GetDeletionTimestamp().IsZero()
 			}),
-		)).
+		))).
+		Owns(&corev1.ConfigMap{}).
+		Watches(&multisitepostgresv1alpha1.SiteRegistration{},
+			handler.EnqueueRequestsFromMapFunc(r.instancesForRegistration)).
 		Named("multisitepostgres").
 		Complete(r)
 }
 
+func (r *MultiSitePostgresReconciler) instancesForRegistration(ctx context.Context,
+	object client.Object,
+) []reconcile.Request {
+	var instances multisitepostgresv1alpha1.MultiSitePostgresList
+	if err := r.List(ctx, &instances); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range instances.Items {
+		instance := &instances.Items[i]
+		for _, site := range instance.Spec.Sites {
+			if site.SiteRegistrationRef == object.GetName() {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(instance)})
+				break
+			}
+		}
+	}
+	return requests
+}
+
 func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres,
 	addresses, candidates map[string]string, migration *plan.AddressMigrationPlan,
+	credentialRotation *plan.CredentialRotationPlan,
 ) (string, error) {
 	payload, err := json.Marshal(struct {
-		Generation        int64
-		Addresses         map[string]string
-		AddressCandidates map[string]string
-		AddressMigration  *plan.AddressMigrationPlan
-		RestoreUID        string
-		RestorePhase      string
-		UpgradeUID        string
-		UpgradePhase      string
-		UpgradeMember     string
-		UpgradedMembers   string
+		Generation         int64
+		Addresses          map[string]string
+		AddressCandidates  map[string]string
+		AddressMigration   *plan.AddressMigrationPlan
+		CredentialRotation *plan.CredentialRotationPlan
+		RestoreUID         string
+		RestorePhase       string
+		UpgradeUID         string
+		UpgradePhase       string
+		UpgradeMember      string
+		UpgradedMembers    string
 	}{
-		Generation:        instance.Generation,
-		Addresses:         addresses,
-		AddressCandidates: candidates,
-		AddressMigration:  migration,
-		RestoreUID:        instance.Annotations[restoreUIDAnnotation],
-		RestorePhase:      instance.Annotations[restorePhaseAnnotation],
-		UpgradeUID:        instance.Annotations[upgradeUIDAnnotation],
-		UpgradePhase:      instance.Annotations[upgradePhaseAnnotation],
-		UpgradeMember:     instance.Annotations[upgradeMemberAnnotation],
-		UpgradedMembers:   instance.Annotations[upgradeMembersAnnotation],
+		Generation:         instance.Generation,
+		Addresses:          addresses,
+		AddressCandidates:  candidates,
+		AddressMigration:   migration,
+		CredentialRotation: credentialRotation,
+		RestoreUID:         instance.Annotations[restoreUIDAnnotation],
+		RestorePhase:       instance.Annotations[restorePhaseAnnotation],
+		UpgradeUID:         instance.Annotations[upgradeUIDAnnotation],
+		UpgradePhase:       instance.Annotations[upgradePhaseAnnotation],
+		UpgradeMember:      instance.Annotations[upgradeMemberAnnotation],
+		UpgradedMembers:    instance.Annotations[upgradeMembersAnnotation],
 	})
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func (r *MultiSitePostgresReconciler) credentialRotationPlan(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	addressMigration *plan.AddressMigrationPlan, restorePlan *plan.RestorePlan,
+	upgradePlan *plan.UpgradePlan,
+) (*plan.CredentialRotationPlan, error) {
+	active, err := r.activeSitePlan(ctx, instance)
+	if err != nil {
+		return nil, err
+	}
+	if active.CredentialRotation != nil &&
+		!allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
+		return active.CredentialRotation, nil
+	}
+	if addressMigration != nil || restorePlan != nil || upgradePlan != nil {
+		return nil, nil
+	}
+	version, staged := commonStagedCredentialVersion(instance)
+	if !staged {
+		return nil, nil
+	}
+	previousVersion := activeCredentialVersion(instance)
+	if active.CredentialRotation != nil {
+		previousVersion = active.CredentialRotation.PreviousVersion
+	}
+	if previousVersion < 1 || previousVersion == version {
+		return nil, nil
+	}
+	if !credentialCatalogUpdated(instance, version) {
+		return &plan.CredentialRotationPlan{
+			Version: version, PreviousVersion: previousVersion,
+			Phase: plan.CredentialRotationPhaseCatalog,
+		}, nil
+	}
+	updated := credentialUpdatedMembers(instance, version)
+	for _, member := range credentialMemberOrder(instance) {
+		if !slices.Contains(updated, member) {
+			return &plan.CredentialRotationPlan{
+				Version: version, PreviousVersion: previousVersion,
+				Phase:        plan.CredentialRotationPhaseMember,
+				TargetMember: member, UpdatedMembers: updated,
+			}, nil
+		}
+	}
+	if !previousCredentialsRevoked(instance, version) {
+		return &plan.CredentialRotationPlan{
+			Version: version, PreviousVersion: previousVersion,
+			Phase: plan.CredentialRotationPhaseRevoke, UpdatedMembers: updated,
+		}, nil
+	}
+	return &plan.CredentialRotationPlan{
+		Version: version, PreviousVersion: previousVersion,
+		Phase:          plan.CredentialRotationPhaseFinalize,
+		UpdatedMembers: updated,
+	}, nil
+}
+
+func previousCredentialsRevoked(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	version int64,
+) bool {
+	for _, site := range instance.Status.Sites {
+		if !strings.HasPrefix(instance.Status.Primary, "postgres-"+site.Name+"-") {
+			continue
+		}
+		condition := statusCondition(site.Conditions, "PreviousCredentialsRevoked")
+		return condition != nil && condition.Status == metav1.ConditionTrue &&
+			condition.Message == strconv.FormatInt(version, 10)
+	}
+	return false
+}
+
+func activeCredentialVersion(instance *multisitepostgresv1alpha1.MultiSitePostgres) int64 {
+	var version int64
+	for _, site := range instance.Status.Sites {
+		if siteRoleForName(instance, site.Name) == multisitepostgresv1alpha1.SiteRoleWitness {
+			continue
+		}
+		condition := statusCondition(site.Conditions, "PostgresCredentialsActive")
+		if condition == nil || condition.Status != metav1.ConditionTrue {
+			return 0
+		}
+		siteVersion, err := strconv.ParseInt(condition.Message, 10, 64)
+		if err != nil || siteVersion < 1 || version != 0 && siteVersion != version {
+			return 0
+		}
+		version = siteVersion
+	}
+	return version
+}
+
+func commonStagedCredentialVersion(instance *multisitepostgresv1alpha1.MultiSitePostgres) (int64, bool) {
+	var version int64
+	applicable := 0
+	for _, site := range instance.Status.Sites {
+		if siteRoleForName(instance, site.Name) == multisitepostgresv1alpha1.SiteRoleWitness {
+			continue
+		}
+		applicable++
+		condition := statusCondition(site.Conditions, "CredentialRotationPending")
+		if condition == nil || condition.Status != metav1.ConditionTrue {
+			return 0, false
+		}
+		siteVersion, err := strconv.ParseInt(condition.Message, 10, 64)
+		if err != nil || siteVersion < 1 || version != 0 && siteVersion != version {
+			return 0, false
+		}
+		version = siteVersion
+	}
+	return version, applicable > 0
+}
+
+func credentialCatalogUpdated(instance *multisitepostgresv1alpha1.MultiSitePostgres, version int64) bool {
+	for _, site := range instance.Status.Sites {
+		if !strings.HasPrefix(instance.Status.Primary, "postgres-"+site.Name+"-") {
+			continue
+		}
+		condition := statusCondition(site.Conditions, "CredentialCatalogUpdated")
+		return condition != nil && condition.Status == metav1.ConditionTrue &&
+			condition.Message == strconv.FormatInt(version, 10)
+	}
+	return false
+}
+
+func credentialUpdatedMembers(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	version int64,
+) []string {
+	set := map[string]struct{}{}
+	prefix := strconv.FormatInt(version, 10) + ":"
+	for _, site := range instance.Status.Sites {
+		condition := statusCondition(site.Conditions, "CredentialMembersUpdated")
+		if condition == nil || condition.Status != metav1.ConditionTrue ||
+			!strings.HasPrefix(condition.Message, prefix) {
+			continue
+		}
+		for _, member := range splitMembers(strings.TrimPrefix(condition.Message, prefix)) {
+			set[member] = struct{}{}
+		}
+	}
+	members := make([]string, 0, len(set))
+	for member := range set {
+		members = append(members, member)
+	}
+	slices.Sort(members)
+	return members
+}
+
+func credentialMemberOrder(instance *multisitepostgresv1alpha1.MultiSitePostgres) []string {
+	order := slices.Clone(instance.Status.SynchronousStandbys)
+	slices.Sort(order)
+	for _, member := range expectedAddressMembers(instance.Spec.Sites) {
+		if strings.HasPrefix(member, "postgres-") && member != instance.Status.Primary &&
+			!slices.Contains(order, member) {
+			order = append(order, member)
+		}
+	}
+	if instance.Status.Primary != "" {
+		order = append(order, instance.Status.Primary)
+	}
+	return order
+}
+
+func statusCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+func siteRoleForName(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	name string,
+) multisitepostgresv1alpha1.SiteRole {
+	for _, site := range instance.Spec.Sites {
+		if site.Name == name {
+			return site.Role
+		}
+	}
+	return ""
 }
 
 func (r *MultiSitePostgresReconciler) addressPlan(ctx context.Context,

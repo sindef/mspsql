@@ -39,7 +39,7 @@ func TestSecretMaterializerUsesDocumentedVaultSchema(t *testing.T) {
 		case "/v1/auth/kubernetes/login":
 			_, _ = response.Write([]byte(`{"auth":{"client_token":"short-lived","lease_duration":600}}`))
 		case "/v1/secret/data/postgres/orders":
-			_, _ = response.Write([]byte(`{"data":{"data":{"superuserPassword":"super","replicationPassword":"repl"},"metadata":{"version":2}}}`))
+			_, _ = response.Write([]byte(`{"data":{"data":{"superuserUsername":"postgres","superuserPassword":"super","replicationUsername":"replication","replicationPassword":"repl"},"metadata":{"version":2}}}`))
 		case "/v1/secret/data/pgpool/orders":
 			_, _ = response.Write([]byte(`{"data":{"data":{"adminUsername":"admin","adminPassword":"pool"},"metadata":{"version":3}}}`))
 		case "/v1/secret/data/backup/orders":
@@ -118,4 +118,33 @@ func assertSecretValue(t *testing.T, kube client.Client, name, key, expected str
 	if string(secret.Data[key]) != expected {
 		t.Fatalf("Secret %s key %s = %q", name, key, secret.Data[key])
 	}
+}
+
+func TestPostgresCredentialChangesAreStaged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	materializer := SecretMaterializer{Client: kube}
+	desired := plan.SitePlan{
+		InstanceUID: "instance", Revision: 1,
+		Site: api.PostgresSiteSpec{Namespace: "orders"},
+	}
+	if err := materializer.reconcilePostgresCredentials(context.Background(), desired, 1,
+		map[string][]byte{
+			"superuser-username": []byte("postgres"), "superuser-password": []byte("old"),
+			"replication-username": []byte("replication"), "replication-password": []byte("old-repl"),
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if err := materializer.reconcilePostgresCredentials(context.Background(), desired, 2,
+		map[string][]byte{
+			"superuser-username": []byte("mspsql_admin_next"), "superuser-password": []byte("new"),
+			"replication-username": []byte("mspsql_replication_next"), "replication-password": []byte("new-repl"),
+		}); err != nil {
+		t.Fatal(err)
+	}
+	assertSecretValue(t, kube, "postgres-auth", "superuser-password", "old")
+	assertSecretValue(t, kube, "postgres-auth-pending", "superuser-password", "new")
 }
