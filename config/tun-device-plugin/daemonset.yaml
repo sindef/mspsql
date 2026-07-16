@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mspsql-tun-device-plugin
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: mspsql-tun-device-plugin}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: mspsql-tun-device-plugin}
+    spec:
+      nodeSelector: {kubernetes.io/os: linux}
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 10
+      tolerations:
+      - {operator: Exists}
+      containers:
+      - name: plugin
+        image: tun-device-plugin
+        resources:
+          requests: {cpu: 5m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 64Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: device-plugins, mountPath: /var/lib/kubelet/device-plugins}
+        - {name: tun, mountPath: /dev/net/tun}
+      volumes:
+      - name: device-plugins
+        hostPath: {path: /var/lib/kubelet/device-plugins, type: Directory}
+      - name: tun
+        hostPath: {path: /dev/net/tun, type: CharDevice}

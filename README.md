@@ -194,6 +194,10 @@ until its `MultiSitePostgres` backup specification is configured.
   `host:port`; registrations receive one persisted `/32`. The generated hub
   identity Secret and peer ConfigMap must be protected by Kubernetes encryption
   at rest and are consumed by the active/passive gateway.
+- Hub and site clusters install `config/tun-device-plugin` before the gateway or
+  agents. It advertises `multisite-postgres.dev/tun`; only that node-level
+  plugin mounts kubelet state and `/dev/net/tun`. Agent and gateway Pods request
+  the extended resource and contain no hostPath volumes.
 - Existing namespaces are never adopted. All four ownership labels must
   already match exactly.
 - Disconnected agents do not recreate LoadBalancer Services or apply

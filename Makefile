@@ -89,6 +89,10 @@ build: manifests generate fmt vet ## Build manager binary.
 agent-build: generate fmt vet ## Build the site agent binary.
 	go build -o bin/site-agent ./cmd/site-agent
 
+.PHONY: tun-device-plugin-build
+tun-device-plugin-build: fmt vet ## Build the TUN device plugin binary.
+	go build -o bin/tun-device-plugin ./cmd/tun-device-plugin
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

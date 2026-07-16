@@ -1,0 +1,15 @@
+FROM golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o tun-device-plugin ./cmd/tun-device-plugin
+
+FROM gcr.io/distroless/static
+COPY --from=builder /workspace/tun-device-plugin /tun-device-plugin
+ENTRYPOINT ["/tun-device-plugin"]

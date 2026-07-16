@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kube-system
+resources:
+- daemonset.yaml
+images:
+- name: tun-device-plugin
+  newName: ghcr.io/sindef/mspsql-tun-device-plugin
+  newTag: latest

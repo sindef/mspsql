@@ -434,14 +434,15 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 				"allowPrivilegeEscalation": false,
 				"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_ADMIN"}},
 			},
+			"resources": map[string]any{
+				"requests": map[string]any{"multisite-postgres.dev/tun": 1},
+				"limits":   map[string]any{"multisite-postgres.dev/tun": 1},
+			},
 			"volumeMounts": []any{
 				map[string]any{"name": "identity", "mountPath": "/etc/wireguard", "readOnly": true},
 				map[string]any{"name": "runtime", "mountPath": "/run/mspsql"},
-				map[string]any{"name": "tun", "mountPath": "/dev/net/tun"},
 			},
 		})
-		volumes = append(volumes, map[string]any{"name": "tun", "hostPath": map[string]any{
-			"path": "/dev/net/tun", "type": "CharDevice"}})
 	}
 	return map[string]any{
 		"apiVersion": "apps/v1", "kind": "Deployment",

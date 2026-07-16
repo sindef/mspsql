@@ -60,15 +60,15 @@ spec:
           capabilities:
             drop: [ALL]
             add: [NET_ADMIN]
+        resources:
+          requests: {multisite-postgres.dev/tun: 1}
+          limits: {multisite-postgres.dev/tun: 1}
         volumeMounts:
         - {name: runtime, mountPath: /run/mspsql}
-        - {name: tun, mountPath: /dev/net/tun}
         - {name: identity, mountPath: /etc/wireguard, readOnly: true}
         - {name: peers, mountPath: /etc/wireguard-peers, readOnly: true}
       volumes:
       - {name: runtime, emptyDir: {medium: Memory}}
-      - name: tun
-        hostPath: {path: /dev/net/tun, type: CharDevice}
       - name: identity
         secret: {secretName: mspsql-wireguard-identity, defaultMode: 0400}
       - name: peers

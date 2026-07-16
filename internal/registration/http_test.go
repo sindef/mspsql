@@ -35,6 +35,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -198,6 +199,33 @@ func TestAgentDeploymentCanUseDirectNetwork(t *testing.T) {
 	for _, volume := range deployment.Spec.Template.Spec.Volumes {
 		if volume.Name == "tun" {
 			t.Fatal("direct-network deployment contains tun volume")
+		}
+	}
+}
+
+func TestAgentDeploymentRequestsTunWithoutHostPath(t *testing.T) {
+	site := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "vic", UID: types.UID("site-uid"),
+	}}
+	raw, err := json.Marshal(agentDeployment(site, "agent:test", "wireguard:test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := json.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) != 2 {
+		t.Fatalf("containers = %d, want 2", len(deployment.Spec.Template.Spec.Containers))
+	}
+	wireGuard := deployment.Spec.Template.Spec.Containers[1]
+	if wireGuard.Resources.Limits.Name("multisite-postgres.dev/tun", resource.DecimalSI).String() != "1" {
+		t.Fatalf("WireGuard TUN limit = %s",
+			wireGuard.Resources.Limits.Name("multisite-postgres.dev/tun", resource.DecimalSI).String())
+	}
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.HostPath != nil {
+			t.Fatalf("agent workload contains hostPath volume %q", volume.Name)
 		}
 	}
 }
