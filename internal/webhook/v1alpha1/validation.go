@@ -24,6 +24,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -129,6 +130,8 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 	if obj.Spec.Backup != nil {
 		errs = append(errs, validateBackupRepository(obj.Spec.Backup.Repository,
 			specPath.Child("backup", "repository"))...)
+		errs = append(errs, validateBackupSchedules(obj.Spec.Backup.Schedules,
+			specPath.Child("backup", "schedules"))...)
 	}
 	return errs.ToAggregate()
 }
@@ -151,6 +154,29 @@ func validateBackupRepository(repository api.BackupRepositorySpec, repositoryPat
 	}
 	if ref := repository.CABundleSecretRef; ref != nil && ref.Name == "" {
 		errs = append(errs, field.Required(repositoryPath.Child("caBundleSecretRef", "name"), "required"))
+	}
+	return errs
+}
+
+func validateBackupSchedules(schedules api.BackupSchedules, schedulesPath *field.Path) field.ErrorList {
+	timezone := schedules.Timezone
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return field.ErrorList{field.Invalid(schedulesPath.Child("timezone"), schedules.Timezone,
+			"must be an IANA timezone")}
+	}
+	var errs field.ErrorList
+	for name, expression := range map[string]string{
+		"full": schedules.Full, "differential": schedules.Differential, "incremental": schedules.Incremental,
+	} {
+		if expression == "" {
+			continue
+		}
+		if _, err := cron.ParseStandard("CRON_TZ=" + timezone + " " + expression); err != nil {
+			errs = append(errs, field.Invalid(schedulesPath.Child(name), expression, err.Error()))
+		}
 	}
 	return errs
 }

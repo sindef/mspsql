@@ -191,7 +191,21 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 			return err
 		}
 		directiveType := configMap.Data["type"]
-		if !directiveTargetsSite(&instance, directiveType, siteName) {
+		backupSource := ""
+		backupType := ""
+		if directiveType == "Backup" {
+			var backupSpec struct {
+				BackupType string `json:"backupType"`
+			}
+			if err := json.Unmarshal([]byte(configMap.Data["spec.json"]), &backupSpec); err != nil {
+				return fmt.Errorf("decode backup directive %s: %w", configMap.Name, err)
+			}
+			backupType = backupSpec.BackupType
+			backupSource = selectBackupSource(&instance)
+			if backupSource == "" || !memberTargetsSite(&instance, backupSource, siteName) {
+				continue
+			}
+		} else if !directiveTargetsSite(&instance, directiveType, siteName) {
 			continue
 		}
 		if privateKey == nil {
@@ -204,6 +218,7 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		envelope, err := directive.Sign(privateKey, directive.Payload{
 			SiteUID: siteUID, InstanceUID: string(instance.UID), OperationUID: operationUID,
 			Type: directiveType, Primary: instance.Status.Primary,
+			BackupSource: backupSource, BackupType: backupType,
 			Deleting: configMap.Data["deleting"] == "true", GeneratedAt: s.now().UTC(),
 			Spec: json.RawMessage(configMap.Data["spec.json"]),
 		})
@@ -225,6 +240,39 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		sent[operationUID] = struct{}{}
 	}
 	return nil
+}
+
+func selectBackupSource(instance *api.MultiSitePostgres) string {
+	standbys := slices.Clone(instance.Status.SynchronousStandbys)
+	slices.Sort(standbys)
+	for _, standby := range standbys {
+		if memberSite(instance, standby) != "" {
+			return standby
+		}
+	}
+	if memberSite(instance, instance.Status.Primary) != "" {
+		return instance.Status.Primary
+	}
+	return ""
+}
+
+func memberTargetsSite(instance *api.MultiSitePostgres, member, siteName string) bool {
+	targetSite := memberSite(instance, member)
+	for _, desired := range instance.Spec.Sites {
+		if desired.Name == targetSite {
+			return desired.SiteRegistrationRef == siteName
+		}
+	}
+	return false
+}
+
+func memberSite(instance *api.MultiSitePostgres, member string) string {
+	for _, observed := range instance.Status.Sites {
+		if _, found := observed.Addresses[member]; found {
+			return observed.Name
+		}
+	}
+	return ""
 }
 
 func directiveTargetsSite(instance *api.MultiSitePostgres, directiveType, siteName string) bool {
@@ -418,6 +466,41 @@ func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.Pl
 		}
 		owner := configMap.OwnerReferences[0]
 		switch owner.Kind {
+		case "MultiSitePostgres":
+			var object api.MultiSitePostgres
+			if err := s.Client.Get(ctx, client.ObjectKey{
+				Namespace: configMap.Namespace, Name: owner.Name,
+			}, &object); err != nil {
+				return err
+			}
+			succeeded := directiveSucceeded(result.Conditions)
+			for _, condition := range result.Conditions {
+				setInstanceCondition(&object.Status.Conditions, object.Generation, condition.Type,
+					metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
+			}
+			if succeeded {
+				for _, condition := range result.Conditions {
+					switch condition.Type {
+					case "BackupCompletedAt":
+						if completedAt, err := time.Parse(time.RFC3339, condition.Message); err == nil {
+							value := metav1.NewTime(completedAt)
+							object.Status.LastBackupTime = &value
+						}
+					case "RecoveryWindowStart":
+						if windowStart, err := time.Parse(time.RFC3339, condition.Message); err == nil {
+							value := metav1.NewTime(windowStart)
+							object.Status.RecoveryWindowStart = &value
+						}
+					}
+				}
+				setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
+					metav1.ConditionTrue, "BackupVerified",
+					"pgBackRest completed a backup and verified archived WAL metadata")
+			} else {
+				setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
+					metav1.ConditionFalse, "BackupFailed", "The scheduled pgBackRest operation failed")
+			}
+			return s.Client.Status().Update(ctx, &object)
 		case "PostgresDatabase":
 			var object api.PostgresDatabase
 			if err := s.Client.Get(ctx, client.ObjectKey{
@@ -472,16 +555,26 @@ func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.Pl
 	return status.Error(codes.NotFound, "directive operation was not found")
 }
 
+func directiveSucceeded(reported []*controlv1.Condition) bool {
+	found := false
+	for _, condition := range reported {
+		if condition.Type == "Succeeded" {
+			found = true
+			if condition.Status != string(metav1.ConditionTrue) {
+				return false
+			}
+		}
+	}
+	return found
+}
+
 func applyDirectiveStatus(phase *string, conditions *[]metav1.Condition, deleting bool,
 	reported []*controlv1.Condition,
 ) {
-	succeeded := true
+	succeeded := directiveSucceeded(reported)
 	for _, condition := range reported {
 		setSiteCondition(conditions, condition.Type, metav1.ConditionStatus(condition.Status),
 			condition.Reason, condition.Message)
-		if condition.Type == "Succeeded" && condition.Status != string(metav1.ConditionTrue) {
-			succeeded = false
-		}
 	}
 	if !succeeded {
 		*phase = "Failed"
@@ -642,6 +735,15 @@ func setSiteCondition(conditions *[]metav1.Condition, conditionType string,
 	*conditions = append(*conditions, metav1.Condition{
 		Type: conditionType, Status: conditionStatus, Reason: reason, Message: message,
 		LastTransitionTime: metav1.NewTime(time.Now()),
+	})
+}
+
+func setInstanceCondition(conditions *[]metav1.Condition, generation int64, conditionType string,
+	conditionStatus metav1.ConditionStatus, reason, message string,
+) {
+	meta.SetStatusCondition(conditions, metav1.Condition{
+		Type: conditionType, Status: conditionStatus, Reason: reason, Message: message,
+		ObservedGeneration: generation, LastTransitionTime: metav1.Now(),
 	})
 }
 

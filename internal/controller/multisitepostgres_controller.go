@@ -43,9 +43,10 @@ import (
 // MultiSitePostgresReconciler reconciles a MultiSitePostgres object
 type MultiSitePostgresReconciler struct {
 	client.Client
-	Scheme          *runtime.Scheme
-	SystemNamespace string
-	Now             func() time.Time
+	Scheme                *runtime.Scheme
+	SystemNamespace       string
+	DefaultBackupSchedule string
+	Now                   func() time.Time
 }
 
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch;create;update;patch;delete
@@ -183,11 +184,19 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 			metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
 	}
+	backupRequeue, err := r.reconcileBackupSchedules(ctx, &instance, now(),
+		conditionTrue(instance.Status.Conditions, "Ready") &&
+			conditionTrue(instance.Status.Conditions, "TopologyReady"))
+	if err != nil {
+		setCondition(&instance.Status.Conditions, instance.Generation, "BackupReady",
+			metav1.ConditionFalse, "ScheduleInvalid", err.Error())
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
+	}
 	if err := r.updateInstanceStatus(ctx, &instance); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: backupRequeue}, nil
 }
 
 func (r *MultiSitePostgresReconciler) validateInstanceClaims(ctx context.Context,

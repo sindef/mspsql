@@ -77,4 +77,8 @@ func TestSQLDirectivesTargetObservedPrimarySite(t *testing.T) {
 	if !directiveTargetsSite(instance, "User", "production-qld") {
 		t.Fatal("user directive did not target the primary site")
 	}
+	instance.Status.SynchronousStandbys = []string{"postgres-vic-0"}
+	if source := selectBackupSource(instance); source != "postgres-vic-0" {
+		t.Fatalf("backup source = %q", source)
+	}
 }

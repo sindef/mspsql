@@ -34,6 +34,8 @@ type Payload struct {
 	OperationUID    string          `json:"operationUID"`
 	Type            string          `json:"type"`
 	Primary         string          `json:"primary,omitempty"`
+	BackupSource    string          `json:"backupSource,omitempty"`
+	BackupType      string          `json:"backupType,omitempty"`
 	Deleting        bool            `json:"deleting,omitempty"`
 	GeneratedAt     time.Time       `json:"generatedAt"`
 	Spec            json.RawMessage `json:"spec"`

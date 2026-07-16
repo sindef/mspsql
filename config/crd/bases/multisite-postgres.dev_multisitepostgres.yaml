@@ -389,6 +389,28 @@ spec:
               activeRevision:
                 format: int64
                 type: integer
+              backupSchedules:
+                items:
+                  properties:
+                    lastScheduledAt:
+                      format: date-time
+                      type: string
+                    nextScheduledAt:
+                      format: date-time
+                      type: string
+                    type:
+                      enum:
+                      - full
+                      - diff
+                      - incr
+                      type: string
+                  required:
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

@@ -256,6 +256,45 @@ func TestAggregateTopologyRequiresCurrentConsensus(t *testing.T) {
 	}
 }
 
+func TestBackupSchedulerIssuesOneCatchUpDirective(t *testing.T) {
+	scheme := testScheme(t)
+	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube, Scheme: scheme}
+	now := time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "database-platform", Name: "orders", UID: types.UID("instance"),
+		},
+		Spec: api.MultiSitePostgresSpec{Backup: &api.BackupSpec{
+			Schedules: api.BackupSchedules{Full: "0 * * * *", Timezone: "UTC"},
+		}},
+	}
+	if _, err := reconciler.reconcileBackupSchedules(context.Background(), instance, now, true); err != nil {
+		t.Fatal(err)
+	}
+	if instance.Status.BackupSchedules[0].NextScheduledAt == nil {
+		t.Fatal("initial next backup was not recorded")
+	}
+	past := metav1.NewTime(now.Add(-3 * time.Hour))
+	instance.Status.BackupSchedules[0].NextScheduledAt = &past
+	if _, err := reconciler.reconcileBackupSchedules(context.Background(), instance, now, true); err != nil {
+		t.Fatal(err)
+	}
+	var directives corev1.ConfigMapList
+	if err := kube.List(context.Background(), &directives, client.MatchingLabels{
+		"multisite-postgres.dev/directive": "Backup",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(directives.Items) != 1 {
+		t.Fatalf("backup directives = %d", len(directives.Items))
+	}
+	if instance.Status.BackupSchedules[0].LastScheduledAt == nil ||
+		!instance.Status.BackupSchedules[0].NextScheduledAt.After(now) {
+		t.Fatalf("backup schedule status = %#v", instance.Status.BackupSchedules[0])
+	}
+}
+
 func TestInstanceSecretClaimsAreExclusive(t *testing.T) {
 	backup := func(prefix, path string) *api.BackupSpec {
 		return &api.BackupSpec{Repository: api.BackupRepositorySpec{

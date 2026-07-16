@@ -57,7 +57,17 @@ type MultiSitePostgresStatus struct {
 	RecoveryWindowStart *metav1.Time         `json:"recoveryWindowStart,omitempty"`
 	// +listType=map
 	// +listMapKey=type
+	BackupSchedules []BackupScheduleStatus `json:"backupSchedules,omitempty"`
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+type BackupScheduleStatus struct {
+	// +kubebuilder:validation:Enum=full;diff;incr
+	Type            string       `json:"type"`
+	LastScheduledAt *metav1.Time `json:"lastScheduledAt,omitempty"`
+	NextScheduledAt *metav1.Time `json:"nextScheduledAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true

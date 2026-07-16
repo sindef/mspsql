@@ -68,6 +68,7 @@ func main() {
 	var controlAddress, controlCertificate, controlPrivateKey, controlClientCA string
 	var registrationAddress, hubDomain, hubControlAddress, agentImage, wireGuardImage string
 	var wireGuardPeerConfiguration string
+	var defaultBackupSchedule string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -90,6 +91,8 @@ func main() {
 		"WireGuard userspace image placed in registration bundles.")
 	flag.StringVar(&wireGuardPeerConfiguration, "wireguard-peer-configuration", "",
 		"WireGuard peer stanza and interface address returned after registration.")
+	flag.StringVar(&defaultBackupSchedule, "default-backup-schedule", "30 6 * * 0",
+		"Weekly backup cron used when an instance declares no schedules.")
 	flag.StringVar(&controlAddress, "control-address", ":9444", "Address for the agent gRPC control service.")
 	flag.StringVar(&controlCertificate, "control-certificate", "/etc/mspsql/control/tls.crt",
 		"Agent gRPC server certificate.")
@@ -209,9 +212,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.MultiSitePostgresReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		SystemNamespace: systemNamespace,
+		Client:                mgr.GetClient(),
+		Scheme:                mgr.GetScheme(),
+		SystemNamespace:       systemNamespace,
+		DefaultBackupSchedule: defaultBackupSchedule,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "multisitepostgres")
 		os.Exit(1)

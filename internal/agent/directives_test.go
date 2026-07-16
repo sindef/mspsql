@@ -77,3 +77,33 @@ func TestUserSQLReadsPasswordFromEnvironment(t *testing.T) {
 		t.Fatalf("Job command does not load the mounted password: %s", command)
 	}
 }
+
+func TestBackupCoordinatorUsesSynchronousStandby(t *testing.T) {
+	desired := plan.SitePlan{
+		InstanceUID: "instance",
+		Backup: &api.BackupSpec{
+			Repository: api.BackupRepositorySpec{
+				Bucket: "backups", Prefix: "orders", Region: "ap-southeast-2",
+				Endpoint: "https://minio.example:9443", URIStyle: "path",
+			},
+			Retention: api.BackupRetention{Duration: metav1.Duration{Duration: 8 * 24 * time.Hour}},
+		},
+		MemberAddresses: map[string]string{
+			"postgres-vic-0": "10.0.0.1", "postgres-qld-0": "10.0.1.1",
+		},
+	}
+	config, err := backupCoordinatorConfig(desired, directive.Payload{
+		Primary: "postgres-vic-0", BackupSource: "postgres-qld-0", BackupType: "full",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"backup-standby=y", "pg1-host=10.0.0.1", "pg2-host=10.0.1.1",
+		"repo1-retention-full=8", "repo1-storage-port=9443",
+	} {
+		if !strings.Contains(config, expected) {
+			t.Fatalf("backup config is missing %q:\n%s", expected, config)
+		}
+	}
+}
