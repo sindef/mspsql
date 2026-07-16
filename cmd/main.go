@@ -67,7 +67,7 @@ func main() {
 	var systemNamespace, registrationPublicURL string
 	var controlAddress, controlCertificate, controlPrivateKey, controlClientCA string
 	var registrationAddress, hubDomain, hubControlAddress, agentImage, wireGuardImage string
-	var wireGuardPeerConfiguration string
+	var wireGuardNetworkCIDR, wireGuardEndpoint string
 	var defaultBackupSchedule string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -89,8 +89,10 @@ func main() {
 		"Site agent image placed in registration bundles.")
 	flag.StringVar(&wireGuardImage, "wireguard-image", "ghcr.io/wireguard/wireguard-go:latest",
 		"WireGuard userspace image placed in registration bundles.")
-	flag.StringVar(&wireGuardPeerConfiguration, "wireguard-peer-configuration", "",
-		"WireGuard peer stanza and interface address returned after registration.")
+	flag.StringVar(&wireGuardNetworkCIDR, "wireguard-network-cidr", "10.254.0.0/16",
+		"Private IPv4 network allocated to the hub and registered site peers.")
+	flag.StringVar(&wireGuardEndpoint, "wireguard-endpoint", "",
+		"Public host:port used by site peers to reach the hub WireGuard gateway.")
 	flag.StringVar(&defaultBackupSchedule, "default-backup-schedule", "30 6 * * 0",
 		"Weekly backup cron used when an instance declares no schedules.")
 	flag.StringVar(&controlAddress, "control-address", ":9444", "Address for the agent gRPC control service.")
@@ -207,6 +209,7 @@ func main() {
 		Scheme:                mgr.GetScheme(),
 		SystemNamespace:       systemNamespace,
 		RegistrationPublicURL: registrationPublicURL,
+		WireGuardNetworkCIDR:  wireGuardNetworkCIDR,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "siteregistration")
 		os.Exit(1)
@@ -263,7 +266,7 @@ func main() {
 			Address: registrationAddress, Client: mgr.GetClient(), SystemNamespace: systemNamespace,
 			PublicURL: registrationPublicURL, HubDomain: hubDomain, HubAddress: hubControlAddress,
 			AgentImage: agentImage, WireGuardImage: wireGuardImage,
-			WireGuardPeerConfiguration: wireGuardPeerConfiguration,
+			WireGuardNetworkCIDR: wireGuardNetworkCIDR, WireGuardEndpoint: wireGuardEndpoint,
 		}); err != nil {
 			setupLog.Error(err, "Failed to add registration server")
 			os.Exit(1)

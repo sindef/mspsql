@@ -39,22 +39,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
+	"github.com/sindef/mspsql/internal/wireguard"
 	"sigs.k8s.io/yaml"
 )
 
 const registrationCASecret = "mspsql-registration-ca"
 
 type HTTPServer struct {
-	Address                    string
-	Client                     client.Client
-	SystemNamespace            string
-	PublicURL                  string
-	HubDomain                  string
-	HubAddress                 string
-	AgentImage                 string
-	WireGuardImage             string
-	WireGuardPeerConfiguration string
-	Now                        func() time.Time
+	Address              string
+	Client               client.Client
+	SystemNamespace      string
+	PublicURL            string
+	HubDomain            string
+	HubAddress           string
+	AgentImage           string
+	WireGuardImage       string
+	WireGuardNetworkCIDR string
+	WireGuardEndpoint    string
+	Now                  func() time.Time
 }
 
 type BindRequest struct {
@@ -250,25 +252,18 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 		http.Error(response, "CSR validation or signing failed", http.StatusBadRequest)
 		return
 	}
-	peer := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: s.SystemNamespace, Name: "wireguard-peer-" + string(site.UID),
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: api.GroupVersion.String(), Kind: "SiteRegistration",
-				Name: site.Name, UID: site.UID,
-				Controller: boolPointer(true), BlockOwnerDeletion: boolPointer(true),
-			}},
-		},
-		StringData: map[string]string{"publicKey": binding.WireGuardPublicKey, "state": "authorized"},
+	peerConfiguration := ""
+	if s.WireGuardImage != "" {
+		peerConfiguration, err = wireguard.AuthorizePeer(request.Context(), s.Client,
+			s.SystemNamespace, s.WireGuardNetworkCIDR, s.WireGuardEndpoint, site,
+			binding.WireGuardPublicKey)
+		if err != nil {
+			http.Error(response, "could not authorize WireGuard peer", http.StatusInternalServerError)
+			return
+		}
 	}
-	if err := s.Client.Create(request.Context(), peer); err != nil && !apierrors.IsAlreadyExists(err) {
-		http.Error(response, "could not authorize WireGuard peer", http.StatusInternalServerError)
-		return
-	}
-	now := metav1.NewTime(s.now())
 	site.Status.ClusterUID = binding.ClusterUID
 	site.Status.Phase = "Registered"
-	site.Status.LastHeartbeatTime = &now
 	if err := s.Client.Status().Update(request.Context(), site); err != nil {
 		http.Error(response, "could not bind cluster identity", http.StatusInternalServerError)
 		return
@@ -288,7 +283,7 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 	_ = json.NewEncoder(response).Encode(BindResponse{
 		CertificatePEM: certificatePEM, CABundlePEM: caPEM,
 		PlanPublicKey:      string(signingKey.Data["publicKey"]),
-		WireGuardPeerState: s.WireGuardPeerConfiguration,
+		WireGuardPeerState: peerConfiguration,
 	})
 }
 
@@ -471,8 +466,4 @@ func (s *HTTPServer) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
-}
-
-func boolPointer(value bool) *bool {
-	return &value
 }

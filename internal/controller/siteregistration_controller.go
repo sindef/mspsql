@@ -32,6 +32,7 @@ import (
 
 	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/registration"
+	"github.com/sindef/mspsql/internal/wireguard"
 )
 
 // SiteRegistrationReconciler reconciles a SiteRegistration object
@@ -40,8 +41,11 @@ type SiteRegistrationReconciler struct {
 	Scheme                *runtime.Scheme
 	SystemNamespace       string
 	RegistrationPublicURL string
+	WireGuardNetworkCIDR  string
 	Now                   func() time.Time
 }
+
+const siteHeartbeatTimeout = 150 * time.Second
 
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations/status,verbs=get;update;patch
@@ -62,6 +66,13 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	if site.Spec.Revoked {
 		return ctrl.Result{}, r.reconcileRevoked(ctx, &site, systemNamespace)
+	}
+	if _, err := wireguard.EnsureHubIdentity(ctx, r.Client, systemNamespace,
+		r.WireGuardNetworkCIDR); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := wireguard.RenderPeers(ctx, r.Client, systemNamespace); err != nil {
+		return ctrl.Result{}, err
 	}
 	now := time.Now
 	if r.Now != nil {
@@ -113,9 +124,20 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
+	requeueAfter := time.Duration(0)
 	site.Status.Phase = "Pending"
 	if site.Status.ClusterUID != "" {
-		site.Status.Phase = "Connected"
+		site.Status.Phase = "Registered"
+		if site.Status.LastHeartbeatTime != nil &&
+			now().Sub(site.Status.LastHeartbeatTime.Time) <= siteHeartbeatTimeout {
+			site.Status.Phase = "Connected"
+			requeueAfter = siteHeartbeatTimeout - now().Sub(site.Status.LastHeartbeatTime.Time)
+			setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionTrue,
+				"HeartbeatCurrent", "The authenticated site agent heartbeat is current")
+		} else {
+			setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
+				"HeartbeatStale", "No authenticated site agent heartbeat is current")
+		}
 	}
 	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionFalse,
 		"AwaitingAgent", "Waiting for the site agent to bind this registration")
@@ -123,24 +145,38 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionTrue,
 			"ClusterBound", "Registration is bound to an immutable Kubernetes cluster UID")
 	}
+	var peer corev1.Secret
+	peerErr := r.Get(ctx, types.NamespacedName{
+		Namespace: systemNamespace, Name: "wireguard-peer-" + string(site.UID),
+	}, &peer)
+	switch {
+	case peerErr == nil:
+		setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionTrue,
+			"PeerAuthorized", "The site WireGuard peer is present in the gateway configuration")
+	case apierrors.IsNotFound(peerErr):
+		setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionFalse,
+			"AwaitingPeer", "Waiting for the site agent to authorize its WireGuard key")
+	default:
+		return ctrl.Result{}, peerErr
+	}
 	if err := r.Status().Update(ctx, &site); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
 	site *multisitepostgresv1alpha1.SiteRegistration, systemNamespace string,
 ) error {
-	for _, name := range []string{
-		"registration-" + string(site.UID),
-		"wireguard-peer-" + string(site.UID),
-	} {
+	for _, name := range []string{"registration-" + string(site.UID)} {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: systemNamespace, Name: name}}
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
+	}
+	if err := wireguard.RevokePeer(ctx, r.Client, systemNamespace, site.UID); err != nil {
+		return err
 	}
 	site.Status.Phase = "Revoked"
 	site.Status.RegistrationURL = ""
@@ -149,6 +185,8 @@ func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
 		"AdministrativelyRevoked", "The site identity has been revoked")
 	setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
 		"AdministrativelyRevoked", "Control connections from this site are rejected")
+	setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionFalse,
+		"AdministrativelyRevoked", "The WireGuard peer has been removed")
 	return r.Status().Update(ctx, site)
 }
 

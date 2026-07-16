@@ -189,6 +189,11 @@ until its `MultiSitePostgres` backup specification is configured.
 - Setting `SiteRegistration.spec.revoked` is irreversible. It removes bootstrap
   and WireGuard peer credentials and terminates control access without deleting
   workloads in the target cluster.
+- The hub owns WireGuard addressing. `--wireguard-network-cidr` supplies a
+  dedicated IPv4 network and `--wireguard-endpoint` supplies the public UDP
+  `host:port`; registrations receive one persisted `/32`. The generated hub
+  identity Secret and peer ConfigMap must be protected by Kubernetes encryption
+  at rest and are consumed by the active/passive gateway.
 - Existing namespaces are never adopted. All four ownership labels must
   already match exactly.
 - Disconnected agents do not recreate LoadBalancer Services or apply

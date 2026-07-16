@@ -111,6 +111,8 @@ func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello) (*ap
 			current.Status.AgentVersion = hello.AgentVersion
 			current.Status.Capabilities = append([]string(nil), hello.Capabilities...)
 			current.Status.LastHeartbeatTime = &now
+			setSiteCondition(&current.Status.Conditions, "Connected", metav1.ConditionTrue,
+				"ControlStreamEstablished", "The authenticated agent control stream is active")
 			return nil
 		})
 		if err != nil {
@@ -384,6 +386,8 @@ func (s *Server) recordHeartbeat(ctx context.Context, siteName string,
 	_, err := s.updateSiteStatus(ctx, siteName, func(site *api.SiteRegistration) error {
 		site.Status.LastHeartbeatTime = &now
 		site.Status.Phase = "Connected"
+		setSiteCondition(&site.Status.Conditions, "Connected", metav1.ConditionTrue,
+			"HeartbeatReceived", "The site agent heartbeat is current")
 		return nil
 	})
 	return err

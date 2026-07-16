@@ -82,6 +82,7 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 		Client: kube, SystemNamespace: "system", PublicURL: "https://hub.example",
 		HubDomain: "hub.example", HubAddress: "10.0.0.1:9444",
 		AgentImage: "agent:test", WireGuardImage: "wireguard:test",
+		WireGuardNetworkCIDR: "10.254.0.0/16", WireGuardEndpoint: "wireguard.example:51820",
 		Now: func() time.Time { return now },
 	}
 
@@ -105,7 +106,7 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	body, err := json.Marshal(BindRequest{
 		ClusterUID:         "cluster-uid",
 		CSRPEM:             string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})),
-		WireGuardPublicKey: "wireguard-public-key",
+		WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 	})
 	if err != nil {
 		t.Fatal(err)
