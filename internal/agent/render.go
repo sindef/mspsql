@@ -109,7 +109,7 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 			"patroni-etcd-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels))
 		if desired.Backup != nil {
 			objects = append(objects, clientCertificate(desired.Site.Namespace, "pgbackrest-client",
-				"pgbackrest-client-tls", desired.Site.Certificates.PostgresIssuerRef, labels))
+				"pgbackrest-client-tls", desired.Site.Certificates.BackupIssuerRef, labels))
 		}
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
@@ -117,6 +117,12 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
 			desired.Site.Certificates.PostgresIssuerRef, labels, desired.MemberAddresses[name],
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
+		if desired.Backup != nil {
+			objects = append(objects, certificate(desired.Site.Namespace, name+"-pgbackrest",
+				name+"-pgbackrest-tls", desired.Site.Certificates.BackupIssuerRef, labels,
+				desired.MemberAddresses[name],
+				[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
+		}
 	}
 	if desired.Site.Components.PgpoolReplicas > 0 {
 		name := "pgpool-" + desired.Site.Name
@@ -490,9 +496,9 @@ process-max=4
 start-fast=y
 tls-server-address=*
 tls-server-port=8432
-tls-server-ca-file=/postgres-tls/ca.crt
-tls-server-cert-file=/postgres-tls/tls.crt
-tls-server-key-file=/postgres-tls/tls.key
+tls-server-ca-file=/pgbackrest-tls/ca.crt
+tls-server-cert-file=/pgbackrest-tls/tls.crt
+tls-server-key-file=/pgbackrest-tls/tls.key
 tls-server-auth=pgbackrest-client=%s
 
 [%s]
@@ -790,6 +796,9 @@ exec patroni /tmp/patroni.yml`, name, address)
 			corev1.Volume{Name: "pgbackrest-spool", VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			}},
+			corev1.Volume{Name: "pgbackrest-tls", VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: name + "-pgbackrest-tls"},
+			}},
 		)
 		containers[0].VolumeMounts = append(containers[0].VolumeMounts,
 			corev1.VolumeMount{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
@@ -829,7 +838,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 				{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
 				{Name: "pgbackrest-repository", MountPath: "/repository", ReadOnly: true},
 				{Name: "pgbackrest-spool", MountPath: "/var/spool/pgbackrest"},
-				{Name: "postgres-tls", MountPath: "/postgres-tls", ReadOnly: true},
+				{Name: "pgbackrest-tls", MountPath: "/pgbackrest-tls", ReadOnly: true},
 			},
 		})
 	}

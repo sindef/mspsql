@@ -59,6 +59,24 @@ spec:
                 type: array
               permittedIssuers:
                 properties:
+                  backup:
+                    items:
+                      properties:
+                        group:
+                          default: cert-manager.io
+                          type: string
+                        kind:
+                          default: ClusterIssuer
+                          enum:
+                          - Issuer
+                          - ClusterIssuer
+                          type: string
+                        name:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
                   etcd:
                     items:
                       properties:

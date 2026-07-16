@@ -659,6 +659,42 @@ func aggregateInstanceConditions(instance *api.MultiSitePostgres) {
 			Reason: reason, Message: message,
 		})
 	}
+	aggregateBackupTLS(instance)
+}
+
+func aggregateBackupTLS(instance *api.MultiSitePostgres) {
+	if instance.Spec.Backup == nil {
+		return
+	}
+	var fingerprint string
+	applicable := 0
+	for _, site := range instance.Status.Sites {
+		if siteRole(instance, site.Name) == api.SiteRoleWitness {
+			continue
+		}
+		applicable++
+		condition := meta.FindStatusCondition(site.Conditions, "BackupTLSReady")
+		if condition == nil || condition.Status != metav1.ConditionTrue {
+			setInstanceCondition(&instance.Status.Conditions, instance.Generation, "BackupTLSReady",
+				metav1.ConditionFalse, "AwaitingSites",
+				"Waiting for all data sites to report their pgBackRest trust bundle")
+			return
+		}
+		if fingerprint == "" {
+			fingerprint = condition.Message
+		} else if condition.Message != fingerprint {
+			setInstanceCondition(&instance.Status.Conditions, instance.Generation, "BackupTLSReady",
+				metav1.ConditionFalse, "TrustBundleMismatch",
+				"pgBackRest issuers do not publish the same CA bundle across data sites")
+			return
+		}
+	}
+	if applicable == 0 {
+		return
+	}
+	setInstanceCondition(&instance.Status.Conditions, instance.Generation, "BackupTLSReady",
+		metav1.ConditionTrue, "CommonTrustBundle",
+		"All data sites use the same pgBackRest CA bundle")
 }
 
 func siteRole(instance *api.MultiSitePostgres, siteName string) api.SiteRole {

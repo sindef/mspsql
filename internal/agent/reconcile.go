@@ -18,9 +18,15 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -140,6 +146,16 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		}
 		setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionTrue,
 			"CertificatesIssued", "All workload certificates are Ready")
+		if desired.Backup != nil {
+			fingerprint, fingerprintErr := r.backupTrustBundleFingerprint(ctx, desired)
+			if fingerprintErr != nil {
+				setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionFalse,
+					"TrustBundleInvalid", fingerprintErr.Error())
+				return result, fingerprintErr
+			}
+			setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionTrue,
+				"TrustBundleObserved", fingerprint)
+		}
 	}
 
 	result.Phase = "ReconcilingWorkloads"
@@ -175,6 +191,40 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
 	return result, nil
+}
+
+func (r *Reconciler) backupTrustBundleFingerprint(ctx context.Context,
+	desired plan.SitePlan,
+) (string, error) {
+	var secret corev1.Secret
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: desired.Site.Namespace, Name: "pgbackrest-client-tls",
+	}, &secret); err != nil {
+		return "", err
+	}
+	remaining := secret.Data["ca.crt"]
+	var fingerprints []string
+	for len(remaining) > 0 {
+		block, rest := pem.Decode(remaining)
+		if block == nil {
+			break
+		}
+		remaining = rest
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return "", fmt.Errorf("parse pgBackRest CA certificate: %w", err)
+		}
+		sum := sha256.Sum256(certificate.Raw)
+		fingerprints = append(fingerprints, hex.EncodeToString(sum[:]))
+	}
+	if len(fingerprints) == 0 {
+		return "", fmt.Errorf("pgBackRest client Secret contains no CA certificates")
+	}
+	slices.Sort(fingerprints)
+	return strings.Join(fingerprints, ","), nil
 }
 
 func (r *Reconciler) setDataPlaneConditions(ctx context.Context, desired plan.SitePlan,

@@ -109,6 +109,10 @@ Backup repositories are always encrypted by pgBackRest with the Vault-provided
 passphrase. Private S3-compatible endpoints use
 `backup.repository.caBundleSecretRef`, which follows the same site-agent
 namespace Secret contract as the Vault CA reference.
+`sites[].certificates.backupIssuerRef` issues only pgBackRest server and
+coordinator identities. Every data site's issuer must publish the same CA
+bundle; the hub compares bundle fingerprints and blocks readiness and backup
+scheduling on a mismatch.
 
 ## Restore contract
 

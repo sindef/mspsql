@@ -82,3 +82,36 @@ func TestSQLDirectivesTargetObservedPrimarySite(t *testing.T) {
 		t.Fatalf("backup source = %q", source)
 	}
 }
+
+func TestBackupTLSRequiresCommonTrustBundle(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Generation: 2},
+		Spec: api.MultiSitePostgresSpec{
+			Backup: &api.BackupSpec{},
+			Sites: []api.PostgresSiteSpec{
+				{Name: "vic", Role: api.SiteRoleData},
+				{Name: "qld", Role: api.SiteRoleData},
+			},
+		},
+		Status: api.MultiSitePostgresStatus{Sites: []api.SiteRevisionStatus{
+			{Name: "vic", Conditions: []metav1.Condition{{
+				Type: "BackupTLSReady", Status: metav1.ConditionTrue, Message: "ca-a",
+			}}},
+			{Name: "qld", Conditions: []metav1.Condition{{
+				Type: "BackupTLSReady", Status: metav1.ConditionTrue, Message: "ca-b",
+			}}},
+		}},
+	}
+	aggregateInstanceConditions(instance)
+	condition := meta.FindStatusCondition(instance.Status.Conditions, "BackupTLSReady")
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != "TrustBundleMismatch" {
+		t.Fatalf("BackupTLSReady = %#v", condition)
+	}
+	instance.Status.Sites[1].Conditions[0].Message = "ca-a"
+	aggregateInstanceConditions(instance)
+	condition = meta.FindStatusCondition(instance.Status.Conditions, "BackupTLSReady")
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("BackupTLSReady = %#v", condition)
+	}
+}

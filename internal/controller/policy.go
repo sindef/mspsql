@@ -46,6 +46,15 @@ func validateSitePolicy(site api.PostgresSiteSpec, registration *api.SiteRegistr
 		if !issuerAllowed(registration.Spec.PermittedIssuers.Pgpool, site.Certificates.PgpoolIssuerRef) {
 			return fmt.Errorf("pgpool issuer %q is not permitted", site.Certificates.PgpoolIssuerRef.Name)
 		}
+		if site.Certificates.BackupIssuerRef.Name != "" {
+			permittedBackupIssuers := registration.Spec.PermittedIssuers.Backup
+			if len(permittedBackupIssuers) == 0 {
+				permittedBackupIssuers = registration.Spec.PermittedIssuers.Postgres
+			}
+			if !issuerAllowed(permittedBackupIssuers, site.Certificates.BackupIssuerRef) {
+				return fmt.Errorf("backup issuer %q is not permitted", site.Certificates.BackupIssuerRef.Name)
+			}
+		}
 	}
 	if !discoveredStorageClass(registration.Status.DiscoveredStorageClasses, site.Storage.Etcd) ||
 		!discoveredStorageClass(registration.Status.DiscoveredStorageClasses, site.Storage.Postgres) {

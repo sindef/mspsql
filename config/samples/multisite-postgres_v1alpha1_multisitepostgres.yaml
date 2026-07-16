@@ -39,6 +39,7 @@ spec:
       etcdIssuerRef: {name: etcd-vault, kind: ClusterIssuer}
       postgresIssuerRef: {name: postgres-vault, kind: ClusterIssuer}
       pgpoolIssuerRef: {name: client-vault, kind: ClusterIssuer}
+      backupIssuerRef: {name: backup-vault, kind: ClusterIssuer}
   backup:
     repository:
       type: S3

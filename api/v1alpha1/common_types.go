@@ -54,6 +54,7 @@ type IssuerPolicy struct {
 	Etcd     []IssuerReference `json:"etcd,omitempty"`
 	Postgres []IssuerReference `json:"postgres,omitempty"`
 	Pgpool   []IssuerReference `json:"pgpool,omitempty"`
+	Backup   []IssuerReference `json:"backup,omitempty"`
 }
 
 type StorageClassInventory struct {
@@ -106,6 +107,7 @@ type SiteCertificateSpec struct {
 	EtcdIssuerRef     IssuerReference `json:"etcdIssuerRef"`
 	PostgresIssuerRef IssuerReference `json:"postgresIssuerRef,omitempty"`
 	PgpoolIssuerRef   IssuerReference `json:"pgpoolIssuerRef,omitempty"`
+	BackupIssuerRef   IssuerReference `json:"backupIssuerRef,omitempty"`
 }
 
 type PostgresSiteSpec struct {

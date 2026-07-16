@@ -188,20 +188,14 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 		metav1.ConditionFalse, "PlansIssued", "Waiting for all sites to apply the active revision")
 	if allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
-		if restorePlan != nil && restorePlan.Phase != plan.RestorePhaseVerify {
-			instance.Status.Phase = "Restoring"
-			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
-				metav1.ConditionFalse, "RestoreInProgress",
-				"The restore target is not available until recovery and replica seeding complete")
-		} else {
-			instance.Status.Phase = "Ready"
-			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
-				metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
-		}
+		setAppliedInstanceReady(&instance, restorePlan)
 	}
 	backupRequeue, err := r.reconcileBackupSchedules(ctx, &instance, now(),
 		conditionTrue(instance.Status.Conditions, "Ready") &&
-			conditionTrue(instance.Status.Conditions, "TopologyReady") && restorePlan == nil)
+			conditionTrue(instance.Status.Conditions, "TopologyReady") &&
+			(instance.Spec.Backup == nil ||
+				conditionTrue(instance.Status.Conditions, "BackupTLSReady")) &&
+			restorePlan == nil)
 	if err != nil {
 		setCondition(&instance.Status.Conditions, instance.Generation, "BackupReady",
 			metav1.ConditionFalse, "ScheduleInvalid", err.Error())
@@ -212,6 +206,29 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	return ctrl.Result{RequeueAfter: backupRequeue}, nil
+}
+
+func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	restorePlan *plan.RestorePlan,
+) {
+	if restorePlan != nil && restorePlan.Phase != plan.RestorePhaseVerify {
+		instance.Status.Phase = "Restoring"
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "RestoreInProgress",
+			"The restore target is not available until recovery and replica seeding complete")
+		return
+	}
+	if instance.Spec.Backup != nil &&
+		!conditionTrue(instance.Status.Conditions, "BackupTLSReady") {
+		instance.Status.Phase = "Reconciling"
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "BackupTrustPending",
+			"Waiting for a common pgBackRest trust bundle across all data sites")
+		return
+	}
+	instance.Status.Phase = "Ready"
+	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+		metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
 }
 
 func (r *MultiSitePostgresReconciler) validateInstanceClaims(ctx context.Context,

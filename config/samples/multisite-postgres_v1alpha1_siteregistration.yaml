@@ -18,4 +18,6 @@ spec:
     - {name: postgres-vault, kind: ClusterIssuer, group: cert-manager.io}
     pgpool:
     - {name: client-vault, kind: ClusterIssuer, group: cert-manager.io}
+    backup:
+    - {name: backup-vault, kind: ClusterIssuer, group: cert-manager.io}
   metallbAddressPools: [database-services]

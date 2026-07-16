@@ -508,6 +508,7 @@ func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
 			},
 			Certificates: api.SiteCertificateSpec{
 				PostgresIssuerRef: api.IssuerReference{Name: "postgres-ca"},
+				BackupIssuerRef:   api.IssuerReference{Name: "backup-ca"},
 			},
 		},
 		Postgres: api.PostgresSpec{Image: "percona-postgres:17"},
@@ -542,6 +543,7 @@ func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
 	for _, expected := range []string{
 		"repo1-cipher-type=aes-256-cbc", "repo1-storage-ca-file=/repository/ca.crt",
 		"repo1-s3-endpoint=minio.example", "repo1-storage-port=9443", "archive-push %p",
+		"tls-server-ca-file=/pgbackrest-tls/ca.crt",
 	} {
 		if !strings.Contains(config.String(), expected) {
 			t.Fatalf("pgBackRest config is missing %q:\n%s", expected, config.String())
@@ -551,16 +553,19 @@ func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
 		t.Fatal("repository credentials were rendered into a ConfigMap")
 	}
 	if postgres == nil || len(postgres.Spec.Template.Spec.InitContainers) != 1 ||
-		!hasContainer(postgres.Spec.Template.Spec.Containers, "pgbackrest") {
+		!hasContainer(postgres.Spec.Template.Spec.Containers, "pgbackrest") ||
+		!hasVolume(postgres.Spec.Template.Spec.Volumes, "pgbackrest-tls") {
 		t.Fatalf("PostgreSQL pgBackRest pod layout = %#v", postgres)
 	}
 	certificates := renderer.Certificates(desired)
 	foundClient := false
+	foundServer := false
 	for _, certificate := range certificates {
 		foundClient = foundClient || certificate.GetName() == "pgbackrest-client"
+		foundServer = foundServer || certificate.GetName() == "postgres-vic-0-pgbackrest"
 	}
-	if !foundClient {
-		t.Fatal("pgBackRest coordinator client certificate was not rendered")
+	if !foundClient || !foundServer {
+		t.Fatal("dedicated pgBackRest certificates were not rendered")
 	}
 }
 
