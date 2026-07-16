@@ -4,6 +4,8 @@ metadata:
   name: mspsql-wireguard
 spec:
   replicas: 2
+  strategy:
+    rollingUpdate: {maxUnavailable: 1, maxSurge: 1}
   selector:
     matchLabels: {app.kubernetes.io/name: mspsql-wireguard}
   template:
@@ -40,7 +42,8 @@ spec:
           wg-quick up /run/mspsql/wireguard/wg0.conf
           hub_address="$(awk '/^Address/ {split($3, address, "/"); print address[1]}' \
             /etc/wireguard/interface.conf)"
-          socat TCP-LISTEN:9444,bind="${hub_address}",reuseaddr,fork TCP:agent-control:9444 &
+          socat TCP-LISTEN:9444,bind="${hub_address}",reuseaddr,fork \
+            TCP:mspsql-agent-control:9444 &
           while true; do
             sleep 5
             cat /etc/wireguard/interface.conf /etc/wireguard-peers/peers.conf \

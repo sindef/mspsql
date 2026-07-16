@@ -4,6 +4,7 @@ set -euo pipefail
 
 namespace="$1"
 hub_ip="$2"
+wireguard_ip="${3:-}"
 directory="$(mktemp -d)"
 trap 'rm -rf "${directory}"' EXIT
 
@@ -13,8 +14,12 @@ openssl req -x509 -new -key "${directory}/ca.key" -sha256 -days 2 \
 openssl ecparam -name prime256v1 -genkey -noout -out "${directory}/server.key"
 openssl req -new -key "${directory}/server.key" -subj "/CN=${hub_ip}" \
   -out "${directory}/server.csr"
+subject_alt_names="IP:${hub_ip}"
+if [[ -n "${wireguard_ip}" ]]; then
+  subject_alt_names="${subject_alt_names},IP:${wireguard_ip}"
+fi
 cat >"${directory}/server.ext" <<EOF
-subjectAltName=IP:${hub_ip}
+subjectAltName=${subject_alt_names}
 extendedKeyUsage=serverAuth
 keyUsage=digitalSignature,keyEncipherment
 EOF

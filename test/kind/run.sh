@@ -5,6 +5,9 @@ set -euo pipefail
 clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
 image="${IMG:-mspsql:test}"
 agent_image="${AGENT_IMG:-mspsql-agent:test}"
+gateway_image="${GATEWAY_IMG:-mspsql-gateway:test}"
+wireguard_image="${WIREGUARD_IMG:-mspsql-wireguard:test}"
+tun_plugin_image="${TUN_PLUGIN_IMG:-mspsql-tun-device-plugin:test}"
 vault_image="hashicorp/vault:1.21.4"
 cert_manager_version="v1.21.0"
 metallb_version="v0.16.0"
@@ -84,9 +87,17 @@ done
 
 docker build -t "${image}" .
 docker build -f Dockerfile.agent -t "${agent_image}" .
+docker build -f Dockerfile.gateway -t "${gateway_image}" .
+docker build -f Dockerfile.wireguard -t "${wireguard_image}" .
+docker build -f Dockerfile.tun-device-plugin -t "${tun_plugin_image}" .
 kind load docker-image "${image}" --name mspsql-hub
+kind load docker-image "${gateway_image}" --name mspsql-hub
 for site in vic nsw qld; do
   kind load docker-image "${agent_image}" --name "mspsql-${site}"
+done
+for cluster in "${clusters[@]}"; do
+  kind load docker-image "${wireguard_image}" --name "${cluster}"
+  kind load docker-image "${tun_plugin_image}" --name "${cluster}"
 done
 
 export KUBECONFIG
@@ -97,14 +108,43 @@ if [[ -z "${KUBECONFIG}" ]]; then
 fi
 
 make kustomize
+./test/kind/configure-platform.sh "${KUBECONFIG}" \
+  "${subnet_a}.${subnet_b}.100.70" "${subnet_a}.${subnet_b}.100.89" \
+  "${temp_dir}/ca.crt" "${temp_dir}/ca.key" \
+  "${temp_dir}/cert-manager.yaml" "${temp_dir}/metallb.yaml"
+for cluster in "${clusters[@]}"; do
+  cluster_kubeconfig="${temp_dir}/${cluster}.kubeconfig"
+  kind get kubeconfig --name "${cluster}" >"${cluster_kubeconfig}"
+  ./bin/kustomize build config/tun-device-plugin |
+    sed "s|ghcr.io/sindef/mspsql-tun-device-plugin:latest|${tun_plugin_image}|" |
+    kubectl --kubeconfig="${cluster_kubeconfig}" apply -f -
+  kubectl --kubeconfig="${cluster_kubeconfig}" -n kube-system rollout status \
+    daemonset/mspsql-tun-device-plugin --timeout=180s
+done
+
+kubectl create namespace mspsql-system
+./bin/kustomize build config/gateway |
+  sed "s|ghcr.io/sindef/mspsql-gateway:latest|${gateway_image}|" |
+  sed "s|ghcr.io/sindef/mspsql-wireguard:latest|${wireguard_image}|" |
+  kubectl apply -f -
+for _ in $(seq 1 120); do
+  wireguard_ip="$(kubectl -n mspsql-system get service mspsql-wireguard \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+  [[ -n "${wireguard_ip}" ]] && break
+  sleep 2
+done
+test -n "${wireguard_ip}"
+
 hub_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   mspsql-hub-control-plane)"
 ./bin/kustomize build test/kind/hub |
   sed "s|image: controller:latest|image: ${image}|" |
   sed "s|HUB_NODE_IP|${hub_ip}|g" |
   sed "s|SITE_AGENT_IMAGE|${agent_image}|g" |
+  sed "s|WIREGUARD_IMAGE|${wireguard_image}|g" |
+  sed "s|WIREGUARD_ENDPOINT|${wireguard_ip}:51820|g" |
   kubectl apply -f -
-./test/kind/create-control-tls.sh mspsql-system "${hub_ip}"
+./test/kind/create-control-tls.sh mspsql-system "${hub_ip}" 10.254.0.1
 kubectl -n mspsql-system rollout status deployment/mspsql-controller-manager --timeout=180s
 
 for site in vic nsw qld; do
@@ -143,6 +183,20 @@ EOF
   done
   test "${phase}" = "Connected"
 done
+
+test "$(kubectl -n mspsql-system get secret \
+  -l multisite-postgres.dev/wireguard-peer=true -o name | wc -l | tr -d ' ')" = "3"
+for _ in $(seq 1 90); do
+  active_gateway="$(kubectl -n mspsql-system get pods \
+    -l app.kubernetes.io/name=mspsql-wireguard \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.name}={.ready}{" "}{end}{"\n"}{end}' |
+    awk '/wireguard=true/ {print $1; exit}')"
+  [[ -n "${active_gateway}" ]] && break
+  sleep 2
+done
+test -n "${active_gateway}"
+test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
+  wg show wg0 peers | wc -l | tr -d ' ')" = "3"
 
 kubectl create namespace database-platform
 kubectl apply -f test/kind/instance.yaml

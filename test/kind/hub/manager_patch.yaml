@@ -12,10 +12,11 @@ spec:
         - --health-probe-bind-address=:8081
         - --control-address=:9444
         - --registration-public-url=http://HUB_NODE_IP:30082
-        - --hub-control-address=HUB_NODE_IP:30444
+        - --hub-control-address=10.254.0.1:9444
         - --hub-domain=kind.mspsql.test
         - --site-agent-image=SITE_AGENT_IMAGE
-        - --wireguard-image=
+        - --wireguard-image=WIREGUARD_IMAGE
+        - --wireguard-endpoint=WIREGUARD_ENDPOINT
         env:
         - {name: ENABLE_WEBHOOKS, value: "false"}
         volumeMounts:
