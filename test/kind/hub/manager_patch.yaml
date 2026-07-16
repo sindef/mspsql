@@ -19,6 +19,9 @@ spec:
         - --wireguard-endpoint=WIREGUARD_ENDPOINT
         env:
         - {name: ENABLE_WEBHOOKS, value: "false"}
+        ports:
+        - {name: grpc, containerPort: 9444, protocol: TCP}
+        - {name: registration, containerPort: 8082, protocol: TCP}
         volumeMounts:
         - {name: control-tls, mountPath: /etc/mspsql/control, readOnly: true}
       volumes:
