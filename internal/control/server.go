@@ -27,6 +27,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -289,6 +290,10 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 		for j := range instance.Status.Sites {
 			if instance.Status.Sites[j].Name == siteName {
 				update(&instance.Status.Sites[j])
+				for k := range instance.Status.Sites[j].Conditions {
+					instance.Status.Sites[j].Conditions[k].ObservedGeneration = instance.Generation
+				}
+				aggregateInstanceConditions(instance)
 				if instance.DeletionTimestamp.IsZero() &&
 					allApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
 					instance.Status.Phase = "Ready"
@@ -301,6 +306,46 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 		return status.Error(codes.NotFound, "site is not part of the instance")
 	}
 	return status.Error(codes.NotFound, "instance UID was not found")
+}
+
+func aggregateInstanceConditions(instance *api.MultiSitePostgres) {
+	for _, conditionType := range []string{
+		"LoadBalancersAllocated", "CertificatesReady", "EtcdQuorate", "PatroniReady",
+	} {
+		ready := true
+		applicable := 0
+		for _, site := range instance.Status.Sites {
+			if conditionType == "PatroniReady" && siteRole(instance, site.Name) == api.SiteRoleWitness {
+				continue
+			}
+			applicable++
+			condition := meta.FindStatusCondition(site.Conditions, conditionType)
+			if condition == nil || condition.Status != metav1.ConditionTrue {
+				ready = false
+			}
+		}
+		statusValue := metav1.ConditionFalse
+		reason := "AwaitingSites"
+		message := "Waiting for all applicable sites to report " + conditionType
+		if ready && applicable > 0 {
+			statusValue = metav1.ConditionTrue
+			reason = "AllSitesReady"
+			message = "All applicable sites report " + conditionType
+		}
+		meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type: conditionType, Status: statusValue, ObservedGeneration: instance.Generation,
+			Reason: reason, Message: message,
+		})
+	}
+}
+
+func siteRole(instance *api.MultiSitePostgres, siteName string) api.SiteRole {
+	for _, site := range instance.Spec.Sites {
+		if site.Name == siteName {
+			return site.Role
+		}
+	}
+	return ""
 }
 
 func (s *Server) triggerInstanceReconcile(ctx context.Context, instanceUID string) error {

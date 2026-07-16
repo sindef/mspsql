@@ -146,6 +146,12 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 			"WorkloadsProgressing", message)
 		return result, nil
 	}
+	setLocalCondition(&result.Conditions, "EtcdQuorate", metav1.ConditionTrue,
+		"AllMembersHealthy", "All etcd member readiness checks are passing")
+	if desired.Site.Role == api.SiteRoleData {
+		setLocalCondition(&result.Conditions, "PatroniReady", metav1.ConditionTrue,
+			"AllMembersHealthy", "All Patroni member readiness checks are passing")
+	}
 	if err := r.pruneStaleObjects(ctx, desired); err != nil {
 		return result, err
 	}
