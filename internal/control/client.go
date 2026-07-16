@@ -26,9 +26,11 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	controlv1 "github.com/sindef/mspsql/gen/control/v1"
 	"github.com/sindef/mspsql/internal/agent"
+	"github.com/sindef/mspsql/internal/directive"
 	"github.com/sindef/mspsql/internal/plan"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -40,11 +42,16 @@ type AgentClient struct {
 	Hello        *controlv1.AgentHello
 	Cache        *agent.Cache
 	Reconciler   *agent.Reconciler
+	Directives   DirectiveExecutor
 	Inventory    func(context.Context) ([]byte, error)
 	sendMu       sync.Mutex
 	activeMu     sync.Mutex
 	active       map[string]int64
 	heartbeatNow func() time.Time
+}
+
+type DirectiveExecutor interface {
+	Execute(context.Context, directive.Payload) ([]metav1.Condition, error)
 }
 
 type receivedHubMessage struct {
@@ -119,6 +126,12 @@ func (c *AgentClient) Run(ctx context.Context) error {
 				return receive.err
 			}
 			message := receive.message
+			if message.GetDirective() != nil {
+				if err := c.applyDirective(ctx, stream, message.GetDirective()); err != nil {
+					return err
+				}
+				continue
+			}
 			if message.GetPlan() == nil {
 				continue
 			}
@@ -162,6 +175,50 @@ func (c *AgentClient) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (c *AgentClient) applyDirective(ctx context.Context, stream controlv1.AgentControl_ConnectClient,
+	message *controlv1.OperationDirective,
+) error {
+	var envelope plan.Envelope
+	if err := json.Unmarshal(message.DirectiveJson, &envelope); err != nil {
+		return err
+	}
+	payload, err := directive.Verify(c.Cache.PublicKey, envelope, c.Reconciler.SiteUID,
+		message.InstanceUid, message.OperationUid)
+	if err != nil {
+		return err
+	}
+	if c.Directives == nil {
+		return errors.New("site agent has no directive executor")
+	}
+	if err := c.send(stream, &controlv1.AgentMessage{
+		Message: &controlv1.AgentMessage_Progress{Progress: &controlv1.PlanProgress{
+			OperationUid: message.OperationUid, InstanceUid: message.InstanceUid, Phase: "Running",
+		}},
+	}); err != nil {
+		return err
+	}
+	conditions, executeErr := c.Directives.Execute(ctx, payload)
+	if executeErr != nil {
+		conditions = append(conditions, metav1.Condition{
+			Type: "Succeeded", Status: metav1.ConditionFalse,
+			Reason: "ExecutionFailed", Message: executeErr.Error(), LastTransitionTime: metav1.Now(),
+		})
+	}
+	protoConditions := make([]*controlv1.Condition, 0, len(conditions))
+	for _, condition := range conditions {
+		protoConditions = append(protoConditions, &controlv1.Condition{
+			Type: condition.Type, Status: string(condition.Status), Reason: condition.Reason,
+			Message: condition.Message, LastTransitionTime: timestamppb.New(condition.LastTransitionTime.Time),
+		})
+	}
+	return c.send(stream, &controlv1.AgentMessage{
+		Message: &controlv1.AgentMessage_Result{Result: &controlv1.PlanResult{
+			OperationUid: message.OperationUid, InstanceUid: message.InstanceUid,
+			Conditions: protoConditions,
+		}},
+	})
 }
 
 func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentControl_ConnectClient,

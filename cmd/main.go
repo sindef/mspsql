@@ -248,7 +248,7 @@ func main() {
 		if err := mgr.Add(&control.RunnableServer{
 			Address: controlAddress, Certificate: controlCertificate,
 			PrivateKey: controlPrivateKey, ClientCA: controlClientCA,
-			Service: &control.Server{Client: mgr.GetClient()},
+			Service: &control.Server{Client: mgr.GetClient(), SystemNamespace: systemNamespace},
 		}); err != nil {
 			setupLog.Error(err, "Failed to add agent control server")
 			os.Exit(1)

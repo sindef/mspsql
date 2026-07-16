@@ -21,6 +21,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -201,9 +203,13 @@ func validateDatabase(obj *api.PostgresDatabase) error {
 		errs = append(errs, field.Invalid(field.NewPath("spec", "databaseName"), obj.Spec.DatabaseName,
 			strings.Join(msgs, "; ")))
 	}
+	errs = append(errs, validateSQLIdentifier(field.NewPath("spec", "databaseName"),
+		obj.Spec.DatabaseName)...)
 	seen := map[string]struct{}{}
+	owners := 0
 	for i, role := range obj.Spec.Roles {
 		p := field.NewPath("spec", "roles").Index(i).Child("name")
+		errs = append(errs, validateSQLIdentifier(p, role.Name)...)
 		if _, protected := protectedRoles[role.Name]; protected {
 			errs = append(errs, field.Forbidden(p, "infrastructure role is protected"))
 		}
@@ -211,18 +217,55 @@ func validateDatabase(obj *api.PostgresDatabase) error {
 			errs = append(errs, field.Duplicate(p, role.Name))
 		}
 		seen[role.Name] = struct{}{}
+		if role.Profile == "Owner" {
+			owners++
+		}
+	}
+	if owners > 1 {
+		errs = append(errs, field.Invalid(field.NewPath("spec", "roles"), owners,
+			"at most one Owner role is permitted"))
+	}
+	for i, schema := range obj.Spec.Schemas {
+		errs = append(errs, validateSQLIdentifier(
+			field.NewPath("spec", "schemas").Index(i), schema)...)
 	}
 	return errs.ToAggregate()
 }
 
 func validateUser(obj *api.PostgresUser) error {
+	var errs field.ErrorList
+	errs = append(errs, validateSQLIdentifier(field.NewPath("spec", "roleName"), obj.Spec.RoleName)...)
 	if _, protected := protectedRoles[obj.Spec.RoleName]; protected {
-		return field.Forbidden(field.NewPath("spec", "roleName"), "infrastructure role is protected")
+		errs = append(errs, field.Forbidden(field.NewPath("spec", "roleName"),
+			"infrastructure role is protected"))
 	}
 	if obj.Spec.PasswordVaultRef.Mount == "" || obj.Spec.PasswordVaultRef.Path == "" ||
 		obj.Spec.PasswordVaultRef.Key == "" {
-		return field.Required(field.NewPath("spec", "passwordVaultRef"),
-			"mount, path and key are required")
+		errs = append(errs, field.Required(field.NewPath("spec", "passwordVaultRef"),
+			"mount, path and key are required"))
+	}
+	for i, membership := range obj.Spec.MemberOf {
+		errs = append(errs, validateSQLIdentifier(
+			field.NewPath("spec", "memberOf").Index(i).Child("role"), membership.Role)...)
+	}
+	return errs.ToAggregate()
+}
+
+func validateSQLIdentifier(identifierPath *field.Path, value string) field.ErrorList {
+	if value == "" {
+		return field.ErrorList{field.Required(identifierPath, "required")}
+	}
+	if len(value) > 63 {
+		return field.ErrorList{field.TooLong(identifierPath, value, 63)}
+	}
+	if !utf8.ValidString(value) {
+		return field.ErrorList{field.Invalid(identifierPath, value, "must be valid UTF-8")}
+	}
+	for _, character := range value {
+		if character == 0 || unicode.IsControl(character) {
+			return field.ErrorList{field.Invalid(identifierPath, value,
+				"must not contain NUL or control characters")}
+		}
 	}
 	return nil
 }

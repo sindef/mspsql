@@ -104,18 +104,22 @@ func main() {
 	cache := &agent.Cache{
 		Client: kube, Namespace: namespace, PublicKey: publicKey, SiteUID: registrationUID,
 	}
+	secretMaterializer := &agent.SecretMaterializer{
+		Client:          kube,
+		SourceNamespace: namespace,
+		Token:           vaultServiceAccountToken(kube),
+		Vault:           vaultclient.NewClient,
+	}
 	reconciler := &agent.Reconciler{
 		Client: kube, HubDomain: hubDomain, SiteUID: registrationUID,
 		Renderer: agent.Renderer{
 			HubDomain: hubDomain, Images: agent.Images{Etcd: etcdImage, Pgpool: pgpoolImage},
 		},
-		Secrets: &agent.SecretMaterializer{
-			Client:          kube,
-			SourceNamespace: namespace,
-			Token:           vaultServiceAccountToken(kube),
-			Vault:           vaultclient.NewClient,
-		},
+		Secrets:  secretMaterializer,
 		Topology: &agent.PatroniObserver{Client: kube},
+	}
+	directiveExecutor := &agent.DirectiveExecutor{
+		Client: kube, Cache: cache, Secrets: secretMaterializer,
 	}
 	identity := envOrDefault("POD_NAME", fmt.Sprintf("site-agent-%d", os.Getpid()))
 	lock := &resourcelock.LeaseLock{
@@ -139,8 +143,8 @@ func main() {
 					return
 				}
 				defer func() { _ = os.Remove(activationPath) }()
-				runControlLoop(leaderCtx, target, tlsConfig, cache, reconciler, registrationUID,
-					string(clusterUID))
+				runControlLoop(leaderCtx, target, tlsConfig, cache, reconciler, directiveExecutor,
+					registrationUID, string(clusterUID))
 			},
 			OnStoppedLeading: func() {
 				_ = os.Remove(activationPath)
@@ -184,7 +188,8 @@ func vaultServiceAccountToken(kube client.Client) func(context.Context, string, 
 }
 
 func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, cache *agent.Cache,
-	reconciler *agent.Reconciler, registrationUID, clusterUID string,
+	reconciler *agent.Reconciler, directiveExecutor *agent.DirectiveExecutor,
+	registrationUID, clusterUID string,
 ) {
 	log := crlog.FromContext(ctx).WithName("control")
 	backoff := time.Second
@@ -205,7 +210,7 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 					"signed-cache", "server-side-apply", "cert-manager-v1", "metallb", "inventory-v1",
 				},
 			},
-			Cache: cache, Reconciler: reconciler,
+			Cache: cache, Reconciler: reconciler, Directives: directiveExecutor,
 			Inventory: func(inventoryCtx context.Context) ([]byte, error) {
 				return agent.DiscoverInventory(inventoryCtx, cache.Client)
 			},

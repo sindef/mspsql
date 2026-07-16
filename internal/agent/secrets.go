@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -40,6 +41,31 @@ type SecretMaterializer struct {
 	SourceNamespace string
 	Token           func(context.Context, string, string) (string, error)
 	Vault           func(api.VaultAuthSpec, []byte) (*vault.Client, error)
+}
+
+func (m *SecretMaterializer) Resolve(ctx context.Context, desired plan.SitePlan,
+	reference api.VaultSecretReference,
+) (vault.Secret, error) {
+	if desired.Site.VaultAuth == nil {
+		return vault.Secret{}, errors.New("site has no Vault authentication configuration")
+	}
+	jwt, err := m.Token(ctx, desired.Site.Namespace, workloadServiceAccount)
+	if err != nil {
+		return vault.Secret{}, fmt.Errorf("request projected Vault service-account token: %w", err)
+	}
+	caBundle, err := m.vaultCABundle(ctx, *desired.Site.VaultAuth)
+	if err != nil {
+		return vault.Secret{}, err
+	}
+	vaultClient, err := m.Vault(*desired.Site.VaultAuth, caBundle)
+	if err != nil {
+		return vault.Secret{}, fmt.Errorf("configure Vault client: %w", err)
+	}
+	token, err := vaultClient.LoginKubernetes(ctx, jwt)
+	if err != nil {
+		return vault.Secret{}, err
+	}
+	return vaultClient.ReadKV2(ctx, token.Value, reference)
 }
 
 func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePlan) error {

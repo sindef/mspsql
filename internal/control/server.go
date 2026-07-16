@@ -18,22 +18,27 @@ package control
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 	controlv1 "github.com/sindef/mspsql/gen/control/v1"
+	"github.com/sindef/mspsql/internal/directive"
 	"github.com/sindef/mspsql/internal/plan"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -43,8 +48,9 @@ import (
 
 type Server struct {
 	controlv1.UnimplementedAgentControlServer
-	Client client.Client
-	Now    func() time.Time
+	Client          client.Client
+	Now             func() time.Time
+	SystemNamespace string
 }
 
 func (s *Server) Connect(stream controlv1.AgentControl_ConnectServer) error {
@@ -70,7 +76,7 @@ func (s *Server) Connect(stream controlv1.AgentControl_ConnectServer) error {
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	errs := make(chan error, 2)
-	go func() { errs <- s.sendPlans(ctx, stream, string(site.UID)) }()
+	go func() { errs <- s.sendPlans(ctx, stream, site.Name, string(site.UID)) }()
 	go func() { errs <- s.receive(ctx, stream, site.Name) }()
 	err = <-errs
 	cancel()
@@ -109,11 +115,12 @@ func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello) (*ap
 }
 
 func (s *Server) sendPlans(ctx context.Context, stream controlv1.AgentControl_ConnectServer,
-	siteUID string,
+	siteName, siteUID string,
 ) error {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	sent := map[string]int64{}
+	sentDirectives := map[string]struct{}{}
 	for {
 		var configMaps corev1.ConfigMapList
 		if err := s.Client.List(ctx, &configMaps, client.MatchingLabels{
@@ -147,12 +154,115 @@ func (s *Server) sendPlans(ctx context.Context, stream controlv1.AgentControl_Co
 			}
 			sent[desired.InstanceUID] = desired.Revision
 		}
+		if err := s.sendDirectives(ctx, stream, siteName, siteUID, sentDirectives); err != nil {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentControl_ConnectServer,
+	siteName, siteUID string, sent map[string]struct{},
+) error {
+	var configMaps corev1.ConfigMapList
+	if err := s.Client.List(ctx, &configMaps, client.HasLabels{
+		"multisite-postgres.dev/directive",
+	}); err != nil {
+		return err
+	}
+	var privateKey ed25519.PrivateKey
+	for i := range configMaps.Items {
+		configMap := &configMaps.Items[i]
+		operationUID := configMap.Data["operationUID"]
+		if _, exists := sent[operationUID]; operationUID == "" || exists {
+			continue
+		}
+		var instance api.MultiSitePostgres
+		if err := s.Client.Get(ctx, client.ObjectKey{
+			Namespace: configMap.Namespace, Name: configMap.Data["instanceRef"],
+		}, &instance); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		directiveType := configMap.Data["type"]
+		if !directiveTargetsSite(&instance, directiveType, siteName) {
+			continue
+		}
+		if privateKey == nil {
+			loaded, loadErr := s.signingKey(ctx)
+			if loadErr != nil {
+				return loadErr
+			}
+			privateKey = loaded
+		}
+		envelope, err := directive.Sign(privateKey, directive.Payload{
+			SiteUID: siteUID, InstanceUID: string(instance.UID), OperationUID: operationUID,
+			Type: directiveType, Primary: instance.Status.Primary,
+			Deleting: configMap.Data["deleting"] == "true", GeneratedAt: s.now().UTC(),
+			Spec: json.RawMessage(configMap.Data["spec.json"]),
+		})
+		if err != nil {
+			return fmt.Errorf("sign directive %s: %w", configMap.Name, err)
+		}
+		encoded, err := json.Marshal(envelope)
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(&controlv1.HubMessage{
+			Message: &controlv1.HubMessage_Directive{Directive: &controlv1.OperationDirective{
+				OperationUid: operationUID, InstanceUid: string(instance.UID),
+				Type: directiveType, DirectiveJson: encoded,
+			}},
+		}); err != nil {
+			return err
+		}
+		sent[operationUID] = struct{}{}
+	}
+	return nil
+}
+
+func directiveTargetsSite(instance *api.MultiSitePostgres, directiveType, siteName string) bool {
+	if directiveType != "Database" && directiveType != "User" {
+		return true
+	}
+	if instance.Status.Primary == "" {
+		return false
+	}
+	for _, observed := range instance.Status.Sites {
+		if _, found := observed.Addresses[instance.Status.Primary]; !found {
+			continue
+		}
+		for _, desired := range instance.Spec.Sites {
+			if desired.Name == observed.Name {
+				return desired.SiteRegistrationRef == siteName
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) signingKey(ctx context.Context) (ed25519.PrivateKey, error) {
+	namespace := s.SystemNamespace
+	if namespace == "" {
+		namespace = "mspsql-system"
+	}
+	var secret corev1.Secret
+	if err := s.Client.Get(ctx, client.ObjectKey{
+		Namespace: namespace, Name: "mspsql-plan-signing-key",
+	}, &secret); err != nil {
+		return nil, err
+	}
+	privateKey, err := base64.RawStdEncoding.DecodeString(string(secret.Data["privateKey"]))
+	if err != nil || len(privateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("plan signing Secret contains an invalid private key")
+	}
+	return ed25519.PrivateKey(privateKey), nil
 }
 
 func (s *Server) receive(ctx context.Context, stream controlv1.AgentControl_ConnectServer,
@@ -278,6 +388,9 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 }
 
 func (s *Server) recordResult(ctx context.Context, siteName string, result *controlv1.PlanResult) error {
+	if result.OperationUid != "" {
+		return s.recordDirectiveResult(ctx, result)
+	}
 	return s.updateInstanceSite(ctx, result.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
 		site.AppliedRevision = result.AppliedRevision
 		site.Phase = "Ready"
@@ -289,6 +402,96 @@ func (s *Server) recordResult(ctx context.Context, siteName string, result *cont
 			}
 		}
 	})
+}
+
+func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.PlanResult) error {
+	var configMaps corev1.ConfigMapList
+	if err := s.Client.List(ctx, &configMaps, client.HasLabels{
+		"multisite-postgres.dev/directive",
+	}); err != nil {
+		return err
+	}
+	for i := range configMaps.Items {
+		configMap := &configMaps.Items[i]
+		if configMap.Data["operationUID"] != result.OperationUid || len(configMap.OwnerReferences) == 0 {
+			continue
+		}
+		owner := configMap.OwnerReferences[0]
+		switch owner.Kind {
+		case "PostgresDatabase":
+			var object api.PostgresDatabase
+			if err := s.Client.Get(ctx, client.ObjectKey{
+				Namespace: configMap.Namespace, Name: owner.Name,
+			}, &object); err != nil {
+				return err
+			}
+			applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
+				configMap.Data["deleting"] == "true", result.Conditions)
+			object.Status.ObservedGeneration = object.Generation
+			return s.Client.Status().Update(ctx, &object)
+		case "PostgresUser":
+			var object api.PostgresUser
+			if err := s.Client.Get(ctx, client.ObjectKey{
+				Namespace: configMap.Namespace, Name: owner.Name,
+			}, &object); err != nil {
+				return err
+			}
+			applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
+				configMap.Data["deleting"] == "true", result.Conditions)
+			for _, condition := range result.Conditions {
+				if condition.Type == "CredentialVersion" && condition.Status == string(metav1.ConditionTrue) {
+					if version, err := strconv.ParseInt(condition.Message, 10, 64); err == nil {
+						object.Status.CredentialVersion = version
+					}
+				}
+			}
+			object.Status.ObservedGeneration = object.Generation
+			return s.Client.Status().Update(ctx, &object)
+		case "PostgresRestore":
+			var object api.PostgresRestore
+			if err := s.Client.Get(ctx, client.ObjectKey{
+				Namespace: configMap.Namespace, Name: owner.Name,
+			}, &object); err != nil {
+				return err
+			}
+			applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions, false, result.Conditions)
+			object.Status.ObservedGeneration = object.Generation
+			return s.Client.Status().Update(ctx, &object)
+		case "PostgresUpgrade":
+			var object api.PostgresUpgrade
+			if err := s.Client.Get(ctx, client.ObjectKey{
+				Namespace: configMap.Namespace, Name: owner.Name,
+			}, &object); err != nil {
+				return err
+			}
+			applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions, false, result.Conditions)
+			object.Status.ObservedGeneration = object.Generation
+			return s.Client.Status().Update(ctx, &object)
+		}
+	}
+	return status.Error(codes.NotFound, "directive operation was not found")
+}
+
+func applyDirectiveStatus(phase *string, conditions *[]metav1.Condition, deleting bool,
+	reported []*controlv1.Condition,
+) {
+	succeeded := true
+	for _, condition := range reported {
+		setSiteCondition(conditions, condition.Type, metav1.ConditionStatus(condition.Status),
+			condition.Reason, condition.Message)
+		if condition.Type == "Succeeded" && condition.Status != string(metav1.ConditionTrue) {
+			succeeded = false
+		}
+	}
+	if !succeeded {
+		*phase = "Failed"
+		return
+	}
+	if deleting {
+		*phase = "Deleted"
+	} else {
+		*phase = "Ready"
+	}
 }
 
 func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName string,

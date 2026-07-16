@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,10 +38,11 @@ func reconcileDirective(ctx context.Context, kube client.Client, scheme *runtime
 	}
 	key := client.ObjectKey{Namespace: owner.GetNamespace(), Name: name}
 	data := map[string]string{
-		"type":        directiveType,
-		"instanceRef": instanceRef,
-		"deleting":    boolString(deleting),
-		"spec.json":   string(encoded),
+		"type":         directiveType,
+		"instanceRef":  instanceRef,
+		"deleting":     boolString(deleting),
+		"spec.json":    string(encoded),
+		"operationUID": fmt.Sprintf("%s-%d-%t", owner.GetUID(), owner.GetGeneration(), deleting),
 	}
 	var configMap corev1.ConfigMap
 	if err := kube.Get(ctx, key, &configMap); apierrors.IsNotFound(err) {

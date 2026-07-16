@@ -56,3 +56,25 @@ func TestAggregateConditionsExcludesWitnessFromPatroni(t *testing.T) {
 		t.Fatalf("PatroniReady = %#v", patroni)
 	}
 }
+
+func TestSQLDirectivesTargetObservedPrimarySite(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", SiteRegistrationRef: "production-vic"},
+			{Name: "qld", SiteRegistrationRef: "production-qld"},
+		}},
+		Status: api.MultiSitePostgresStatus{
+			Primary: "postgres-qld-0",
+			Sites: []api.SiteRevisionStatus{
+				{Name: "vic", Addresses: map[string]string{"postgres-vic-0": "10.0.0.1"}},
+				{Name: "qld", Addresses: map[string]string{"postgres-qld-0": "10.0.1.1"}},
+			},
+		},
+	}
+	if directiveTargetsSite(instance, "Database", "production-vic") {
+		t.Fatal("database directive targeted a non-primary site")
+	}
+	if !directiveTargetsSite(instance, "User", "production-qld") {
+		t.Fatal("user directive did not target the primary site")
+	}
+}
