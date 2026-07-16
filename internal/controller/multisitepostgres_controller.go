@@ -30,8 +30,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -503,7 +505,51 @@ func (r *MultiSitePostgresReconciler) deletePlanConfigMaps(ctx context.Context,
 func (r *MultiSitePostgresReconciler) updateInstanceStatus(ctx context.Context,
 	instance *multisitepostgresv1alpha1.MultiSitePostgres,
 ) error {
-	return r.Status().Update(ctx, instance)
+	desired := instance.Status.DeepCopy()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current multisitepostgresv1alpha1.MultiSitePostgres
+		if err := r.Get(ctx, client.ObjectKeyFromObject(instance), &current); err != nil {
+			return err
+		}
+		mergeReconciledStatus(&current.Status, desired)
+		return r.Status().Update(ctx, &current)
+	})
+}
+
+func mergeReconciledStatus(current, desired *multisitepostgresv1alpha1.MultiSitePostgresStatus) {
+	current.ObservedGeneration = desired.ObservedGeneration
+	if desired.ActiveRevision > current.ActiveRevision {
+		current.ActiveRevision = desired.ActiveRevision
+	}
+	current.PlanFingerprint = desired.PlanFingerprint
+	current.Phase = desired.Phase
+	current.Primary = desired.Primary
+	current.SynchronousStandbys = append([]string(nil), desired.SynchronousStandbys...)
+	current.BackupSchedules = append([]multisitepostgresv1alpha1.BackupScheduleStatus(nil),
+		desired.BackupSchedules...)
+	for _, condition := range desired.Conditions {
+		meta.SetStatusCondition(&current.Conditions, condition)
+	}
+	current.Sites = mergeReconciledSites(current.Sites, desired.Sites)
+}
+
+func mergeReconciledSites(current, desired []multisitepostgresv1alpha1.SiteRevisionStatus,
+) []multisitepostgresv1alpha1.SiteRevisionStatus {
+	merged := make([]multisitepostgresv1alpha1.SiteRevisionStatus, 0, len(desired))
+	for _, wanted := range desired {
+		observed := previousSiteStatus(current, wanted.Name)
+		if observed.Name == "" {
+			observed = wanted
+		}
+		observed.Name = wanted.Name
+		observed.SiteRegistrationRef = wanted.SiteRegistrationRef
+		observed.DesiredRevision = wanted.DesiredRevision
+		if wanted.Phase == "DeletionPlanIssued" && observed.Phase != "Deleted" {
+			observed.Phase = wanted.Phase
+		}
+		merged = append(merged, observed)
+	}
+	return merged
 }
 
 func previousSiteStatus(statuses []multisitepostgresv1alpha1.SiteRevisionStatus,

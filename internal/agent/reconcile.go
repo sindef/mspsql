@@ -37,9 +37,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
@@ -549,10 +551,9 @@ func (r *Reconciler) deleteInstance(ctx context.Context, desired plan.SitePlan) 
 }
 
 func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
-	encoded, err := json.Marshal(object)
+	encoded, err := encodeApplyObject(object, r.Client.Scheme())
 	if err != nil {
-		return fmt.Errorf("marshal %T %s/%s: %w",
-			object, object.GetNamespace(), object.GetName(), err)
+		return err
 	}
 	if err := r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
 		client.FieldOwner("mspsql-agent")); err != nil {
@@ -560,6 +561,21 @@ func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 			object, object.GetNamespace(), object.GetName(), err)
 	}
 	return nil
+}
+
+func encodeApplyObject(object client.Object, scheme *runtime.Scheme) ([]byte, error) {
+	gvk, err := apiutil.GVKForObject(object, scheme)
+	if err != nil {
+		return nil, fmt.Errorf("resolve type for %T %s/%s: %w",
+			object, object.GetNamespace(), object.GetName(), err)
+	}
+	object.GetObjectKind().SetGroupVersionKind(gvk)
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %T %s/%s: %w",
+			object, object.GetNamespace(), object.GetName(), err)
+	}
+	return encoded, nil
 }
 
 func (r *Reconciler) pruneStaleObjects(ctx context.Context, desired plan.SitePlan) error {

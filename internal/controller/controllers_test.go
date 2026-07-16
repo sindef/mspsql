@@ -168,6 +168,47 @@ func TestRegistrationStatusEnqueuesReferencingInstances(t *testing.T) {
 	}
 }
 
+func TestMergeReconciledStatusPreservesAgentObservations(t *testing.T) {
+	now := metav1.NewTime(time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC))
+	current := api.MultiSitePostgresStatus{
+		ActiveRevision: 2,
+		Sites: []api.SiteRevisionStatus{{
+			Name: "vic", DesiredRevision: 1, AppliedRevision: 2, Phase: "Ready",
+			Addresses:         map[string]string{"postgres-vic-0": "10.0.0.10"},
+			LastHeartbeatTime: &now,
+		}},
+		LastBackupTime: &now,
+		Conditions: []metav1.Condition{{
+			Type: "BackupReady", Status: metav1.ConditionTrue, Reason: "BackupVerified",
+		}},
+	}
+	desired := api.MultiSitePostgresStatus{
+		ObservedGeneration: 4, ActiveRevision: 2, PlanFingerprint: "fingerprint",
+		Phase: "Reconciling",
+		Sites: []api.SiteRevisionStatus{{
+			Name: "vic", SiteRegistrationRef: "production-vic", DesiredRevision: 2,
+			Phase: "PlanIssued",
+		}},
+		Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionFalse, Reason: "PlansIssued",
+		}},
+	}
+	mergeReconciledStatus(&current, &desired)
+	if current.Sites[0].AppliedRevision != 2 || current.Sites[0].Phase != "Ready" ||
+		current.Sites[0].Addresses["postgres-vic-0"] != "10.0.0.10" {
+		t.Fatalf("agent site observation was overwritten: %#v", current.Sites[0])
+	}
+	if current.Sites[0].DesiredRevision != 2 ||
+		current.Sites[0].SiteRegistrationRef != "production-vic" {
+		t.Fatalf("controller site state was not merged: %#v", current.Sites[0])
+	}
+	if current.LastBackupTime == nil ||
+		meta.FindStatusCondition(current.Conditions, "BackupReady") == nil ||
+		meta.FindStatusCondition(current.Conditions, "Ready") == nil {
+		t.Fatalf("concurrent status fields were lost: %#v", current)
+	}
+}
+
 func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 	scheme := testScheme(t)
 	issuer := api.IssuerReference{Name: "issuer", Kind: "ClusterIssuer", Group: "cert-manager.io"}

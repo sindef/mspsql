@@ -73,6 +73,32 @@ func TestCacheRejectsRollback(t *testing.T) {
 	}
 }
 
+func TestApplyResolvesTypedObjectGVK(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := Reconciler{Client: kube}
+	serviceAccount := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "workload"},
+	}
+	encoded, err := encodeApplyObject(serviceAccount, scheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applyDocument map[string]any
+	if err := json.Unmarshal(encoded, &applyDocument); err != nil {
+		t.Fatal(err)
+	}
+	if applyDocument["apiVersion"] != "v1" || applyDocument["kind"] != "ServiceAccount" {
+		t.Fatalf("apply GVK = %v, %v", applyDocument["apiVersion"], applyDocument["kind"])
+	}
+	if err := reconciler.apply(context.Background(), serviceAccount); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNamespaceOwnershipIsNotAdopted(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
