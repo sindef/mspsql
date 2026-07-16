@@ -163,3 +163,30 @@ func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Generation: 1},
+		Spec: api.MultiSitePostgresSpec{
+			Sites: []api.PostgresSiteSpec{
+				{Name: "vic"},
+				{Name: "nsw"},
+			},
+		},
+	}
+	before, err := planFingerprint(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.Status.Sites = []api.SiteRevisionStatus{
+		{Name: "vic"},
+		{Name: "nsw", Addresses: map[string]string{}},
+	}
+	after, err := planFingerprint(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("empty observed addresses changed fingerprint: %s != %s", before, after)
+	}
+}

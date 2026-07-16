@@ -298,9 +298,14 @@ func planFingerprint(instance *multisitepostgresv1alpha1.MultiSitePostgres) (str
 	}{
 		Generation: instance.Generation,
 		Addresses: func() map[string]map[string]string {
-			addresses := make(map[string]map[string]string, len(instance.Status.Sites))
-			for _, site := range instance.Status.Sites {
-				addresses[site.Name] = site.Addresses
+			addresses := make(map[string]map[string]string, len(instance.Spec.Sites))
+			for _, desiredSite := range instance.Spec.Sites {
+				addresses[desiredSite.Name] = map[string]string{}
+			}
+			for _, observedSite := range instance.Status.Sites {
+				if observedSite.Addresses != nil {
+					addresses[observedSite.Name] = observedSite.Addresses
+				}
 			}
 			return addresses
 		}(),
