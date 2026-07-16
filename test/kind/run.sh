@@ -241,6 +241,12 @@ test "${phase}" = "Ready"
 test "$(kubectl -n database-platform get configmap \
   -l multisite-postgres.dev/instance-uid -o name | wc -l | tr -d ' ')" = "3"
 
+kubectl apply -f test/kind/tenant.yaml
+kubectl -n database-platform wait --for=condition=Ready postgresdatabase/orders-api --timeout=300s
+kubectl -n database-platform wait --for=condition=Ready postgresuser/orders-application --timeout=300s
+test "$(kubectl -n database-platform get postgresuser orders-application \
+  -o jsonpath='{.status.credentialVersion}')" = "1"
+
 primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
 case "${primary}" in
   postgres-vic-*) primary_site=vic; replica_site=nsw ;;
@@ -257,6 +263,12 @@ kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}
   -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE TABLE mspsql_e2e (id integer PRIMARY KEY); INSERT INTO mspsql_e2e VALUES (1);'
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}" \
+  -c postgres-patroni -- env PGPASSWORD=application-secret PGSSLMODE=require \
+  psql -h 127.0.0.1 -U orders_app -d orders -v ON_ERROR_STOP=1 \
+  -c 'CREATE TABLE orders.application_write (id integer PRIMARY KEY); INSERT INTO orders.application_write VALUES (1);'
+test -z "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres get secrets \
+  -o name | grep 'mspsql-sql-.*-credential' || true)"
 replica="postgres-${replica_site}-0"
 replica_password="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
   get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"

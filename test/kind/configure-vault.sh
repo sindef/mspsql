@@ -53,6 +53,8 @@ EOF
   mspsql/postgres/orders/pgpool adminUsername=admin adminPassword=pool
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
   mspsql/postgres/orders/backup s3AccessKey=access s3SecretKey=secret repositoryCipherPassphrase=cipher
+"${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
+  mspsql/postgres/orders/users/orders-app password=application-secret
 
 jwt="$("${kubectl[@]}" -n vault-auth-test create token mspsql-workload --audience=vault --duration=10m)"
 client_token="$("${kubectl[@]}" -n vault exec deployment/vault -- env VAULT_ADDR=http://127.0.0.1:8200 \
