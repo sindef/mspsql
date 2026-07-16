@@ -22,6 +22,27 @@ subjects:
   name: vault
   namespace: vault
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: vault
+data:
+  vault.hcl: |
+    api_addr = "https://vault.vault.svc:8200"
+    disable_mlock = true
+
+    storage "file" {
+      path = "/vault/file"
+    }
+
+    listener "tcp" {
+      address = "0.0.0.0:8200"
+      tls_cert_file = "/vault/tls/tls.crt"
+      tls_key_file = "/vault/tls/tls.key"
+      tls_min_version = "tls12"
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,19 +66,15 @@ spec:
         - vault
         args:
         - server
-        - -dev
-        env:
-        - name: VAULT_DEV_ROOT_TOKEN_ID
-          value: root
-        - name: VAULT_DEV_LISTEN_ADDRESS
-          value: "0.0.0.0:8200"
+        - -config=/vault/config/vault.hcl
         ports:
-        - name: http
+        - name: https
           containerPort: 8200
         readinessProbe:
           httpGet:
-            path: /v1/sys/health
-            port: http
+            path: /v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200
+            port: https
+            scheme: HTTPS
           initialDelaySeconds: 2
           periodSeconds: 2
         securityContext:
@@ -67,6 +84,25 @@ spec:
             - ALL
             add:
             - IPC_LOCK
+        volumeMounts:
+        - name: config
+          mountPath: /vault/config
+          readOnly: true
+        - name: data
+          mountPath: /vault/file
+        - name: tls
+          mountPath: /vault/tls
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: vault-config
+      - name: data
+        emptyDir: {}
+      - name: tls
+        secret:
+          secretName: vault-tls
+          defaultMode: 0400
 ---
 apiVersion: v1
 kind: Service
@@ -77,6 +113,6 @@ spec:
   selector:
     app: vault
   ports:
-  - name: http
+  - name: https
     port: 8200
-    targetPort: http
+    targetPort: https

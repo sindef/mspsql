@@ -104,6 +104,12 @@ func TestValidateInstance(t *testing.T) {
 	}
 	base.Spec.Backup = nil
 
+	base.Spec.Sites[0].VaultAuth.Address = "http://vault"
+	if err := validateInstance(base); err == nil {
+		t.Fatal("plaintext Vault endpoint was accepted")
+	}
+	base.Spec.Sites[0].VaultAuth.Address = "https://vault"
+
 	base.Spec.Sites[2].Components.PostgresReplicas = 1
 	if err := validateInstance(base); err == nil {
 		t.Fatal("witness with PostgreSQL was accepted")

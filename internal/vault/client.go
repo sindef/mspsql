@@ -55,6 +55,10 @@ type Secret struct {
 }
 
 func NewClient(auth api.VaultAuthSpec, caBundle []byte) (*Client, error) {
+	address, err := url.Parse(auth.Address)
+	if err != nil || address.Scheme != "https" || address.Host == "" {
+		return nil, errors.New("vault address must be an absolute HTTPS URL")
+	}
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 	if len(caBundle) > 0 {
 		roots, err := x509.SystemCertPool()

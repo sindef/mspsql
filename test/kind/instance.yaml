@@ -23,7 +23,11 @@ spec:
       etcd: {storageClassName: standard, size: 1Gi}
       postgres: {storageClassName: standard, size: 1Gi}
     loadBalancer: {addressPool: database-services}
-    vaultAuth: {address: "http://vault.vault.svc:8200", authMount: kubernetes, authRole: orders-vic}
+    vaultAuth:
+      address: "https://vault.vault.svc:8200"
+      authMount: kubernetes
+      authRole: orders-vic
+      caBundleSecretRef: {name: vault-ca}
     certificates:
       etcdIssuerRef: {name: test, kind: ClusterIssuer}
       postgresIssuerRef: {name: test, kind: ClusterIssuer}
@@ -38,7 +42,11 @@ spec:
       etcd: {storageClassName: standard, size: 1Gi}
       postgres: {storageClassName: standard, size: 1Gi}
     loadBalancer: {addressPool: database-services}
-    vaultAuth: {address: "http://vault.vault.svc:8200", authMount: kubernetes, authRole: orders-nsw}
+    vaultAuth:
+      address: "https://vault.vault.svc:8200"
+      authMount: kubernetes
+      authRole: orders-nsw
+      caBundleSecretRef: {name: vault-ca}
     certificates:
       etcdIssuerRef: {name: test, kind: ClusterIssuer}
       postgresIssuerRef: {name: test, kind: ClusterIssuer}

@@ -85,6 +85,9 @@ func TestNewClientRejectsInvalidCABundle(t *testing.T) {
 	if _, err := NewClient(api.VaultAuthSpec{Address: "https://vault.example"}, []byte("invalid")); err == nil {
 		t.Fatal("invalid Vault CA bundle was accepted")
 	}
+	if _, err := NewClient(api.VaultAuthSpec{Address: "http://vault.example"}, nil); err == nil {
+		t.Fatal("plaintext Vault endpoint was accepted")
+	}
 }
 
 func TestValidateSecretReference(t *testing.T) {

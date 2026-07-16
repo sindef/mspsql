@@ -78,7 +78,8 @@ for site in vic nsw qld; do
   kind load docker-image "${vault_image}" --name "mspsql-${site}"
   site_kubeconfig="$(mktemp)"
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
-  ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}" &
+  ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}" \
+    "${temp_dir}/ca.crt" "${temp_dir}/ca.key" &
   vault_pid=$!
   ./test/kind/configure-platform.sh "${site_kubeconfig}" \
     "${subnet_a}.${subnet_b}.100.${pool_offset}" \
@@ -182,6 +183,8 @@ EOF
   site_kubeconfig="$(mktemp)"
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
   curl -fsS "${registration_url}" | kubectl --kubeconfig="${site_kubeconfig}" apply -f -
+  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic vault-ca \
+    --from-file=ca.crt="${temp_dir}/ca.crt"
   rm -f "${site_kubeconfig}"
   for _ in $(seq 1 120); do
     phase="$(kubectl get siteregistration "${site}" -o jsonpath='{.status.phase}')"

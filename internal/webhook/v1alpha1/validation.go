@@ -295,9 +295,9 @@ func validateDataSite(site api.PostgresSiteSpec, sitePath *field.Path) field.Err
 	}
 	vaultPath := sitePath.Child("vaultAuth")
 	address, err := url.Parse(site.VaultAuth.Address)
-	if err != nil || address.Scheme == "" || address.Host == "" {
+	if err != nil || address.Scheme != "https" || address.Host == "" {
 		errs = append(errs, field.Invalid(vaultPath.Child("address"),
-			site.VaultAuth.Address, "must be an absolute URL"))
+			site.VaultAuth.Address, "must be an absolute HTTPS URL"))
 	}
 	if site.VaultAuth.AuthMount == "" {
 		errs = append(errs, field.Required(vaultPath.Child("authMount"), "required"))
