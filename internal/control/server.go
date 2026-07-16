@@ -311,11 +311,16 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 func aggregateInstanceConditions(instance *api.MultiSitePostgres) {
 	for _, conditionType := range []string{
 		"LoadBalancersAllocated", "CertificatesReady", "EtcdQuorate", "PatroniReady",
+		"TDEVerified",
 	} {
+		if conditionType == "TDEVerified" && !instance.Spec.TDE.Enabled {
+			continue
+		}
 		ready := true
 		applicable := 0
 		for _, site := range instance.Status.Sites {
-			if conditionType == "PatroniReady" && siteRole(instance, site.Name) == api.SiteRoleWitness {
+			if (conditionType == "PatroniReady" || conditionType == "TDEVerified") &&
+				siteRole(instance, site.Name) == api.SiteRoleWitness {
 				continue
 			}
 			applicable++

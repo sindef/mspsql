@@ -356,3 +356,68 @@ func TestRetainDeletionRemovesWorkloadsAndKeepsPVCs(t *testing.T) {
 		t.Fatalf("retained PVC labels = %#v", retained.Labels)
 	}
 }
+
+func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
+	desired := plan.SitePlan{
+		SiteUID: "site", InstanceUID: "instance", Revision: 1,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 1},
+			Storage: api.SiteStorage{
+				Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{},
+			},
+		},
+		Postgres: api.PostgresSpec{Image: "percona-postgres:17"},
+		TDE: api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
+			KVMount: "tde", KeyPath: "postgres/orders",
+		}},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-nsw-0": "10.0.1.1", "etcd-qld-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.10",
+		},
+	}
+	renderer := Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}
+	objects, err := renderer.Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patroniConfig, bootstrapScript string
+	var postgres *appsv1.StatefulSet
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *corev1.ConfigMap:
+			patroniConfig += object.Data["patroni.yml"]
+			bootstrapScript += object.Data["tde-bootstrap.sh"]
+		case *appsv1.StatefulSet:
+			if strings.HasPrefix(object.Name, "postgres-") {
+				postgres = object
+			}
+		}
+	}
+	for _, expected := range []string{
+		"shared_preload_libraries=pg_tde", "pg_tde_basebackup", "post_init: /operator/tde-bootstrap.sh",
+	} {
+		if !strings.Contains(patroniConfig, expected) {
+			t.Fatalf("Patroni config is missing %q:\n%s", expected, patroniConfig)
+		}
+	}
+	for _, expected := range []string{
+		"pg_tde_add_global_key_provider_vault_v2", "pg_tde.enforce_encryption", "template1",
+	} {
+		if !strings.Contains(bootstrapScript, expected) {
+			t.Fatalf("TDE bootstrap is missing %q", expected)
+		}
+	}
+	if postgres == nil || !hasVolume(postgres.Spec.Template.Spec.Volumes, "pg-tde-vault") {
+		t.Fatal("PostgreSQL member does not mount the TDE Vault token")
+	}
+}
+
+func hasVolume(volumes []corev1.Volume, name string) bool {
+	for _, volume := range volumes {
+		if volume.Name == name {
+			return true
+		}
+	}
+	return false
+}

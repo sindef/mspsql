@@ -187,6 +187,7 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 		return err
 	}
 	backoff := time.Second
+	resultReported := false
 	for {
 		result, applyErr := c.Reconciler.Apply(ctx, desired, previous, true)
 		summaries := make(map[string]string, len(result.Addresses)+1)
@@ -205,7 +206,8 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 		}); err != nil {
 			return err
 		}
-		if applyErr == nil && (result.Phase == "Ready" || result.Phase == "Deleted") {
+		if applyErr == nil && (result.Phase == "Ready" || result.Phase == "Deleted") &&
+			!resultReported {
 			conditions := make([]*controlv1.Condition, 0, len(result.Conditions))
 			for _, condition := range result.Conditions {
 				conditions = append(conditions, &controlv1.Condition{
@@ -223,10 +225,15 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 			c.activeMu.Lock()
 			c.active[message.InstanceUid] = message.Revision
 			c.activeMu.Unlock()
-			return nil
+			resultReported = true
+			if result.Phase == "Deleted" {
+				return nil
+			}
 		}
 		delay := 5 * time.Second
-		if applyErr != nil {
+		if applyErr == nil && result.Phase == "Ready" {
+			delay = 5 * time.Minute
+		} else if applyErr != nil {
 			delay = backoff
 			if backoff < time.Minute {
 				backoff *= 2

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -108,11 +109,12 @@ func (m *SecretMaterializer) Reconcile(ctx context.Context, desired plan.SitePla
 			return fmt.Errorf("tde is enabled without a Vault key identity")
 		}
 		if err := m.reconcileSecret(ctx, desired, "pg-tde-vault", 0, map[string][]byte{
-			"token":              []byte(token.Value),
-			"token-expires-at":   []byte(token.ExpiresAt.UTC().Format(time.RFC3339)),
-			"address":            []byte(desired.Site.VaultAuth.Address),
-			"kv-mount":           []byte(desired.TDE.Vault.KVMount),
-			"key-path":           []byte(desired.TDE.Vault.KeyPath),
+			"token":            []byte(token.Value),
+			"token-expires-at": []byte(token.ExpiresAt.UTC().Format(time.RFC3339)),
+			"address":          []byte(desired.Site.VaultAuth.Address),
+			"kv-mount":         []byte(desired.TDE.Vault.KVMount),
+			"key-path": []byte(strings.Trim(desired.TDE.Vault.KVMount, "/") +
+				"/data/" + strings.Trim(desired.TDE.Vault.KeyPath, "/")),
 			"provider-name":      []byte(desired.TDE.Vault.ProviderName),
 			"principal-key-name": []byte(desired.TDE.Vault.PrincipalKeyName),
 		}); err != nil {

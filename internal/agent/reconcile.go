@@ -165,6 +165,10 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	if desired.Site.Role == api.SiteRoleData {
 		setLocalCondition(&result.Conditions, "PatroniReady", metav1.ConditionTrue,
 			"AllMembersHealthy", "All Patroni member readiness checks are passing")
+		if desired.TDE.Enabled {
+			setLocalCondition(&result.Conditions, "TDEVerified", metav1.ConditionTrue,
+				"EncryptedBootstrapReady", "Patroni completed the pg_tde bootstrap and all members are Ready")
+		}
 	}
 	if err := r.pruneStaleObjects(ctx, desired); err != nil {
 		return result, err

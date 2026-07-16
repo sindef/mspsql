@@ -134,6 +134,9 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	}
 	patroniConfig := r.patroniConfig(desired, labels)
 	objects = append(objects, patroniConfig)
+	if desired.TDE.Enabled {
+		objects = append(objects, r.tdeBootstrapConfig(desired, labels))
+	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
 		address := desired.MemberAddresses[name]
@@ -290,9 +293,27 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 		}
 	}
 	slices.Sort(endpoints)
+	tdeBootstrap := ""
+	tdeParameters := ""
+	tdeBinaries := ""
+	if desired.TDE.Enabled {
+		tdeBootstrap = `bootstrap:
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+    - set: shared_preload_libraries=pg_tde
+  post_init: /operator/tde-bootstrap.sh
+`
+		tdeParameters = `    shared_preload_libraries: pg_tde
+`
+		tdeBinaries = `  bin_name:
+    pg_basebackup: pg_tde_basebackup
+    pg_rewind: pg_tde_rewind
+`
+	}
 	config := fmt.Sprintf(`scope: %s
 name: ${MEMBER_NAME}
-restapi:
+%srestapi:
   listen: 0.0.0.0:8008
   connect_address: ${PATRONI_CONNECT_ADDRESS}:8008
 etcd3:
@@ -305,8 +326,8 @@ postgresql:
   listen: 0.0.0.0:5432
   connect_address: ${PATRONI_CONNECT_ADDRESS}:5432
   data_dir: /var/lib/postgresql/data
-  parameters:
-    ssl: "on"
+%s  parameters:
+%s    ssl: "on"
     ssl_cert_file: /postgres-tls/tls.crt
     ssl_key_file: /postgres-tls/tls.key
     ssl_ca_file: /postgres-tls/ca.crt
@@ -319,12 +340,52 @@ postgresql:
       password: ${POSTGRES_REPLICATION_PASSWORD}
 tags:
   failover_priority: %d
-`, desired.InstanceUID, strings.Join(endpoints, ","), desired.Site.PrimaryPreference)
+`, desired.InstanceUID, tdeBootstrap, strings.Join(endpoints, ","), tdeBinaries,
+		tdeParameters, desired.Site.PrimaryPreference)
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "patroni-" + desired.Site.Name, Labels: copyMap(labels),
 		},
 		Data: map[string]string{"patroni.yml": config},
+	}
+}
+
+func (r Renderer) tdeBootstrapConfig(desired plan.SitePlan, labels map[string]string) *corev1.ConfigMap {
+	script := `#!/bin/sh
+set -eu
+
+dsn="$1"
+provider="$(cat /vault/provider-name)"
+principal_key="$(cat /vault/principal-key-name)"
+vault_address="$(cat /vault/address)"
+key_path="$(cat /vault/key-path)"
+
+psql "$dsn" -v ON_ERROR_STOP=1 \
+  -v provider="$provider" \
+  -v principal_key="$principal_key" \
+  -v vault_address="$vault_address" \
+  -v key_path="$key_path" <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pg_tde;
+SELECT pg_tde_add_global_key_provider_vault_v2(
+  :'provider', :'vault_address', :'key_path', '/vault/token', NULL
+);
+SELECT pg_tde_create_key_using_global_key_provider(:'principal_key', :'provider');
+SELECT pg_tde_set_default_key_using_global_key_provider(:'principal_key', :'provider');
+ALTER DATABASE postgres SET default_table_access_method = tde_heap;
+ALTER DATABASE postgres SET pg_tde.enforce_encryption = on;
+SQL
+
+psql "$dsn" -d template1 -v ON_ERROR_STOP=1 <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pg_tde;
+ALTER DATABASE template1 SET default_table_access_method = tde_heap;
+ALTER DATABASE template1 SET pg_tde.enforce_encryption = on;
+SQL
+`
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: desired.Site.Namespace, Name: "pg-tde-bootstrap", Labels: copyMap(labels),
+		},
+		Data: map[string]string{"tde-bootstrap.sh": script},
 	}
 }
 
@@ -341,6 +402,46 @@ export MEMBER_NAME=%q
 export PATRONI_CONNECT_ADDRESS=%q
 envsubst < /config/patroni.yml > /tmp/patroni.yml
 exec patroni /tmp/patroni.yml`, name, address)
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "data", MountPath: "/var/lib/postgresql/data"},
+		{Name: "config", MountPath: "/config", ReadOnly: true},
+		{Name: "credentials", MountPath: "/credentials", ReadOnly: true},
+		{Name: "etcd-tls", MountPath: "/etcd-tls", ReadOnly: true},
+		{Name: "postgres-tls", MountPath: "/postgres-tls", ReadOnly: true},
+	}
+	volumes := []corev1.Volume{
+		{Name: "config", VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{
+				Name: "patroni-" + desired.Site.Name,
+			}},
+		}},
+		{Name: "credentials", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: "postgres-auth"},
+		}},
+		{Name: "etcd-tls", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: "patroni-etcd-client-tls"},
+		}},
+		{Name: "postgres-tls", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: name + "-tls"},
+		}},
+	}
+	if desired.TDE.Enabled {
+		volumeMounts = append(volumeMounts,
+			corev1.VolumeMount{Name: "operator", MountPath: "/operator", ReadOnly: true},
+			corev1.VolumeMount{Name: "pg-tde-vault", MountPath: "/vault", ReadOnly: true},
+		)
+		volumes = append(volumes,
+			corev1.Volume{Name: "operator", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "pg-tde-bootstrap"},
+					DefaultMode:          ptr(int32(0o550)),
+				},
+			}},
+			corev1.Volume{Name: "pg-tde-vault", VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: "pg-tde-vault"},
+			}},
+		)
+	}
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: name, Labels: copyMap(labels),
@@ -370,30 +471,9 @@ exec patroni /tmp/patroni.yml`, name, address)
 							PeriodSeconds: 10, FailureThreshold: 6,
 						},
 						SecurityContext: restrictedContainer(),
-						VolumeMounts: []corev1.VolumeMount{
-							{Name: "data", MountPath: "/var/lib/postgresql/data"},
-							{Name: "config", MountPath: "/config", ReadOnly: true},
-							{Name: "credentials", MountPath: "/credentials", ReadOnly: true},
-							{Name: "etcd-tls", MountPath: "/etcd-tls", ReadOnly: true},
-							{Name: "postgres-tls", MountPath: "/postgres-tls", ReadOnly: true},
-						},
+						VolumeMounts:    volumeMounts,
 					}},
-					Volumes: []corev1.Volume{
-						{Name: "config", VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{
-								Name: "patroni-" + desired.Site.Name,
-							}},
-						}},
-						{Name: "credentials", VolumeSource: corev1.VolumeSource{
-							Secret: &corev1.SecretVolumeSource{SecretName: "postgres-auth"},
-						}},
-						{Name: "etcd-tls", VolumeSource: corev1.VolumeSource{
-							Secret: &corev1.SecretVolumeSource{SecretName: "patroni-etcd-client-tls"},
-						}},
-						{Name: "postgres-tls", VolumeSource: corev1.VolumeSource{
-							Secret: &corev1.SecretVolumeSource{SecretName: name + "-tls"},
-						}},
-					},
+					Volumes: volumes,
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
