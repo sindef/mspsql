@@ -20,6 +20,10 @@ cleanup() {
       kubectl -n database-platform get multisitepostgres -o yaml || true
       kubectl -n mspsql-system logs deployment/mspsql-controller-manager \
         --all-containers --tail=200 || true
+      kubectl -n mspsql-system get pods -o wide || true
+      kubectl -n mspsql-system logs -l app.kubernetes.io/name=mspsql-wireguard \
+        --all-containers --prefix --tail=200 || true
+      kubectl get events -A --sort-by=.lastTimestamp | tail -150 || true
     fi
     for site in vic nsw qld; do
       site_kubeconfig="$(mktemp)"
@@ -27,6 +31,9 @@ cleanup() {
         kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent get pods -o wide || true
         kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent logs deployment/mspsql-agent \
           --all-containers --tail=200 || true
+        kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres get pods -o wide || true
+        kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres logs \
+          -l multisite-postgres.dev/instance-uid --all-containers --prefix --tail=100 || true
         kubectl --kubeconfig="${site_kubeconfig}" get events -A \
           --sort-by=.lastTimestamp | tail -100 || true
       fi
