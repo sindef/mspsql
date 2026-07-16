@@ -105,6 +105,37 @@ spec:
                 required:
                 - repository
                 type: object
+              credentials:
+                description: Credentials are read from each site's Vault using its
+                  local Kubernetes auth identity.
+                properties:
+                  pgpoolVaultRef:
+                    properties:
+                      key:
+                        type: string
+                      mount:
+                        type: string
+                      path:
+                        type: string
+                    required:
+                    - mount
+                    - path
+                    type: object
+                  postgresVaultRef:
+                    properties:
+                      key:
+                        type: string
+                      mount:
+                        type: string
+                      path:
+                        type: string
+                    required:
+                    - mount
+                    - path
+                    type: object
+                required:
+                - postgresVaultRef
+                type: object
               deletionPolicy:
                 default: Retain
                 enum:
@@ -323,6 +354,7 @@ spec:
                     type: object
                 type: object
             required:
+            - credentials
             - postgres
             - sites
             type: object

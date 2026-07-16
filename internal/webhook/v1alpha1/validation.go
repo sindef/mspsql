@@ -116,6 +116,20 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 	if obj.Spec.TDE.Enabled && obj.Spec.TDE.Vault == nil {
 		errs = append(errs, field.Required(specPath.Child("tde", "vault"), "TDE requires a Vault key identity"))
 	}
+	if obj.Spec.Credentials.PostgresVaultRef.Mount == "" ||
+		obj.Spec.Credentials.PostgresVaultRef.Path == "" {
+		errs = append(errs, field.Required(specPath.Child("credentials", "postgresVaultRef"),
+			"mount and path are required"))
+	}
+	hasPgpool := false
+	for _, site := range obj.Spec.Sites {
+		hasPgpool = hasPgpool || site.Components.PgpoolReplicas > 0
+	}
+	if hasPgpool && (obj.Spec.Credentials.PgpoolVaultRef.Mount == "" ||
+		obj.Spec.Credentials.PgpoolVaultRef.Path == "") {
+		errs = append(errs, field.Required(specPath.Child("credentials", "pgpoolVaultRef"),
+			"mount and path are required when Pgpool is enabled"))
+	}
 	if obj.Spec.Backup != nil && strings.Trim(obj.Spec.Backup.Repository.Prefix, "/") == "" {
 		errs = append(errs, field.Required(specPath.Child("backup", "repository", "prefix"),
 			"backup prefix must identify this instance"))

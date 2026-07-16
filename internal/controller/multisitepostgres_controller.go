@@ -148,6 +148,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			Postgres:        instance.Spec.Postgres,
 			TDE:             instance.Spec.TDE,
 			Backup:          instance.Spec.Backup,
+			Credentials:     instance.Spec.Credentials,
 			MemberAddresses: memberAddresses,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
@@ -366,6 +367,7 @@ func (r *MultiSitePostgresReconciler) issueDeletionPlans(ctx context.Context,
 			Postgres:        instance.Spec.Postgres,
 			TDE:             instance.Spec.TDE,
 			Backup:          instance.Spec.Backup,
+			Credentials:     instance.Spec.Credentials,
 			MemberAddresses: memberAddresses,
 			Deletion:        &plan.DeletionPlan{Policy: deletionPolicy},
 		})

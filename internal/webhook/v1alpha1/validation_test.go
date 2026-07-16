@@ -35,6 +35,10 @@ func TestValidateInstance(t *testing.T) {
 				Image:                   "postgres:17",
 				SynchronousStandbyCount: 1,
 			},
+			Credentials: api.InstanceCredentialsSpec{
+				PostgresVaultRef: api.VaultSecretReference{Mount: "secret", Path: "postgres/orders"},
+				PgpoolVaultRef:   api.VaultSecretReference{Mount: "secret", Path: "pgpool/orders"},
+			},
 			Sites: []api.PostgresSiteSpec{
 				{
 					Name: "a", SiteRegistrationRef: "a", Namespace: "postgres",

@@ -45,6 +45,14 @@ type Renderer struct {
 	Images    Images
 }
 
+func (r Renderer) ServiceAccount(desired plan.SitePlan) client.Object {
+	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Namespace: desired.Site.Namespace,
+		Name:      workloadServiceAccount,
+		Labels:    resourceLabels(desired),
+	}}
+}
+
 func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 	labels := resourceLabels(desired)
 	objects := make([]client.Object, 0,
@@ -226,6 +234,8 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: memberLabels},
 				Spec: corev1.PodSpec{
+					ServiceAccountName:            workloadServiceAccount,
+					AutomountServiceAccountToken:  ptr(false),
 					TerminationGracePeriodSeconds: ptr(int64(30)),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
@@ -341,6 +351,8 @@ exec patroni /tmp/patroni.yml`, name, address)
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels},
 				Spec: corev1.PodSpec{
+					ServiceAccountName:            workloadServiceAccount,
+					AutomountServiceAccountToken:  ptr(false),
 					TerminationGracePeriodSeconds: ptr(int64(60)),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr(true), FSGroup: ptr(int64(26)),
@@ -428,6 +440,8 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels},
 				Spec: corev1.PodSpec{
+					ServiceAccountName:           workloadServiceAccount,
+					AutomountServiceAccountToken: ptr(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},

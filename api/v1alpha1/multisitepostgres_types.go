@@ -41,6 +41,8 @@ type MultiSitePostgresSpec struct {
 	Sites  []PostgresSiteSpec `json:"sites"`
 	TDE    TDESpec            `json:"tde,omitempty"`
 	Backup *BackupSpec        `json:"backup,omitempty"`
+	// Credentials are read from each site's Vault using its local Kubernetes auth identity.
+	Credentials InstanceCredentialsSpec `json:"credentials"`
 }
 
 type MultiSitePostgresStatus struct {

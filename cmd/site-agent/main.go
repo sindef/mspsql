@@ -30,6 +30,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -46,10 +47,12 @@ import (
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	api "github.com/sindef/mspsql/api/v1alpha1"
 	controlv1 "github.com/sindef/mspsql/gen/control/v1"
 	"github.com/sindef/mspsql/internal/agent"
 	"github.com/sindef/mspsql/internal/control"
 	"github.com/sindef/mspsql/internal/plan"
+	vaultclient "github.com/sindef/mspsql/internal/vault"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
@@ -107,6 +110,15 @@ func main() {
 		Renderer: agent.Renderer{
 			HubDomain: hubDomain, Images: agent.Images{Etcd: etcdImage, Pgpool: pgpoolImage},
 		},
+		Secrets: &agent.SecretMaterializer{
+			Client: kube,
+			Token:  vaultServiceAccountToken(kube),
+			Vault: func(auth api.VaultAuthSpec) *vaultclient.Client {
+				return &vaultclient.Client{
+					Address: auth.Address, AuthMount: auth.AuthMount, Role: auth.AuthRole,
+				}
+			},
+		},
 	}
 	identity := envOrDefault("POD_NAME", fmt.Sprintf("site-agent-%d", os.Getpid()))
 	lock := &resourcelock.LeaseLock{
@@ -145,12 +157,33 @@ func clients(config *rest.Config) client.Client {
 	scheme := runtime.NewScheme()
 	must(corev1.AddToScheme(scheme))
 	must(appsv1.AddToScheme(scheme))
+	must(authenticationv1.AddToScheme(scheme))
 	must(batchv1.AddToScheme(scheme))
 	must(coordinationv1.AddToScheme(scheme))
 	must(storagev1.AddToScheme(scheme))
 	kube, err := client.New(config, client.Options{Scheme: scheme})
 	must(err)
 	return kube
+}
+
+func vaultServiceAccountToken(kube client.Client) func(context.Context, string, string) (string, error) {
+	return func(ctx context.Context, namespace, serviceAccount string) (string, error) {
+		expirationSeconds := int64(600)
+		request := &authenticationv1.TokenRequest{Spec: authenticationv1.TokenRequestSpec{
+			Audiences:         []string{"vault"},
+			ExpirationSeconds: &expirationSeconds,
+		}}
+		account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace, Name: serviceAccount,
+		}}
+		if err := kube.SubResource("token").Create(ctx, account, request); err != nil {
+			return "", err
+		}
+		if request.Status.Token == "" {
+			return "", fmt.Errorf("TokenRequest returned an empty token")
+		}
+		return request.Status.Token, nil
+	}
 }
 
 func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, cache *agent.Cache,

@@ -46,6 +46,7 @@ type ApplyResult struct {
 type Reconciler struct {
 	Client    client.Client
 	Renderer  Renderer
+	Secrets   *SecretMaterializer
 	HubDomain string
 	SiteUID   string
 }
@@ -68,6 +69,19 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse,
 			"NamespaceOwnershipConflict", err.Error())
 		return result, err
+	}
+	if err := r.apply(ctx, r.Renderer.ServiceAccount(desired)); err != nil {
+		return result, err
+	}
+	if r.Secrets != nil {
+		result.Phase = "ResolvingSecrets"
+		if err := r.Secrets.Reconcile(ctx, desired); err != nil {
+			setLocalCondition(&result.Conditions, "VaultReady", metav1.ConditionFalse,
+				"SecretResolutionFailed", err.Error())
+			return result, err
+		}
+		setLocalCondition(&result.Conditions, "VaultReady", metav1.ConditionTrue,
+			"SecretsResolved", "Required Vault references were resolved")
 	}
 
 	result.Phase = "AllocatingLoadBalancers"

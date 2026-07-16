@@ -4,8 +4,11 @@ metadata:
   name: mspsql-agent
 rules:
 - apiGroups: [""]
-  resources: [namespaces, services, configmaps, persistentvolumeclaims, pods]
+  resources: [namespaces, services, serviceaccounts, configmaps, persistentvolumeclaims, pods]
   verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [serviceaccounts/token]
+  verbs: [create]
 - apiGroups: [""]
   resources: [secrets]
   verbs: [get, list, watch, create, update, patch, delete]

@@ -166,8 +166,9 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
 			"metadata": map[string]any{"name": "mspsql-agent"},
 			"rules": []any{
-				rule([]string{""}, []string{"namespaces", "services", "configmaps", "persistentvolumeclaims", "pods", "secrets"},
+				rule([]string{""}, []string{"namespaces", "services", "serviceaccounts", "configmaps", "persistentvolumeclaims", "pods", "secrets"},
 					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
+				rule([]string{""}, []string{"serviceaccounts/token"}, []string{"create"}),
 				rule([]string{"apps"}, []string{"deployments", "statefulsets"},
 					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
 				rule([]string{"batch"}, []string{"jobs", "cronjobs"},

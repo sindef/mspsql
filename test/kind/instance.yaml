@@ -9,6 +9,9 @@ spec:
     majorVersion: 17
     image: percona/percona-distribution-postgresql:17.10-4
     synchronousStandbyCount: 1
+  credentials:
+    postgresVaultRef: {mount: secret, path: postgres/orders/bootstrap}
+    pgpoolVaultRef: {mount: secret, path: postgres/orders/pgpool}
   sites:
   - name: vic
     siteRegistrationRef: vic

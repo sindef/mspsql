@@ -136,6 +136,11 @@ type VaultSecretReference struct {
 	Key   string `json:"key,omitempty"`
 }
 
+type InstanceCredentialsSpec struct {
+	PostgresVaultRef VaultSecretReference `json:"postgresVaultRef"`
+	PgpoolVaultRef   VaultSecretReference `json:"pgpoolVaultRef,omitempty"`
+}
+
 type BackupRepositorySpec struct {
 	// +kubebuilder:validation:Enum=S3
 	Type               string               `json:"type"`
