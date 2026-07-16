@@ -34,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
@@ -96,20 +97,26 @@ func (s *Server) bindSite(ctx context.Context, hello *controlv1.AgentHello) (*ap
 		if string(site.UID) != hello.RegistrationUid {
 			continue
 		}
-		if site.Status.ClusterUID != "" && site.Status.ClusterUID != hello.ClusterUid {
-			return nil, status.Error(codes.PermissionDenied,
-				"registration is permanently bound to another Kubernetes cluster UID")
-		}
-		now := metav1.NewTime(s.now())
-		site.Status.ClusterUID = hello.ClusterUid
-		site.Status.Phase = "Connected"
-		site.Status.AgentVersion = hello.AgentVersion
-		site.Status.Capabilities = append([]string(nil), hello.Capabilities...)
-		site.Status.LastHeartbeatTime = &now
-		if err := s.Client.Status().Update(ctx, site); err != nil {
+		updated, err := s.updateSiteStatus(ctx, site.Name, func(current *api.SiteRegistration) error {
+			if current.Status.ClusterUID != "" && current.Status.ClusterUID != hello.ClusterUid {
+				return status.Error(codes.PermissionDenied,
+					"registration is permanently bound to another Kubernetes cluster UID")
+			}
+			now := metav1.NewTime(s.now())
+			current.Status.ClusterUID = hello.ClusterUid
+			current.Status.Phase = "Connected"
+			current.Status.AgentVersion = hello.AgentVersion
+			current.Status.Capabilities = append([]string(nil), hello.Capabilities...)
+			current.Status.LastHeartbeatTime = &now
+			return nil
+		})
+		if err != nil {
+			if status.Code(err) != codes.Unknown {
+				return nil, err
+			}
 			return nil, status.Error(codes.Internal, err.Error())
 		}
-		return site, nil
+		return updated, nil
 	}
 	return nil, status.Error(codes.NotFound, "site registration UID was not found")
 }
@@ -349,18 +356,17 @@ func (s *Server) receive(ctx context.Context, stream controlv1.AgentControl_Conn
 func (s *Server) recordHeartbeat(ctx context.Context, siteName string,
 	heartbeat *controlv1.AgentHeartbeat,
 ) error {
-	var site api.SiteRegistration
-	if err := s.Client.Get(ctx, client.ObjectKey{Name: siteName}, &site); err != nil {
-		return err
-	}
 	heartbeatTime := s.now()
 	if heartbeat.SentAt != nil && heartbeat.SentAt.IsValid() {
 		heartbeatTime = heartbeat.SentAt.AsTime()
 	}
 	now := metav1.NewTime(heartbeatTime)
-	site.Status.LastHeartbeatTime = &now
-	site.Status.Phase = "Connected"
-	return s.Client.Status().Update(ctx, &site)
+	_, err := s.updateSiteStatus(ctx, siteName, func(site *api.SiteRegistration) error {
+		site.Status.LastHeartbeatTime = &now
+		site.Status.Phase = "Connected"
+		return nil
+	})
+	return err
 }
 
 func (s *Server) recordInventory(ctx context.Context, siteName string,
@@ -377,14 +383,34 @@ func (s *Server) recordInventory(ctx context.Context, siteName string,
 	if err := json.Unmarshal(update.InventoryJson, &inventory); err != nil {
 		return status.Error(codes.InvalidArgument, "inventory JSON is invalid")
 	}
-	var site api.SiteRegistration
-	if err := s.Client.Get(ctx, client.ObjectKey{Name: siteName}, &site); err != nil {
-		return err
-	}
-	site.Status.DiscoveredStorageClasses = inventory.StorageClasses
-	site.Status.DiscoveredVolumeSnapshotClasses = inventory.VolumeSnapshotClasses
-	site.Status.DiscoveredIssuers = inventory.Issuers
-	return s.Client.Status().Update(ctx, &site)
+	_, err := s.updateSiteStatus(ctx, siteName, func(site *api.SiteRegistration) error {
+		site.Status.DiscoveredStorageClasses = inventory.StorageClasses
+		site.Status.DiscoveredVolumeSnapshotClasses = inventory.VolumeSnapshotClasses
+		site.Status.DiscoveredIssuers = inventory.Issuers
+		return nil
+	})
+	return err
+}
+
+func (s *Server) updateSiteStatus(ctx context.Context, siteName string,
+	mutate func(*api.SiteRegistration) error,
+) (*api.SiteRegistration, error) {
+	var updated api.SiteRegistration
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current api.SiteRegistration
+		if err := s.Client.Get(ctx, client.ObjectKey{Name: siteName}, &current); err != nil {
+			return err
+		}
+		if err := mutate(&current); err != nil {
+			return err
+		}
+		if err := s.Client.Status().Update(ctx, &current); err != nil {
+			return err
+		}
+		updated = current
+		return nil
+	})
+	return &updated, err
 }
 
 func (s *Server) recordAcknowledgement(ctx context.Context, siteName string,
