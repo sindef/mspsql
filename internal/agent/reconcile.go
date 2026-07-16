@@ -113,24 +113,8 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		}
 	}
 
-	if desired.AddressMigration != nil {
-		result.Phase = "MigratingAddress"
-		ready, err := r.reconcileAddressMigration(ctx, desired, &result)
-		if err != nil || !ready {
-			return result, err
-		}
-	}
-	if desired.CredentialRotation != nil {
-		ready, err := r.prepareCredentialRotation(ctx, &desired, &result)
-		if err != nil || !ready {
-			return result, err
-		}
-	}
-	if desired.MajorUpgrade != nil {
-		ready, err := r.prepareMajorUpgrade(ctx, desired, &result)
-		if err != nil || !ready {
-			return result, err
-		}
+	if ready, err := r.prepareOperations(ctx, &desired, &result); err != nil || !ready {
+		return result, err
 	}
 
 	result.Phase = "ReconcilingWorkloads"
@@ -140,40 +124,8 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse, "GlobalAddressesPending", err.Error())
 		return result, nil
 	}
-	for _, object := range objects {
-		if err := r.apply(ctx, object); err != nil {
-			return result, err
-		}
-	}
-	ready, message, err := r.workloadsReady(ctx, objects)
-	if err != nil {
+	if ready, err := r.reconcileWorkloads(ctx, desired, objects, &result); err != nil || !ready {
 		return result, err
-	}
-	if !ready {
-		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse,
-			"WorkloadsProgressing", message)
-		if desired.MajorUpgrade != nil {
-			reason := "WorkloadsPending"
-			if strings.Contains(message, " failed:") {
-				switch desired.MajorUpgrade.Phase {
-				case plan.MajorUpgradePhasePreflight:
-					reason = "PreflightRejected"
-				case plan.MajorUpgradePhaseStartPrimary:
-					reason = "PrimaryAcceptanceFailed"
-				case plan.MajorUpgradePhaseRollbackStart:
-					reason = "RollbackAcceptanceFailed"
-				default:
-					reason = "WorkloadsFailed"
-				}
-			}
-			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
-				reason, message)
-		}
-		return result, nil
-	}
-	if desired.MajorUpgrade != nil {
-		setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionFalse,
-			"PhaseAccepted", "The local major-upgrade phase completed")
 	}
 	setLocalCondition(&result.Conditions, "EtcdQuorate", metav1.ConditionTrue,
 		"AllMembersHealthy", "All etcd member readiness checks are passing")
@@ -200,6 +152,73 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 	setLocalCondition(&result.Conditions, "Ready", metav1.ConditionTrue,
 		"DesiredStateApplied", "All locally managed resources match the signed plan")
 	return result, nil
+}
+
+func (r *Reconciler) prepareOperations(ctx context.Context, desired *plan.SitePlan,
+	result *ApplyResult,
+) (bool, error) {
+	if desired.AddressMigration != nil {
+		result.Phase = "MigratingAddress"
+		if ready, err := r.reconcileAddressMigration(ctx, *desired, result); err != nil || !ready {
+			return ready, err
+		}
+	}
+	if desired.CredentialRotation != nil {
+		if ready, err := r.prepareCredentialRotation(ctx, desired, result); err != nil || !ready {
+			return ready, err
+		}
+	}
+	if desired.MajorUpgrade != nil {
+		if ready, err := r.prepareMajorUpgrade(ctx, *desired, result); err != nil || !ready {
+			return ready, err
+		}
+	}
+	return true, nil
+}
+
+func (r *Reconciler) reconcileWorkloads(ctx context.Context, desired plan.SitePlan,
+	objects []client.Object, result *ApplyResult,
+) (bool, error) {
+	for _, object := range objects {
+		if err := r.apply(ctx, object); err != nil {
+			return false, err
+		}
+	}
+	ready, message, err := r.workloadsReady(ctx, objects)
+	if err != nil {
+		return false, err
+	}
+	if !ready {
+		setLocalCondition(&result.Conditions, "Ready", metav1.ConditionFalse,
+			"WorkloadsProgressing", message)
+		setMajorUpgradeProgressCondition(desired, result, message)
+		return false, nil
+	}
+	if desired.MajorUpgrade != nil {
+		setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionFalse,
+			"PhaseAccepted", "The local major-upgrade phase completed")
+	}
+	return true, nil
+}
+
+func setMajorUpgradeProgressCondition(desired plan.SitePlan, result *ApplyResult, message string) {
+	if desired.MajorUpgrade == nil {
+		return
+	}
+	reason := "WorkloadsPending"
+	if strings.Contains(message, " failed:") {
+		switch desired.MajorUpgrade.Phase {
+		case plan.MajorUpgradePhasePreflight:
+			reason = "PreflightRejected"
+		case plan.MajorUpgradePhaseStartPrimary:
+			reason = "PrimaryAcceptanceFailed"
+		case plan.MajorUpgradePhaseRollbackStart:
+			reason = "RollbackAcceptanceFailed"
+		default:
+			reason = "WorkloadsFailed"
+		}
+	}
+	setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue, reason, message)
 }
 
 func (r *Reconciler) reconcileLoadBalancers(ctx context.Context, desired plan.SitePlan,

@@ -752,82 +752,77 @@ func TestRendererMajorUpgradeControlsServiceRestorationBoundary(t *testing.T) {
 	renderer := Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}
 
 	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseDrain
+	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
+		"postgres-vic-0": {replicas: 1, image: "postgres:17"},
+		"postgres-vic-1": {replicas: 1, image: "postgres:17"},
+		"pgpool-vic":     {replicas: 0},
+	})
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseStop
+	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
+		"postgres-vic-0": {replicas: 0, image: "postgres:17"},
+		"postgres-vic-1": {replicas: 0, image: "postgres:17"},
+		"pgpool-vic":     {replicas: 0},
+	})
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseStartPrimary
+	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
+		"postgres-vic-0": {replicas: 1, image: "postgres:18"},
+		"postgres-vic-1": {replicas: 0, image: "postgres:17"},
+		"pgpool-vic":     {replicas: 0},
+	})
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseReplicas
+	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
+		"postgres-vic-0": {replicas: 1, image: "postgres:18"},
+		"postgres-vic-1": {replicas: 1, image: "postgres:18"},
+		"pgpool-vic":     {replicas: 2},
+	})
+}
+
+type workloadExpectation struct {
+	replicas int32
+	image    string
+}
+
+func assertMajorWorkloadState(t *testing.T, renderer Renderer, desired plan.SitePlan,
+	expected map[string]workloadExpectation,
+) {
+	t.Helper()
 	objects, err := renderer.Workloads(desired)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, object := range objects {
-		switch object := object.(type) {
-		case *appsv1.StatefulSet:
-			if strings.HasPrefix(object.Name, "postgres-") && *object.Spec.Replicas != 1 {
-				t.Fatalf("%s replicas = %d during drain", object.Name, *object.Spec.Replicas)
-			}
-		case *appsv1.Deployment:
-			if object.Name == "pgpool" && *object.Spec.Replicas != 0 {
-				t.Fatalf("pgpool replicas = %d during drain", *object.Spec.Replicas)
-			}
-		}
-	}
-
-	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseStop
-	objects, err = renderer.Workloads(desired)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, object := range objects {
-		switch object := object.(type) {
-		case *appsv1.StatefulSet:
-			if strings.HasPrefix(object.Name, "postgres-") && *object.Spec.Replicas != 0 {
-				t.Fatalf("%s replicas = %d during stop", object.Name, *object.Spec.Replicas)
-			}
-		case *appsv1.Deployment:
-			if object.Name == "pgpool" && *object.Spec.Replicas != 0 {
-				t.Fatalf("pgpool replicas = %d during stop", *object.Spec.Replicas)
-			}
-		}
-	}
-
-	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseStartPrimary
-	objects, err = renderer.Workloads(desired)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, object := range objects {
+		var replicas int32
+		var image string
 		switch object := object.(type) {
 		case *appsv1.StatefulSet:
 			if !strings.HasPrefix(object.Name, "postgres-") {
 				continue
 			}
-			wantReplicas := int32(0)
-			wantImage := "postgres:17"
-			if object.Name == "postgres-vic-0" {
-				wantReplicas = 1
-				wantImage = "postgres:18"
-			}
-			if *object.Spec.Replicas != wantReplicas ||
-				object.Spec.Template.Spec.Containers[0].Image != wantImage {
-				t.Fatalf("%s replicas/image = %d/%s", object.Name, *object.Spec.Replicas,
-					object.Spec.Template.Spec.Containers[0].Image)
-			}
+			replicas = *object.Spec.Replicas
+			image = object.Spec.Template.Spec.Containers[0].Image
 		case *appsv1.Deployment:
-			if object.Name == "pgpool" && *object.Spec.Replicas != 2 {
-				t.Fatalf("pgpool replicas = %d during service restoration", *object.Spec.Replicas)
+			if !strings.HasPrefix(object.Name, "pgpool-") {
+				continue
 			}
+			replicas = *object.Spec.Replicas
+		default:
+			continue
 		}
-	}
-
-	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseReplicas
-	objects, err = renderer.Workloads(desired)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, object := range objects {
-		statefulSet, ok := object.(*appsv1.StatefulSet)
-		if ok && strings.HasPrefix(statefulSet.Name, "postgres-") &&
-			statefulSet.Spec.Template.Spec.Containers[0].Image != "postgres:18" {
-			t.Fatalf("%s image = %s during replica reseed", statefulSet.Name,
-				statefulSet.Spec.Template.Spec.Containers[0].Image)
+		want, ok := expected[object.GetName()]
+		if !ok {
+			continue
 		}
+		if replicas != want.replicas || want.image != "" && image != want.image {
+			t.Errorf("%s replicas/image = %d/%s, want %d/%s",
+				object.GetName(), replicas, image, want.replicas, want.image)
+		}
+		delete(expected, object.GetName())
+	}
+	for name := range expected {
+		t.Errorf("%s was not rendered", name)
 	}
 }
 

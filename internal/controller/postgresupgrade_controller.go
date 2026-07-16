@@ -713,7 +713,7 @@ func (r *PostgresUpgradeReconciler) validateMajorUpgradeContract(ctx context.Con
 	if !strings.Contains(benchmark.Evidence, "@sha256:") {
 		return fmt.Errorf("benchmark evidence must be pinned by sha256 digest")
 	}
-	if benchmark.TestedAt.Time.After(now.Add(5 * time.Minute)) {
+	if benchmark.TestedAt.After(now.Add(5 * time.Minute)) {
 		return fmt.Errorf("benchmark testedAt is in the future")
 	}
 	if now.Sub(benchmark.TestedAt.Time) > 30*24*time.Hour {

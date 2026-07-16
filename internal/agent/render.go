@@ -175,6 +175,19 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	if desired.TDE.Enabled {
 		objects = append(objects, r.tdeBootstrapConfig(desired, labels))
 	}
+	postgresObjects, err := r.postgresWorkloads(workloadPlan, desired, labels)
+	if err != nil {
+		return nil, err
+	}
+	objects = append(objects, postgresObjects...)
+	objects = append(objects, r.majorUpgradePhaseJobs(desired)...)
+	return objects, nil
+}
+
+func (r Renderer) postgresWorkloads(workloadPlan, desired plan.SitePlan,
+	labels map[string]string,
+) ([]client.Object, error) {
+	var objects []client.Object
 	for ordinal := int32(0); ordinal < desired.Site.Components.PostgresReplicas; ordinal++ {
 		name := fmt.Sprintf("postgres-%s-%d", desired.Site.Name, ordinal)
 		if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed &&
@@ -202,6 +215,11 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	if desired.TDE.Enabled && !majorWriteServiceStopped(desired) {
 		objects = append(objects, r.tdeAuditJob(desired, labels))
 	}
+	return objects, nil
+}
+
+func (r Renderer) majorUpgradePhaseJobs(desired plan.SitePlan) []client.Object {
+	var objects []client.Object
 	if desired.MajorUpgrade != nil &&
 		desired.MajorUpgrade.Phase == plan.MajorUpgradePhasePreflight &&
 		desired.Site.Role == api.SiteRoleData {
@@ -217,7 +235,7 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 		memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name) {
 		objects = append(objects, r.MajorRollbackAcceptanceJob(desired))
 	}
-	return objects, nil
+	return objects
 }
 
 func majorMemberStopped(desired plan.SitePlan, member string) bool {

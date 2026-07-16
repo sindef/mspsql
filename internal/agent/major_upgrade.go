@@ -517,7 +517,7 @@ func (r Renderer) majorAcceptanceJob(desired plan.SitePlan, prefix, image string
 ) *batchv1.Job {
 	upgrade := desired.MajorUpgrade
 	host := upgrade.Primary + "." + desired.Site.Namespace + ".svc"
-	schema := "mspsql_upgrade_" + operationHash(upgrade.OperationUID)
+	schemaName := "mspsql_upgrade_" + operationHash(upgrade.OperationUID)
 	script := fmt.Sprintf(`set -eu
 export PGUSER="$(cat /credentials/superuser-username)"
 export PGPASSWORD="$(cat /credentials/superuser-password)"
@@ -541,7 +541,7 @@ INSERT INTO %s.write_test VALUES (1);
 SELECT 1 / (count(*) = 1)::int FROM %s.write_test;
 DROP SCHEMA %s CASCADE;
 SQL
-`, host, host, expectedMajor, host, schema, schema, schema, schema, schema, schema)
+`, host, host, expectedMajor, host, schemaName, schemaName, schemaName, schemaName, schemaName, schemaName)
 	return majorJob(desired, prefix+operationHash(upgrade.OperationUID),
 		image, script, []corev1.Volume{
 			{Name: "credentials", VolumeSource: corev1.VolumeSource{
