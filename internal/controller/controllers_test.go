@@ -509,7 +509,7 @@ func TestAggregateTopologyRequiresCurrentConsensus(t *testing.T) {
 			{Name: "vic", Role: api.SiteRoleData},
 			{Name: "qld", Role: api.SiteRoleData},
 			{Name: "nsw", Role: api.SiteRoleWitness},
-		}},
+		}, Postgres: api.PostgresSpec{SynchronousStandbyCount: 1}},
 		Status: api.MultiSitePostgresStatus{Sites: []api.SiteRevisionStatus{
 			{
 				Name: "vic", Primary: "postgres-vic-0",
@@ -524,9 +524,16 @@ func TestAggregateTopologyRequiresCurrentConsensus(t *testing.T) {
 	aggregateTopology(instance, now)
 	if instance.Status.Primary != "postgres-vic-0" ||
 		len(instance.Status.SynchronousStandbys) != 1 ||
-		!conditionTrue(instance.Status.Conditions, "TopologyReady") {
+		!conditionTrue(instance.Status.Conditions, "TopologyReady") ||
+		!conditionTrue(instance.Status.Conditions, "SynchronousReplicationReady") {
 		t.Fatalf("status = %#v", instance.Status)
 	}
+	instance.Status.Sites[1].SynchronousStandbys = nil
+	aggregateTopology(instance, now)
+	if conditionTrue(instance.Status.Conditions, "SynchronousReplicationReady") {
+		t.Fatalf("missing synchronous observer consensus was accepted: %#v", instance.Status)
+	}
+	instance.Status.Sites[1].SynchronousStandbys = []string{"postgres-qld-0"}
 
 	instance.Status.Sites[1].Primary = "postgres-qld-0"
 	aggregateTopology(instance, now)

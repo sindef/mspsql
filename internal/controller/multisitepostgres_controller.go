@@ -292,6 +292,14 @@ func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgr
 			"Waiting for a common etcd trust bundle across all sites")
 		return
 	}
+	if instance.Spec.Postgres.SynchronousStandbyCount > 0 &&
+		!conditionTrue(instance.Status.Conditions, "SynchronousReplicationReady") {
+		instance.Status.Phase = "Reconciling"
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "SynchronousReplicationPending",
+			"Waiting for the configured synchronous standby count")
+		return
+	}
 	instance.Status.Phase = "Ready"
 	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 		metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
@@ -631,6 +639,7 @@ func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, no
 		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
 			metav1.ConditionFalse, "PostgreSQLStopped",
 			"Topology observation is suspended while PostgreSQL is intentionally stopped")
+		setSynchronousReplicationCondition(instance)
 		return
 	}
 	majorPrimaryOnly := majorPhase == plan.MajorUpgradePhaseStartPrimary ||
@@ -666,6 +675,7 @@ func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, no
 		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
 			metav1.ConditionFalse, "InsufficientObservations",
 			fmt.Sprintf("Received %d of %d current data-site topology observations", len(observed), dataSites))
+		setSynchronousReplicationCondition(instance)
 		return
 	}
 	if len(primaryCounts) != 1 {
@@ -674,6 +684,7 @@ func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, no
 		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
 			metav1.ConditionFalse, "ConflictingObservations",
 			"Data sites disagree about the current Patroni leader")
+		setSynchronousReplicationCondition(instance)
 		return
 	}
 	for primary := range primaryCounts {
@@ -694,6 +705,21 @@ func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, no
 	slices.Sort(instance.Status.SynchronousStandbys)
 	setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
 		metav1.ConditionTrue, "ObserverConsensus", "All data sites report the same Patroni leader")
+	setSynchronousReplicationCondition(instance)
+}
+
+func setSynchronousReplicationCondition(instance *multisitepostgresv1alpha1.MultiSitePostgres) {
+	required := int(instance.Spec.Postgres.SynchronousStandbyCount)
+	observed := len(instance.Status.SynchronousStandbys)
+	if observed < required {
+		setCondition(&instance.Status.Conditions, instance.Generation, "SynchronousReplicationReady",
+			metav1.ConditionFalse, "StandbysPending",
+			fmt.Sprintf("Observed %d of %d required synchronous standbys", observed, required))
+		return
+	}
+	setCondition(&instance.Status.Conditions, instance.Generation, "SynchronousReplicationReady",
+		metav1.ConditionTrue, "RequiredStandbysReady",
+		fmt.Sprintf("Observed all %d required synchronous standbys", required))
 }
 
 // SetupWithManager sets up the controller with the Manager.
