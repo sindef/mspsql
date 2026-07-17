@@ -74,8 +74,9 @@ test-e2e: manifests generate fmt vet ## Run hub and three-site conformance in is
 	./test/kind/run.sh
 
 .PHONY: test-race
-test-race: ## Run all Go tests with the race detector.
-	go test -race ./...
+test-race: setup-envtest ## Run all Go tests with the race detector.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
+		go test -race ./...
 
 .PHONY: verify-generated
 verify-generated: manifests generate proto ## Fail when committed generated artifacts are stale.
