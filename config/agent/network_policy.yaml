@@ -16,11 +16,11 @@ spec:
     ports:
     - {protocol: TCP, port: 8080}
   egress:
-  - to:
-    - namespaceSelector: {}
-    ports:
+  - ports:
     - {protocol: TCP, port: 443}
     - {protocol: TCP, port: 6443}
+    - {protocol: TCP, port: 8200}
+    - {protocol: TCP, port: 9444}
   - ports:
     - {protocol: UDP, port: 51820}
     - {protocol: TCP, port: 53}
