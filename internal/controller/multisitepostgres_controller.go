@@ -78,6 +78,9 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 	instance.Status.ObservedGeneration = instance.Generation
+	if err := r.aggregateDeclarationAndUpgradeStatus(ctx, &instance); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	registrations := make(map[string]*multisitepostgresv1alpha1.SiteRegistration, len(instance.Spec.Sites))
 	allConnected := true
@@ -299,6 +302,70 @@ func (r *MultiSitePostgresReconciler) lifecycleOperationActive(ctx context.Conte
 		}
 	}
 	return false, nil
+}
+
+func (r *MultiSitePostgresReconciler) aggregateDeclarationAndUpgradeStatus(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) error {
+	declarations := 0
+	pending := 0
+	var databases multisitepostgresv1alpha1.PostgresDatabaseList
+	if err := r.List(ctx, &databases, client.InNamespace(instance.Namespace)); err != nil {
+		return err
+	}
+	for i := range databases.Items {
+		database := &databases.Items[i]
+		if database.Spec.InstanceRef != instance.Name || !database.DeletionTimestamp.IsZero() {
+			continue
+		}
+		declarations++
+		if database.Status.ObservedGeneration != database.Generation ||
+			!conditionTrue(database.Status.Conditions, "Ready") {
+			pending++
+		}
+	}
+	var users multisitepostgresv1alpha1.PostgresUserList
+	if err := r.List(ctx, &users, client.InNamespace(instance.Namespace)); err != nil {
+		return err
+	}
+	for i := range users.Items {
+		user := &users.Items[i]
+		if user.Spec.InstanceRef != instance.Name || !user.DeletionTimestamp.IsZero() {
+			continue
+		}
+		declarations++
+		if user.Status.ObservedGeneration != user.Generation ||
+			!conditionTrue(user.Status.Conditions, "Ready") {
+			pending++
+		}
+	}
+	if pending > 0 {
+		setCondition(&instance.Status.Conditions, instance.Generation, "DatabasesReconciled",
+			metav1.ConditionFalse, "DeclarationsPending",
+			fmt.Sprintf("Waiting for %d of %d database or user declarations", pending, declarations))
+	} else {
+		setCondition(&instance.Status.Conditions, instance.Generation, "DatabasesReconciled",
+			metav1.ConditionTrue, "AllDeclarationsReady",
+			fmt.Sprintf("All %d database and user declarations are reconciled", declarations))
+	}
+
+	var upgrades multisitepostgresv1alpha1.PostgresUpgradeList
+	if err := r.List(ctx, &upgrades, client.InNamespace(instance.Namespace)); err != nil {
+		return err
+	}
+	for i := range upgrades.Items {
+		upgrade := &upgrades.Items[i]
+		if upgrade.Spec.InstanceRef == instance.Name && upgrade.DeletionTimestamp.IsZero() &&
+			upgrade.Status.Phase != "Completed" && upgrade.Status.Phase != "Failed" {
+			setCondition(&instance.Status.Conditions, instance.Generation, "UpgradeInProgress",
+				metav1.ConditionTrue, "UpgradeActive",
+				fmt.Sprintf("Upgrade %s is in phase %s", upgrade.Name, upgrade.Status.Phase))
+			return nil
+		}
+	}
+	setCondition(&instance.Status.Conditions, instance.Generation, "UpgradeInProgress",
+		metav1.ConditionFalse, "NoUpgradeActive", "No upgrade operation is active")
+	return nil
 }
 
 func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
@@ -803,8 +870,30 @@ func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					Namespace: restore.Namespace, Name: restore.Spec.TargetInstanceRef,
 				}}}
 			})).
+		Watches(&multisitepostgresv1alpha1.PostgresDatabase{},
+			handler.EnqueueRequestsFromMapFunc(r.instanceForDeclaration)).
+		Watches(&multisitepostgresv1alpha1.PostgresUser{},
+			handler.EnqueueRequestsFromMapFunc(r.instanceForDeclaration)).
 		Named("multisitepostgres").
 		Complete(r)
+}
+
+func (r *MultiSitePostgresReconciler) instanceForDeclaration(_ context.Context,
+	object client.Object,
+) []reconcile.Request {
+	instanceRef := ""
+	switch declaration := object.(type) {
+	case *multisitepostgresv1alpha1.PostgresDatabase:
+		instanceRef = declaration.Spec.InstanceRef
+	case *multisitepostgresv1alpha1.PostgresUser:
+		instanceRef = declaration.Spec.InstanceRef
+	}
+	if instanceRef == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: object.GetNamespace(), Name: instanceRef,
+	}}}
 }
 
 func (r *MultiSitePostgresReconciler) instancesForRegistration(ctx context.Context,

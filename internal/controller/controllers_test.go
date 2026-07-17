@@ -665,6 +665,50 @@ func TestLifecycleOperationBlocksBackupBeforeInstanceAnnotation(t *testing.T) {
 	}
 }
 
+func TestInstanceAggregatesDeclarationAndUpgradeConditions(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders", Generation: 5},
+	}
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-api", Generation: 2},
+		Spec:       api.PostgresDatabaseSpec{InstanceRef: "orders"},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-patch"},
+		Spec:       api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status:     api.PostgresUpgradeStatus{Phase: "RollingMembers"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(database, upgrade).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube}
+	if err := reconciler.aggregateDeclarationAndUpgradeStatus(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	declarations := meta.FindStatusCondition(instance.Status.Conditions, "DatabasesReconciled")
+	upgrading := meta.FindStatusCondition(instance.Status.Conditions, "UpgradeInProgress")
+	if declarations == nil || declarations.Status != metav1.ConditionFalse ||
+		declarations.ObservedGeneration != instance.Generation ||
+		upgrading == nil || upgrading.Status != metav1.ConditionTrue {
+		t.Fatalf("conditions = %#v", instance.Status.Conditions)
+	}
+	database.Status.ObservedGeneration = database.Generation
+	database.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}
+	if err := kube.Update(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	upgrade.Status.Phase = "Completed"
+	if err := kube.Update(context.Background(), upgrade); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.aggregateDeclarationAndUpgradeStatus(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if !conditionTrue(instance.Status.Conditions, "DatabasesReconciled") ||
+		conditionTrue(instance.Status.Conditions, "UpgradeInProgress") {
+		t.Fatalf("completed conditions = %#v", instance.Status.Conditions)
+	}
+}
+
 func TestInstanceSecretClaimsAreExclusive(t *testing.T) {
 	backup := func(prefix, path string) *api.BackupSpec {
 		return &api.BackupSpec{Repository: api.BackupRepositorySpec{
