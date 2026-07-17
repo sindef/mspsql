@@ -947,7 +947,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 			Secret: &corev1.SecretVolumeSource{SecretName: "patroni-etcd-client-tls"},
 		}},
 		{Name: "postgres-tls", VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{SecretName: name + "-tls"},
+			Secret: &corev1.SecretVolumeSource{SecretName: name + "-tls", DefaultMode: ptr(int32(0o440))},
 		}},
 	}
 	if desired.TDE.Enabled {

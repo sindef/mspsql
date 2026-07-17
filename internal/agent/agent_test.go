@@ -227,6 +227,12 @@ func assertPostgresOwnsDataDirectory(t *testing.T, statefulSet *appsv1.StatefulS
 			t.Fatalf("PostgreSQL PVC root is used as PGDATA: %#v", mount)
 		}
 	}
+	for _, volume := range statefulSet.Spec.Template.Spec.Volumes {
+		if volume.Name == "postgres-tls" &&
+			(volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode > 0o440) {
+			t.Fatalf("PostgreSQL private key mode is unsafe: %#v", volume.Secret.DefaultMode)
+		}
+	}
 }
 
 func assertEtcdSupportsLoadBalancedPeers(t *testing.T, statefulSet *appsv1.StatefulSet) {
