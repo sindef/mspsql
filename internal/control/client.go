@@ -94,10 +94,7 @@ func (c *AgentClient) Run(ctx context.Context) error {
 	if err := c.sendInventory(ctx, stream); err != nil {
 		return err
 	}
-	if c.Connection != nil {
-		c.Connection(true)
-		defer c.Connection(false)
-	}
+	defer c.markConnected()()
 	if c.active == nil {
 		c.active = map[string]int64{}
 	}
@@ -188,6 +185,14 @@ func (c *AgentClient) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (c *AgentClient) markConnected() func() {
+	if c.Connection == nil {
+		return func() {}
+	}
+	c.Connection(true)
+	return func() { c.Connection(false) }
 }
 
 func (c *AgentClient) requestCertificate(ctx context.Context,

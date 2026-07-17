@@ -30,7 +30,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -152,7 +151,7 @@ func main() {
 		LockConfig: resourcelock.ResourceLockConfig{Identity: identity},
 	}
 	ctx := ctrl.SetupSignalHandler()
-	serveMetrics(ctx, metricsAddress, agentMetrics, log)
+	serveMetrics(ctx, metricsAddress, agentMetrics)
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock: lock, LeaseDuration: 60 * time.Second, RenewDeadline: 40 * time.Second,
 		RetryPeriod: 15 * time.Second, ReleaseOnCancel: true, Name: "mspsql-site-agent",
@@ -306,12 +305,11 @@ func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.
 	}
 }
 
-func serveMetrics(ctx context.Context, address string, agentMetrics *telemetry.AgentMetrics,
-	log logr.Logger,
-) {
+func serveMetrics(ctx context.Context, address string, agentMetrics *telemetry.AgentMetrics) {
 	if address == "" || address == "0" {
 		return
 	}
+	log := crlog.FromContext(ctx).WithName("metrics")
 	server := &http.Server{
 		Addr: address, Handler: promhttp.HandlerFor(agentMetrics.Registry(), promhttp.HandlerOpts{}),
 		ReadHeaderTimeout: 5 * time.Second,
