@@ -15,6 +15,7 @@ gateway_image="${GATEWAY_IMG:-mspsql-gateway:test}"
 wireguard_image="${WIREGUARD_IMG:-mspsql-wireguard:test}"
 tun_plugin_image="${TUN_PLUGIN_IMG:-mspsql-tun-device-plugin:test}"
 vault_image="hashicorp/vault:1.21.4"
+minio_image="minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
 cert_manager_version="v1.21.0"
 metallb_version="v0.16.0"
 temp_dir="$(mktemp -d)"
@@ -66,6 +67,7 @@ cleanup() {
       rm -f "${site_kubeconfig}"
     done
   fi
+  docker rm -f mspsql-minio >/dev/null 2>&1 || true
   for cluster in "${clusters[@]}"; do
     kind delete cluster --name "${cluster}" >/dev/null 2>&1 || true
   done
@@ -81,6 +83,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker pull "${vault_image}"
+docker pull "${minio_image}"
 curl -fsSL -o "${temp_dir}/cert-manager.yaml" \
   "https://github.com/cert-manager/cert-manager/releases/download/${cert_manager_version}/cert-manager.yaml"
 echo "6e499c3f1ab356abe79a7853911f80cb09c213885bfdf81092fdff142ba63c4a  ${temp_dir}/cert-manager.yaml" |
@@ -118,6 +121,33 @@ if [[ "${prefix_length}" -gt 16 ]]; then
   echo "KIND network ${kind_subnet} is too small for isolated MetalLB test pools" >&2
   exit 1
 fi
+
+minio_ip="${subnet_a}.${subnet_b}.250.250"
+mkdir -p "${temp_dir}/minio-certs/CAs"
+openssl req -newkey rsa:2048 -nodes -subj "/CN=${minio_ip}" \
+  -keyout "${temp_dir}/minio-certs/private.key" \
+  -out "${temp_dir}/minio.csr" >/dev/null 2>&1
+printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\n' "${minio_ip}" >"${temp_dir}/minio-extensions.cnf"
+openssl x509 -req -days 2 -sha256 -in "${temp_dir}/minio.csr" \
+  -CA "${temp_dir}/ca.crt" -CAkey "${temp_dir}/ca.key" \
+  -CAserial "${temp_dir}/minio-ca.srl" -CAcreateserial \
+  -extfile "${temp_dir}/minio-extensions.cnf" \
+  -out "${temp_dir}/minio-certs/public.crt" >/dev/null 2>&1
+cp "${temp_dir}/ca.crt" "${temp_dir}/minio-certs/CAs/ca.crt"
+docker run -d --name mspsql-minio --network kind --ip "${minio_ip}" \
+  -e MINIO_ROOT_USER=access -e MINIO_ROOT_PASSWORD=secretsecret \
+  -v "${temp_dir}/minio-certs:/root/.minio/certs:ro" \
+  "${minio_image}" server /data --address :9000 >/dev/null
+for _ in $(seq 1 60); do
+  if curl -fsS --cacert "${temp_dir}/ca.crt" \
+    "https://${minio_ip}:9000/minio/health/live" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+curl -fsS --cacert "${temp_dir}/ca.crt" "https://${minio_ip}:9000/minio/health/live" >/dev/null
+docker exec mspsql-minio mc alias set local "https://${minio_ip}:9000" access secretsecret --insecure
+docker exec mspsql-minio mc mb --ignore-existing local/mspsql-backups --insecure
 
 route_site_pool() {
   local target_site="$1"
@@ -243,6 +273,8 @@ spec:
     - {name: test, kind: ClusterIssuer, group: cert-manager.io}
     pgpool:
     - {name: test, kind: ClusterIssuer, group: cert-manager.io}
+    backup:
+    - {name: test, kind: ClusterIssuer, group: cert-manager.io}
   metallbAddressPools: [database-services]
 EOF
   for _ in $(seq 1 60); do
@@ -255,6 +287,8 @@ EOF
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
   curl -fsS "${registration_url}" | kubectl --kubeconfig="${site_kubeconfig}" apply -f -
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic vault-ca \
+    --from-file=ca.crt="${temp_dir}/ca.crt"
+  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic minio-ca \
     --from-file=ca.crt="${temp_dir}/ca.crt"
   rm -f "${site_kubeconfig}"
   for _ in $(seq 1 120); do

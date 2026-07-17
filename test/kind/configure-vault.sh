@@ -80,7 +80,7 @@ EOF
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
   mspsql/postgres/orders/pgpool adminUsername=admin adminPassword=pool
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
-  mspsql/postgres/orders/backup s3AccessKey=access s3SecretKey=secret repositoryCipherPassphrase=cipher
+  mspsql/postgres/orders/backup s3AccessKey=access s3SecretKey=secretsecret repositoryCipherPassphrase=cipher
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault kv put \
   mspsql/postgres/orders/users/orders-app password=application-secret
 
