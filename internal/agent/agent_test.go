@@ -202,6 +202,58 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	}
 }
 
+func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
+	desired := plan.SitePlan{
+		SiteUID: "site", InstanceUID: "instance", Revision: 1,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 1, PgpoolReplicas: 1},
+			Storage:    api.SiteStorage{Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{}},
+		},
+		Postgres: api.PostgresSpec{Image: "postgres:17"},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-nsw-0": "10.0.1.1", "etcd-qld-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.10",
+		},
+	}
+	objects, err := (Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}).Workloads(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config *corev1.ConfigMap
+	var deployment *appsv1.Deployment
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *corev1.ConfigMap:
+			if object.Name == "pgpool-vic" {
+				config = object
+			}
+		case *appsv1.Deployment:
+			deployment = object
+		}
+	}
+	if config == nil || deployment == nil {
+		t.Fatal("Pgpool resources were not rendered")
+	}
+	for _, expected := range []string{
+		"enable_pool_hba = on", "ssl = on", "ssl_key = '/tls/tls.key'",
+		"ssl_cert = '/tls/tls.crt'", "ssl_ca_cert = '/tls/ca.crt'",
+	} {
+		if !strings.Contains(config.Data["pgpool.conf"], expected) {
+			t.Errorf("Pgpool configuration is missing %q", expected)
+		}
+	}
+	if config.Data["pool_hba.conf"] != "hostssl all all 0.0.0.0/0 password\n" {
+		t.Errorf("pool_hba.conf = %q", config.Data["pool_hba.conf"])
+	}
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 ||
+		!strings.Contains(deployment.Spec.Template.Spec.InitContainers[0].Command[2], "chmod 600 /tls/tls.key") ||
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls-source") ||
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls") {
+		t.Fatalf("Pgpool TLS preparation is incomplete: %#v", deployment.Spec.Template.Spec)
+	}
+}
+
 func TestPVCTemplateUsesClusterDefaultStorageClass(t *testing.T) {
 	defaulted := pvcTemplate(nil, nil)
 	if defaulted.Spec.StorageClassName != nil {

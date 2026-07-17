@@ -1140,8 +1140,11 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 			Namespace: desired.Site.Namespace, Name: "pgpool-" + desired.Site.Name, Labels: copyMap(labels),
 		},
 		Data: map[string]string{
-			"pgpool.conf":   "listen_addresses = '*'\nport = 5432\nssl = on\n" + strings.Join(backends, ""),
-			"pool_hba.conf": "hostssl all all 0.0.0.0/0 scram-sha-256\n",
+			"pgpool.conf": "listen_addresses = '*'\nport = 5432\n" +
+				"enable_pool_hba = on\nssl = on\n" +
+				"ssl_key = '/tls/tls.key'\nssl_cert = '/tls/tls.crt'\n" +
+				"ssl_ca_cert = '/tls/ca.crt'\n" + strings.Join(backends, ""),
+			"pool_hba.conf": "hostssl all all 0.0.0.0/0 password\n",
 		},
 	}
 }
@@ -1165,6 +1168,19 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 						RunAsNonRoot: ptr(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Affinity: antiAffinity(workloadLabels),
+					InitContainers: []corev1.Container{{
+						Name: "prepare-tls", Image: r.Images.Pgpool,
+						Command: []string{"/bin/sh", "-ec",
+							"cp /tls-source/tls.crt /tls/tls.crt; " +
+								"cp /tls-source/tls.key /tls/tls.key; " +
+								"cp /tls-source/ca.crt /tls/ca.crt; " +
+								"chmod 644 /tls/tls.crt /tls/ca.crt; chmod 600 /tls/tls.key"},
+						SecurityContext: restrictedContainer(),
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "tls-source", MountPath: "/tls-source", ReadOnly: true},
+							{Name: "tls", MountPath: "/tls"},
+						},
+					}},
 					Containers: []corev1.Container{{
 						Name: "pgpool", Image: r.Images.Pgpool,
 						Command: []string{"pgpool", "-n", "-f", "/config/pgpool.conf", "-a", "/config/pool_hba.conf"},
@@ -1187,9 +1203,10 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 								Name: "pgpool-" + desired.Site.Name,
 							}},
 						}},
-						{Name: "tls", VolumeSource: corev1.VolumeSource{
+						{Name: "tls-source", VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{SecretName: "pgpool-" + desired.Site.Name + "-tls"},
 						}},
+						{Name: "tls", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
 				},
 			},
