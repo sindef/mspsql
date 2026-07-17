@@ -634,7 +634,8 @@ func majorJob(desired plan.SitePlan, name, image, script string,
 					AutomountServiceAccountToken: ptr(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr(true), FSGroup: ptr(int64(26)),
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						FSGroupChangePolicy: ptr(corev1.FSGroupChangeOnRootMismatch),
+						SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{{
 						Name: "upgrade", Image: image, Command: []string{"/bin/sh", "-ec", script},

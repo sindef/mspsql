@@ -1303,6 +1303,11 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 		if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 {
 			t.Fatalf("destructive upgrade backoffLimit = %v", job.Spec.BackoffLimit)
 		}
+		security := job.Spec.Template.Spec.SecurityContext
+		if security.FSGroupChangePolicy == nil ||
+			*security.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+			t.Fatalf("upgrade fsGroup change policy = %v", security.FSGroupChangePolicy)
+		}
 		claim := job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName
 		if claim != "data-postgres-vic-1-0" {
 			t.Fatalf("upgrade PVC = %q", claim)
