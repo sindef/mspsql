@@ -85,11 +85,22 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if err := r.Get(ctx, client.ObjectKey{Name: site.SiteRegistrationRef}, &registration); err != nil {
 			setCondition(&instance.Status.Conditions, instance.Generation, "SitesRegistered",
 				metav1.ConditionFalse, "SiteNotFound", err.Error())
+			setCondition(&instance.Status.Conditions, instance.Generation, "StorageValidated",
+				metav1.ConditionFalse, "SiteUnavailable", "Site policy cannot be validated")
+			setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
+				metav1.ConditionFalse, "SiteUnavailable", "A referenced site is unavailable")
+			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+				metav1.ConditionFalse, "SiteNotFound", err.Error())
 			instance.Status.Phase = "ValidatingSites"
 			return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 		}
 		if err := validateSitePolicy(site, &registration); err != nil {
+			setCondition(&instance.Status.Conditions, instance.Generation, "SitesRegistered",
+				metav1.ConditionFalse, "SiteValidationIncomplete",
+				"A referenced site does not satisfy the instance policy")
 			setCondition(&instance.Status.Conditions, instance.Generation, "StorageValidated",
+				metav1.ConditionFalse, "SitePolicyRejected", fmt.Sprintf("%s: %v", site.Name, err))
+			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 				metav1.ConditionFalse, "SitePolicyRejected", fmt.Sprintf("%s: %v", site.Name, err))
 			instance.Status.Phase = "ValidatingSites"
 			return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
@@ -114,6 +125,8 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.SynchronousStandbys = nil
 		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyReady",
 			metav1.ConditionFalse, "AgentDisconnected", "Topology requires every data-site observer")
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "AgentDisconnected", "One or more site agents are disconnected")
 		instance.Status.Phase = "Pending"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}

@@ -168,6 +168,40 @@ func TestRegistrationStatusEnqueuesReferencingInstances(t *testing.T) {
 	}
 }
 
+func TestMissingSiteClearsStaleReadiness(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", Generation: 2,
+			Finalizers: []string{instanceFinalizer},
+		},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{{
+			Name: "vic", SiteRegistrationRef: "missing",
+		}}},
+		Status: api.MultiSitePostgresStatus{Phase: "Ready", Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllSitesReady",
+		}}},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(instance).WithObjects(instance).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(instance),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &observed); err != nil {
+		t.Fatal(err)
+	}
+	ready := meta.FindStatusCondition(observed.Status.Conditions, "Ready")
+	if observed.Status.Phase != "ValidatingSites" || ready == nil ||
+		ready.Status != metav1.ConditionFalse || ready.Reason != "SiteNotFound" ||
+		ready.ObservedGeneration != observed.Generation {
+		t.Fatalf("status = %#v", observed.Status)
+	}
+}
+
 func TestMergeReconciledStatusPreservesAgentObservations(t *testing.T) {
 	now := metav1.NewTime(time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC))
 	current := api.MultiSitePostgresStatus{
