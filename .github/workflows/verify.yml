@@ -29,6 +29,12 @@ jobs:
         run: |
           test -z "$(gofmt -l .)"
           git diff --check
+      - name: Check shell scripts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y shellcheck
+          find . -type f -name '*.sh' -not -path './.git/*' -print0 | xargs -0 -r bash -n
+          find . -type f -name '*.sh' -not -path './.git/*' -print0 | xargs -0 -r shellcheck
 
   race:
     permissions:

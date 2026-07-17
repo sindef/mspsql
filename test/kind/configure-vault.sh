@@ -6,7 +6,7 @@ kubeconfig="$1"
 site="$2"
 ca_cert="$3"
 ca_key="$4"
-kubectl=(kubectl --kubeconfig="${kubeconfig}")
+kubectl=(kubectl "--kubeconfig=${kubeconfig}")
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "${temp_dir}"' EXIT
 
@@ -32,13 +32,13 @@ if ! "${kubectl[@]}" -n vault rollout status deployment/vault --timeout=180s; th
   "${kubectl[@]}" -n vault logs deployment/vault --all-containers || true
   exit 1
 fi
-vault_env=(env VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/vault/tls/ca.crt)
+vault_env=(env "VAULT_ADDR=https://127.0.0.1:8200" "VAULT_CACERT=/vault/tls/ca.crt")
 init="$("${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" \
   vault operator init -format=json -key-shares=1 -key-threshold=1)"
 unseal_key="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["unseal_keys_b64"][0])' <<<"${init}")"
 root_token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["root_token"])' <<<"${init}")"
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault operator unseal "${unseal_key}"
-vault_env+=(VAULT_TOKEN="${root_token}")
+vault_env+=("VAULT_TOKEN=${root_token}")
 "${kubectl[@]}" create namespace vault-auth-test
 "${kubectl[@]}" -n vault-auth-test create serviceaccount mspsql-workload
 

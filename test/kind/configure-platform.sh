@@ -9,7 +9,7 @@ ca_certificate="$4"
 ca_private_key="$5"
 cert_manager_manifest="$6"
 metallb_manifest="$7"
-kubectl=(kubectl --kubeconfig="${kubeconfig}")
+kubectl=(kubectl "--kubeconfig=${kubeconfig}")
 
 "${kubectl[@]}" apply -f "${cert_manager_manifest}"
 "${kubectl[@]}" -n cert-manager rollout status deployment/cert-manager --timeout=300s
