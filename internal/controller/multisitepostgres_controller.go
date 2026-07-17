@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -230,8 +231,13 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if allSitesApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
 		setAppliedInstanceReady(&instance, restorePlan, majorUpgradePlan)
 	}
+	operationActive, err := r.lifecycleOperationActive(ctx, &instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	backupRequeue, err := r.reconcileBackupSchedules(ctx, &instance, now(),
-		backupSchedulingReady(&instance, restorePlan, upgradePlan, majorUpgradePlan))
+		backupSchedulingReady(&instance, restorePlan, upgradePlan, majorUpgradePlan,
+			operationActive))
 	if err != nil {
 		setCondition(&instance.Status.Conditions, instance.Generation, "BackupReady",
 			metav1.ConditionFalse, "ScheduleInvalid", err.Error())
@@ -258,13 +264,41 @@ func tdeKeyCreatorName(enabled bool, sites []multisitepostgresv1alpha1.PostgresS
 
 func backupSchedulingReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
 	restorePlan *plan.RestorePlan, upgradePlan *plan.UpgradePlan,
-	majorUpgradePlan *plan.MajorUpgradePlan,
+	majorUpgradePlan *plan.MajorUpgradePlan, operationActive bool,
 ) bool {
 	return conditionTrue(instance.Status.Conditions, "Ready") &&
 		conditionTrue(instance.Status.Conditions, "TopologyReady") &&
 		(instance.Spec.Backup == nil ||
 			conditionTrue(instance.Status.Conditions, "BackupTLSReady")) &&
-		restorePlan == nil && upgradePlan == nil && majorUpgradePlan == nil
+		restorePlan == nil && upgradePlan == nil && majorUpgradePlan == nil && !operationActive
+}
+
+func (r *MultiSitePostgresReconciler) lifecycleOperationActive(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) (bool, error) {
+	var upgrades multisitepostgresv1alpha1.PostgresUpgradeList
+	if err := r.List(ctx, &upgrades, client.InNamespace(instance.Namespace)); err != nil {
+		return false, err
+	}
+	for i := range upgrades.Items {
+		upgrade := &upgrades.Items[i]
+		if upgrade.Spec.InstanceRef == instance.Name && upgrade.DeletionTimestamp.IsZero() &&
+			upgrade.Status.Phase != "Completed" && upgrade.Status.Phase != "Failed" {
+			return true, nil
+		}
+	}
+	var restores multisitepostgresv1alpha1.PostgresRestoreList
+	if err := r.List(ctx, &restores, client.InNamespace(instance.Namespace)); err != nil {
+		return false, err
+	}
+	for i := range restores.Items {
+		restore := &restores.Items[i]
+		if restore.Spec.TargetInstanceRef == instance.Name && restore.DeletionTimestamp.IsZero() &&
+			restore.Status.Phase != "Completed" && restore.Status.Phase != "Failed" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgres,
@@ -755,6 +789,20 @@ func (r *MultiSitePostgresReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Watches(&multisitepostgresv1alpha1.SiteRegistration{},
 			handler.EnqueueRequestsFromMapFunc(r.instancesForRegistration)).
+		Watches(&multisitepostgresv1alpha1.PostgresUpgrade{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []reconcile.Request {
+				upgrade := object.(*multisitepostgresv1alpha1.PostgresUpgrade)
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Namespace: upgrade.Namespace, Name: upgrade.Spec.InstanceRef,
+				}}}
+			})).
+		Watches(&multisitepostgresv1alpha1.PostgresRestore{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object client.Object) []reconcile.Request {
+				restore := object.(*multisitepostgresv1alpha1.PostgresRestore)
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Namespace: restore.Namespace, Name: restore.Spec.TargetInstanceRef,
+				}}}
+			})).
 		Named("multisitepostgres").
 		Complete(r)
 }

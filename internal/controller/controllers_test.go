@@ -634,6 +634,37 @@ func TestBackupSchedulerIssuesOneCatchUpDirective(t *testing.T) {
 	}
 }
 
+func TestLifecycleOperationBlocksBackupBeforeInstanceAnnotation(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-patch"},
+		Spec:       api.PostgresUpgradeSpec{InstanceRef: "orders"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, upgrade).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube}
+	active, err := reconciler.lifecycleOperationActive(context.Background(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active {
+		t.Fatal("unannotated pending upgrade did not block backup scheduling")
+	}
+	upgrade.Status.Phase = "Completed"
+	if err := kube.Update(context.Background(), upgrade); err != nil {
+		t.Fatal(err)
+	}
+	active, err = reconciler.lifecycleOperationActive(context.Background(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Fatal("completed upgrade continued to block backup scheduling")
+	}
+}
+
 func TestInstanceSecretClaimsAreExclusive(t *testing.T) {
 	backup := func(prefix, path string) *api.BackupSpec {
 		return &api.BackupSpec{Repository: api.BackupRepositorySpec{
