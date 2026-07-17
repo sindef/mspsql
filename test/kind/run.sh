@@ -340,25 +340,27 @@ case "${primary}" in
 esac
 primary_kubeconfig="${temp_dir}/${primary_site}.kubeconfig"
 replica_kubeconfig="${temp_dir}/${replica_site}.kubeconfig"
+primary_pod="${primary}-0"
 kind get kubeconfig --name "mspsql-${primary_site}" >"${primary_kubeconfig}"
 kind get kubeconfig --name "mspsql-${replica_site}" >"${replica_kubeconfig}"
 primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
   get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
-kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}" \
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
   -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE TABLE mspsql_e2e (id integer PRIMARY KEY); INSERT INTO mspsql_e2e VALUES (1);'
-kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}" \
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
   -c postgres-patroni -- env PGPASSWORD=application-secret PGSSLMODE=require \
   psql -h 127.0.0.1 -U orders_app -d orders -v ON_ERROR_STOP=1 \
   -c 'CREATE TABLE orders.application_write (id integer PRIMARY KEY); INSERT INTO orders.application_write VALUES (1);'
 test -z "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres get secrets \
   -o name | grep 'mspsql-sql-.*-credential' || true)"
 replica="postgres-${replica_site}-0"
+replica_pod="${replica}-0"
 replica_password="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
   get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
 for _ in $(seq 1 90); do
-  value="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica}" \
+  value="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
     -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
     psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
     'SELECT id FROM mspsql_e2e' 2>/dev/null || true)"
