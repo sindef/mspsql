@@ -67,7 +67,7 @@ func (r *PostgresDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, nil
 	}
-	database.Status.ObservedGeneration = database.Generation
+	observedCurrentGeneration := database.Status.ObservedGeneration == database.Generation
 	var instance multisitepostgresv1alpha1.MultiSitePostgres
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: database.Namespace, Name: database.Spec.InstanceRef,
@@ -82,6 +82,16 @@ func (r *PostgresDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		database.Spec, false); err != nil {
 		return ctrl.Result{}, err
 	}
+	if observedCurrentGeneration && conditionTrue(database.Status.Conditions, "Succeeded") {
+		if database.Status.Phase == "Ready" && conditionTrue(database.Status.Conditions, "Ready") {
+			return ctrl.Result{}, nil
+		}
+		database.Status.Phase = "Ready"
+		setCondition(&database.Status.Conditions, database.Generation, "Ready", metav1.ConditionTrue,
+			"DatabaseReconciled", "The database declaration is applied and audited")
+		return ctrl.Result{}, r.Status().Update(ctx, &database)
+	}
+	database.Status.ObservedGeneration = database.Generation
 	database.Status.Phase = "Pending"
 	setCondition(&database.Status.Conditions, database.Generation, "Ready", metav1.ConditionFalse,
 		"DeclarationIssued", "Waiting for a site agent to reconcile the database")
