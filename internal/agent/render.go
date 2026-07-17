@@ -86,7 +86,7 @@ func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 	}
 	if desired.Site.Components.PgpoolReplicas > 0 {
 		name := "pgpool-" + desired.Site.Name
-		selector := copyMap(labels)
+		selector := stableWorkloadLabels(labels)
 		selector["multisite-postgres.dev/component"] = "pgpool"
 		objects = append(objects, loadBalancerService(desired.Site.Namespace, name, labels, selector,
 			desired.Site.LoadBalancer, []corev1.ServicePort{{Name: "postgres", Port: 5432, TargetPort: intstr.FromInt32(5432)}}))

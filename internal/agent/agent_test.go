@@ -163,11 +163,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		t.Fatalf("LoadBalancer count = %d", got)
 	}
 	for _, object := range loadBalancers {
-		service := object.(*corev1.Service)
-		isMember := strings.HasPrefix(service.Name, "etcd-") || strings.HasPrefix(service.Name, "postgres-")
-		if service.Spec.PublishNotReadyAddresses != isMember {
-			t.Fatalf("Service %s publishNotReadyAddresses = %t", service.Name, service.Spec.PublishNotReadyAddresses)
-		}
+		assertLoadBalancerService(t, object.(*corev1.Service))
 	}
 	certificates := renderer.Certificates(desired)
 	if got := len(certificates); got != 8 {
@@ -232,6 +228,23 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
 		}
+	}
+}
+
+func assertLoadBalancerService(t *testing.T, service *corev1.Service) {
+	t.Helper()
+	isMember := strings.HasPrefix(service.Name, "etcd-") || strings.HasPrefix(service.Name, "postgres-")
+	if service.Spec.PublishNotReadyAddresses != isMember {
+		t.Fatalf("Service %s publishNotReadyAddresses = %t", service.Name, service.Spec.PublishNotReadyAddresses)
+	}
+	if service.Name != "pgpool-vic" {
+		return
+	}
+	if _, found := service.Spec.Selector["multisite-postgres.dev/desired-revision"]; found {
+		t.Fatal("revision label was included in the Pgpool Service selector")
+	}
+	if service.Spec.Selector["multisite-postgres.dev/component"] != "pgpool" {
+		t.Fatalf("Pgpool selector = %#v", service.Spec.Selector)
 	}
 }
 
