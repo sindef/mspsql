@@ -1027,11 +1027,18 @@ func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
 	}
 	if postgres == nil || len(postgres.Spec.Template.Spec.InitContainers) != 2 ||
 		!hasContainer(postgres.Spec.Template.Spec.Containers, "pgbackrest") ||
+		!hasVolume(postgres.Spec.Template.Spec.Volumes, "postgres-socket") ||
 		!hasVolume(postgres.Spec.Template.Spec.Volumes, "pgbackrest-tls") ||
 		!hasVolume(postgres.Spec.Template.Spec.Volumes, "pgbackrest-tls-source") ||
 		!strings.Contains(postgres.Spec.Template.Spec.InitContainers[1].Command[2],
 			"chmod 600 /tls/tls.key") {
 		t.Fatalf("PostgreSQL pgBackRest pod layout = %#v", postgres)
+	}
+	for _, container := range postgres.Spec.Template.Spec.Containers {
+		if (container.Name == "postgres-patroni" || container.Name == "pgbackrest") &&
+			!hasVolumeMount(container.VolumeMounts, "postgres-socket", "/run/postgresql") {
+			t.Fatalf("container %s does not share the PostgreSQL socket", container.Name)
+		}
 	}
 	certificates := renderer.Certificates(desired)
 	foundClient := false
@@ -1274,6 +1281,15 @@ func hasContainer(containers []corev1.Container, name string) bool {
 func hasVolume(volumes []corev1.Volume, name string) bool {
 	for _, volume := range volumes {
 		if volume.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVolumeMount(mounts []corev1.VolumeMount, name, path string) bool {
+	for _, mount := range mounts {
+		if mount.Name == name && mount.MountPath == path {
 			return true
 		}
 	}

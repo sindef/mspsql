@@ -1018,6 +1018,9 @@ exec patroni /tmp/patroni.yml`, name, address)
 	var initContainers []corev1.Container
 	if desired.Backup != nil {
 		volumes = append(volumes,
+			corev1.Volume{Name: "postgres-socket", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			}},
 			corev1.Volume{Name: "pgbackrest-template", VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{
 					Name: "pgbackrest-" + desired.Site.Name,
@@ -1040,6 +1043,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 			}},
 		)
 		containers[0].VolumeMounts = append(containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: "postgres-socket", MountPath: "/run/postgresql"},
 			corev1.VolumeMount{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
 			corev1.VolumeMount{Name: "pgbackrest-repository", MountPath: "/repository", ReadOnly: true},
 			corev1.VolumeMount{Name: "pgbackrest-spool", MountPath: "/var/spool/pgbackrest"},
@@ -1085,6 +1089,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 			SecurityContext: restrictedContainer(),
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "data", MountPath: "/var/lib/postgresql", ReadOnly: true},
+				{Name: "postgres-socket", MountPath: "/run/postgresql"},
 				{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
 				{Name: "pgbackrest-repository", MountPath: "/repository", ReadOnly: true},
 				{Name: "pgbackrest-spool", MountPath: "/var/spool/pgbackrest"},
