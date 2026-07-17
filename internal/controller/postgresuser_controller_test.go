@@ -122,3 +122,47 @@ func TestPostgresUserRejectsMembershipFromAnotherInstance(t *testing.T) {
 		t.Fatalf("user Ready condition = %#v", ready)
 	}
 }
+
+func TestPostgresUserCompletionIsAuthoritative(t *testing.T) {
+	scheme := testScheme(t)
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-api"},
+		Spec: api.PostgresDatabaseSpec{
+			InstanceRef: "orders", Roles: []api.DatabaseRole{{Name: "orders_rw", Profile: "ReadWrite"}},
+		},
+		Status: api.PostgresDatabaseStatus{Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionTrue, Reason: "DatabaseReconciled",
+		}}},
+	}
+	user := &api.PostgresUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-app", UID: "user-uid", Generation: 2,
+			Finalizers: []string{childFinalizer},
+		},
+		Spec: api.PostgresUserSpec{
+			InstanceRef: "orders", RoleName: "orders_app",
+			MemberOf: []api.RoleMembership{{DatabaseRef: "orders-api", Role: "orders_rw"}},
+		},
+		Status: api.PostgresUserStatus{
+			Phase: "Reconciling", ObservedGeneration: 2,
+			Conditions: []metav1.Condition{{
+				Type: "Succeeded", Status: metav1.ConditionTrue, Reason: "SQLApplied",
+			}},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(user, database).WithObjects(user, database).Build()
+	reconciler := &PostgresUserReconciler{Client: kube, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(user)}
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.PostgresUser
+	if err := kube.Get(context.Background(), request.NamespacedName, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status.Phase != "Ready" ||
+		!meta.IsStatusConditionTrue(observed.Status.Conditions, "Ready") {
+		t.Fatalf("user status = %#v", observed.Status)
+	}
+}

@@ -797,52 +797,60 @@ func (s *Server) recordInstanceDirectiveResult(ctx context.Context, configMap *c
 func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
 	name string, result *controlv1.PlanResult,
 ) error {
-	var object api.PostgresDatabase
-	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: name}, &object); err != nil {
-		return err
-	}
-	applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
-		configMap.Data["deleting"] == "true", result.Conditions)
-	for _, condition := range result.Conditions {
-		if condition.Status != string(metav1.ConditionTrue) {
-			continue
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var object api.PostgresDatabase
+		if err := s.Client.Get(ctx, client.ObjectKey{
+			Namespace: configMap.Namespace, Name: name,
+		}, &object); err != nil {
+			return err
 		}
-		switch condition.Type {
-		case "ObservedSize":
-			if size, err := strconv.ParseInt(condition.Message, 10, 64); err == nil && size > 0 {
-				object.Status.ObservedSize = *resource.NewQuantity(size, resource.BinarySI)
+		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
+			configMap.Data["deleting"] == "true", result.Conditions)
+		for _, condition := range result.Conditions {
+			if condition.Status != string(metav1.ConditionTrue) {
+				continue
 			}
-		case "TDEVerified":
-			object.Status.TDEVerified = true
-		case "OrphanedDeclarations":
-			var declarations []string
-			if json.Unmarshal([]byte(condition.Message), &declarations) == nil {
-				object.Status.OrphanedDeclarations = declarations
+			switch condition.Type {
+			case "ObservedSize":
+				if size, err := strconv.ParseInt(condition.Message, 10, 64); err == nil && size > 0 {
+					object.Status.ObservedSize = *resource.NewQuantity(size, resource.BinarySI)
+				}
+			case "TDEVerified":
+				object.Status.TDEVerified = true
+			case "OrphanedDeclarations":
+				var declarations []string
+				if json.Unmarshal([]byte(condition.Message), &declarations) == nil {
+					object.Status.OrphanedDeclarations = declarations
+				}
 			}
 		}
-	}
-	object.Status.ObservedGeneration = object.Generation
-	return s.Client.Status().Update(ctx, &object)
+		object.Status.ObservedGeneration = object.Generation
+		return s.Client.Status().Update(ctx, &object)
+	})
 }
 
 func (s *Server) recordUserDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
 	name string, result *controlv1.PlanResult,
 ) error {
-	var object api.PostgresUser
-	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: name}, &object); err != nil {
-		return err
-	}
-	applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
-		configMap.Data["deleting"] == "true", result.Conditions)
-	for _, condition := range result.Conditions {
-		if condition.Type == "CredentialVersion" && condition.Status == string(metav1.ConditionTrue) {
-			if version, err := strconv.ParseInt(condition.Message, 10, 64); err == nil {
-				object.Status.CredentialVersion = version
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var object api.PostgresUser
+		if err := s.Client.Get(ctx, client.ObjectKey{
+			Namespace: configMap.Namespace, Name: name,
+		}, &object); err != nil {
+			return err
+		}
+		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
+			configMap.Data["deleting"] == "true", result.Conditions)
+		for _, condition := range result.Conditions {
+			if condition.Type == "CredentialVersion" && condition.Status == string(metav1.ConditionTrue) {
+				if version, err := strconv.ParseInt(condition.Message, 10, 64); err == nil {
+					object.Status.CredentialVersion = version
+				}
 			}
 		}
-	}
-	object.Status.ObservedGeneration = object.Generation
-	return s.Client.Status().Update(ctx, &object)
+		object.Status.ObservedGeneration = object.Generation
+		return s.Client.Status().Update(ctx, &object)
+	})
 }
 
 func (s *Server) recordRestoreDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
