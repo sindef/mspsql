@@ -410,7 +410,7 @@ func (r *Reconciler) trustBundleFingerprint(ctx context.Context, namespace, secr
 		fingerprints = append(fingerprints, hex.EncodeToString(sum[:]))
 	}
 	if len(fingerprints) == 0 {
-		return "", fmt.Errorf("Secret %s contains no CA certificates", secretName)
+		return "", fmt.Errorf("secret %s contains no CA certificates", secretName)
 	}
 	slices.Sort(fingerprints)
 	return strings.Join(fingerprints, ","), nil
@@ -706,7 +706,7 @@ func validateIssuedCertificate(expected *unstructured.Unstructured, secret *core
 ) error {
 	leafBlock, _ := pem.Decode(secret.Data[corev1.TLSCertKey])
 	if leafBlock == nil || leafBlock.Type != "CERTIFICATE" {
-		return fmt.Errorf("Secret %s has no leaf certificate", secret.Name)
+		return fmt.Errorf("secret %s has no leaf certificate", secret.Name)
 	}
 	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
 	if err != nil {
@@ -717,7 +717,7 @@ func validateIssuedCertificate(expected *unstructured.Unstructured, secret *core
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
-		return fmt.Errorf("Secret %s has no valid CA bundle", secret.Name)
+		return fmt.Errorf("secret %s has no valid CA bundle", secret.Name)
 	}
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}, CurrentTime: now,
