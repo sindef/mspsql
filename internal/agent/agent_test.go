@@ -175,7 +175,18 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	}
 	for _, object := range objects {
 		statefulSet, ok := object.(*appsv1.StatefulSet)
-		if !ok || statefulSet.Name != "postgres-vic-0" {
+		if !ok {
+			continue
+		}
+		if statefulSet.Name == "etcd-vic-0" {
+			security := statefulSet.Spec.Template.Spec.SecurityContext
+			if security.RunAsUser == nil || *security.RunAsUser == 0 ||
+				security.RunAsGroup == nil || *security.RunAsGroup == 0 ||
+				security.FSGroup == nil || *security.FSGroup == 0 {
+				t.Fatalf("etcd pod does not declare a writable non-root identity: %#v", security)
+			}
+		}
+		if statefulSet.Name != "postgres-vic-0" {
 			continue
 		}
 		if *statefulSet.Spec.Replicas != 1 {

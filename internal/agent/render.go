@@ -444,6 +444,7 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 	memberLabels["multisite-postgres.dev/member"] = name
 	replicas := int32(1)
 	storage := desired.Site.Storage.Etcd
+	etcdUser := int64(1000)
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Namespace: desired.Site.Namespace, Name: name, Labels: copyMap(labels)},
 		Spec: appsv1.StatefulSetSpec{
@@ -456,7 +457,8 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 					AutomountServiceAccountToken:  ptr(false),
 					TerminationGracePeriodSeconds: ptr(int64(30)),
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr(true), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						RunAsNonRoot: ptr(true), RunAsUser: &etcdUser, RunAsGroup: &etcdUser, FSGroup: &etcdUser,
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{{
 						Name: "etcd", Image: r.Images.Etcd,

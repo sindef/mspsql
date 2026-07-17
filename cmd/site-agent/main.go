@@ -76,8 +76,12 @@ func main() {
 	flag.StringVar(&caPath, "tls-ca", "/etc/mspsql/identity/ca.crt", "Hub control CA.")
 	flag.StringVar(&activationPath, "wireguard-activation-file", "/run/mspsql/leader", "WireGuard leader activation file.")
 	flag.StringVar(&bootstrapPath, "bootstrap-path", "/etc/mspsql/bootstrap", "Registration bootstrap Secret path.")
-	flag.StringVar(&etcdImage, "etcd-image", "quay.io/coreos/etcd:v3.6.6", "etcd image.")
-	flag.StringVar(&pgpoolImage, "pgpool-image", "bitnami/pgpool:4.6.3", "Pgpool image.")
+	flag.StringVar(&etcdImage, "etcd-image",
+		"quay.io/coreos/etcd:v3.6.6@sha256:ea8a4698f22200bf0322fd8ed6e0b106a3107db649bd61f654e1a9fc14d9a17e",
+		"etcd image.")
+	flag.StringVar(&pgpoolImage, "pgpool-image",
+		"bitnamilegacy/pgpool:4.6.3-debian-12-r0@sha256:d3bf3910f148d7546df0762d1abed497cdeab01fdb239a337982e240a2d110ab",
+		"Pgpool image.")
 	flag.StringVar(&readinessFile, "check-ready", "",
 		"Exit successfully when the given projected identity file is non-empty.")
 	zapOptions := zap.Options{Development: false}
