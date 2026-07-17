@@ -185,7 +185,7 @@ func (o *PatroniObserver) patroniTLSConfig(ctx context.Context, namespace string
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
-		return nil, errors.New("Patroni API client Secret contains no CA certificates")
+		return nil, errors.New("patroni API client Secret contains no CA certificates")
 	}
 	certificate, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
 	if err != nil {

@@ -182,10 +182,8 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		}
 		clientSecrets[secretName] = true
 	}
-	if !clientSecrets["patroni-etcd-client-tls"] || !clientSecrets["patroni-api-client-tls"] ||
-		!clientSecrets["etcd-maintenance-client-tls"] {
-		t.Fatalf("client certificate Secrets = %#v", clientSecrets)
-	}
+	requireMapKeys(t, clientSecrets,
+		"patroni-etcd-client-tls", "patroni-api-client-tls", "etcd-maintenance-client-tls")
 	objects, err := renderer.Workloads(desired)
 	if err != nil {
 		t.Fatal(err)
@@ -1280,4 +1278,13 @@ func hasVolume(volumes []corev1.Volume, name string) bool {
 		}
 	}
 	return false
+}
+
+func requireMapKeys(t *testing.T, values map[string]bool, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		if !values[key] {
+			t.Fatalf("required keys %v are absent from %#v", keys, values)
+		}
+	}
 }

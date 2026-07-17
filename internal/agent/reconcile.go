@@ -378,7 +378,7 @@ func (r *Reconciler) certificateHashes(ctx context.Context, certificates []clien
 		}
 		secretName, found, err := unstructured.NestedString(certificate.Object, "spec", "secretName")
 		if err != nil || !found || secretName == "" {
-			return nil, fmt.Errorf("Certificate %s has no output Secret", certificate.GetName())
+			return nil, fmt.Errorf("certificate %s has no output Secret", certificate.GetName())
 		}
 		var secret corev1.Secret
 		if err := r.Client.Get(ctx, client.ObjectKey{
