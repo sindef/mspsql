@@ -249,7 +249,9 @@ func agentMetricsService() map[string]any {
 }
 
 func agentNetworkPolicy(registrationURL, hubAddress string) map[string]any {
-	tcpPortSet := map[int]struct{}{443: {}, 6443: {}, 8082: {}, 8200: {}, 9444: {}}
+	tcpPortSet := map[int]struct{}{
+		443: {}, 6443: {}, 8008: {}, 8082: {}, 8200: {}, 9444: {},
+	}
 	if parsed, err := url.Parse(registrationURL); err == nil {
 		addAddressPort(tcpPortSet, parsed.Host, defaultPort(parsed.Scheme))
 	}

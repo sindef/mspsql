@@ -95,7 +95,7 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"kind: NetworkPolicy", "kind: Service", "name: mspsql-agent-metrics",
-		"containerPort: 8080", "port: 30082", "- events.k8s.io",
+		"containerPort: 8080", "port: 30082", "port: 8008", "- events.k8s.io",
 	} {
 		if !bytes.Contains(getResponse.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("registration bundle is missing %q:\n%s", expected, getResponse.Body.String())
