@@ -20,6 +20,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
@@ -58,5 +59,12 @@ func TestEventReporterEmitsOnlyTransitions(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("events missing %q: %s", expected, joined)
 		}
+	}
+}
+
+func TestEventNotesRespectAPILimit(t *testing.T) {
+	note := boundedEventNote("failure: %s", strings.Repeat("界", 1024))
+	if len(note) > 1024 || !utf8.ValidString(note) || !strings.HasSuffix(note, "...") {
+		t.Fatalf("bounded note has %d bytes and valid=%t: %q", len(note), utf8.ValidString(note), note)
 	}
 }

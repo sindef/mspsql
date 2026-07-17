@@ -17,7 +17,9 @@ limitations under the License.
 package agent
 
 import (
+	"fmt"
 	"sync"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,7 +64,7 @@ func (r *EventReporter) Observe(instanceUID string, result ApplyResult, reconcil
 			eventType = corev1.EventTypeWarning
 		}
 		r.Recorder.Eventf(regarding, nil, eventType, condition.Reason,
-			"ConditionChanged", "%s: %s", condition.Type, condition.Message)
+			"ConditionChanged", "%s", boundedEventNote("%s: %s", condition.Type, condition.Message))
 	}
 	errorSignature := ""
 	if reconcileErr != nil {
@@ -72,10 +74,25 @@ func (r *EventReporter) Observe(instanceUID string, result ApplyResult, reconcil
 		current["reconcile/error"] = errorSignature
 		if reconcileErr != nil {
 			r.Recorder.Eventf(regarding, nil, corev1.EventTypeWarning, "ReconcileFailed",
-				"Reconcile", "Revision reconciliation failed: %s", reconcileErr)
+				"Reconcile", "%s", boundedEventNote("Revision reconciliation failed: %s", reconcileErr))
 		} else {
 			r.Recorder.Eventf(regarding, nil, corev1.EventTypeNormal, "ReconcileRecovered",
-				"Reconcile", "Revision reconciliation recovered in phase %s", result.Phase)
+				"Reconcile", "%s", boundedEventNote(
+					"Revision reconciliation recovered in phase %s", result.Phase))
 		}
 	}
+}
+
+func boundedEventNote(format string, args ...any) string {
+	const maxNoteBytes = 1024
+	note := fmt.Sprintf(format, args...)
+	if len(note) <= maxNoteBytes {
+		return note
+	}
+	const suffix = "..."
+	limit := maxNoteBytes - len(suffix)
+	for limit > 0 && !utf8.RuneStart(note[limit]) {
+		limit--
+	}
+	return note[:limit] + suffix
 }
