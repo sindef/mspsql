@@ -67,6 +67,7 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if site.Spec.Revoked {
 		return ctrl.Result{}, r.reconcileRevoked(ctx, &site, systemNamespace)
 	}
+	site.Status.ObservedGeneration = site.Generation
 	if _, err := wireguard.EnsureHubIdentity(ctx, r.Client, systemNamespace,
 		r.WireGuardNetworkCIDR); err != nil {
 		return ctrl.Result{}, err
@@ -187,6 +188,7 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
 	site *multisitepostgresv1alpha1.SiteRegistration, systemNamespace string,
 ) error {
+	site.Status.ObservedGeneration = site.Generation
 	for _, name := range []string{"registration-" + string(site.UID)} {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: systemNamespace, Name: name}}
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {

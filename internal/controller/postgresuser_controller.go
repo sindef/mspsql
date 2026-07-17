@@ -67,6 +67,7 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, nil
 	}
+	user.Status.ObservedGeneration = user.Generation
 	for _, membership := range user.Spec.MemberOf {
 		var database multisitepostgresv1alpha1.PostgresDatabase
 		if err := r.Get(ctx, client.ObjectKey{
@@ -106,7 +107,6 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		"mspsql-user-"+user.Name, "User", user.Spec.InstanceRef, user.Spec, false); err != nil {
 		return ctrl.Result{}, err
 	}
-	user.Status.ObservedGeneration = user.Generation
 	user.Status.Phase = "Reconciling"
 	setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
 		"DeclarationIssued", "Waiting for a site agent to reconcile the login role")

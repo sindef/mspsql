@@ -33,6 +33,7 @@ type SiteRegistrationSpec struct {
 }
 
 type SiteRegistrationStatus struct {
+	ObservedGeneration              int64                          `json:"observedGeneration,omitempty"`
 	ClusterUID                      string                         `json:"clusterUID,omitempty"`
 	Phase                           string                         `json:"phase,omitempty"`
 	RegistrationURL                 string                         `json:"registrationURL,omitempty"`

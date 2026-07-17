@@ -310,6 +310,9 @@ spec:
               lastHeartbeatTime:
                 format: date-time
                 type: string
+              observedGeneration:
+                format: int64
+                type: integer
               phase:
                 type: string
               registrationExpiresAt:
