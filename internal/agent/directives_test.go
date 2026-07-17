@@ -61,7 +61,7 @@ func TestDatabaseSQLIsIdempotentAndAuditsTDE(t *testing.T) {
 			t.Fatalf("database SQL is missing %q:\n%s", expected, sql)
 		}
 	}
-	createOwner := strings.Index(sql, `CREATE ROLE "orders_owner" NOLOGIN`)
+	createOwner := strings.Index(sql, `CREATE ROLE %I NOLOGIN', 'orders_owner'`)
 	changeOwner := strings.Index(sql, `ALTER DATABASE "orders-api" OWNER TO "orders_owner"`)
 	if createOwner == -1 || changeOwner == -1 || createOwner > changeOwner {
 		t.Fatalf("owner role must be created before database ownership changes:\n%s", sql)
@@ -95,6 +95,7 @@ func TestUserSQLReadsPasswordFromEnvironment(t *testing.T) {
 		},
 	})
 	if !strings.Contains(sql, `\getenv user_password USER_PASSWORD`) ||
+		!strings.Contains(sql, `WHERE NOT EXISTS (SELECT FROM pg_roles`) ||
 		!strings.Contains(sql, `GRANT "orders_rw" TO "orders_app"`) ||
 		!strings.Contains(sql, `pg_advisory_lock`) ||
 		!strings.Contains(sql, `pg_advisory_unlock`) {

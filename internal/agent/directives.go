@@ -691,8 +691,9 @@ func databaseSQL(spec api.PostgresDatabaseSpec, tdeEnabled, deleting bool) (stri
 		"WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = %s) \\gexec\n",
 		quoteLiteral(spec.DatabaseName), quoteLiteral(spec.DatabaseName))
 	for _, role := range spec.Roles {
-		fmt.Fprintf(&sql, "DO $$BEGIN CREATE ROLE %s NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END$$;\n",
-			quoteIdentifier(role.Name))
+		fmt.Fprintf(&sql, "SELECT format('CREATE ROLE %%I NOLOGIN', %s) "+
+			"WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = %s) \\gexec\n",
+			quoteLiteral(role.Name), quoteLiteral(role.Name))
 	}
 	if owner != "" {
 		fmt.Fprintf(&sql, "ALTER DATABASE %s OWNER TO %s;\n", database, quoteIdentifier(owner))
@@ -802,7 +803,9 @@ func userSQL(spec api.PostgresUserSpec) string {
 	var sql strings.Builder
 	fmt.Fprintf(&sql, "SELECT pg_advisory_lock(hashtextextended(%s, 0));\n",
 		quoteLiteral("mspsql/user/"+spec.RoleName))
-	fmt.Fprintf(&sql, "DO $$BEGIN CREATE ROLE %s LOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END$$;\n", role)
+	fmt.Fprintf(&sql, "SELECT format('CREATE ROLE %%I LOGIN', %s) "+
+		"WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = %s) \\gexec\n",
+		quoteLiteral(spec.RoleName), quoteLiteral(spec.RoleName))
 	sql.WriteString("\\getenv user_password USER_PASSWORD\n")
 	fmt.Fprintf(&sql, "ALTER ROLE %s LOGIN PASSWORD :'user_password';\n", role)
 	for _, membership := range spec.MemberOf {
