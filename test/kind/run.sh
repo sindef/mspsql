@@ -269,13 +269,17 @@ test "$(kubectl -n mspsql-system get secret \
   -l multisite-postgres.dev/wireguard-peer=true -o name | wc -l | tr -d ' ')" = "3"
 for _ in $(seq 1 90); do
   active_gateway="$(kubectl -n mspsql-system get pods \
-    -l app.kubernetes.io/name=mspsql-wireguard \
-    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.name}={.ready}{" "}{end}{"\n"}{end}' |
-    awk '/wireguard=true/ {print $1; exit}')"
-  [[ -n "${active_gateway}" ]] && break
+    -l multisite-postgres.dev/gateway-active=true \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  gateway_endpoints="$(kubectl -n mspsql-system get endpointslice \
+    -l kubernetes.io/service-name=mspsql-wireguard \
+    -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.addresses[0]}{"\n"}{end}' |
+    sed '/^$/d' | wc -l | tr -d ' ')"
+  [[ -n "${active_gateway}" && "${gateway_endpoints}" == "1" ]] && break
   sleep 2
 done
 test -n "${active_gateway}"
+test "${gateway_endpoints}" = "1"
 test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
   wg show wg0 peers | wc -l | tr -d ' ')" = "3"
 
