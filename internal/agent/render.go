@@ -1117,7 +1117,8 @@ exec patroni /tmp/patroni.yml`, name, address)
 					TerminationGracePeriodSeconds: ptr(int64(60)),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr(true), FSGroup: ptr(int64(26)),
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						FSGroupChangePolicy: ptr(corev1.FSGroupChangeOnRootMismatch),
+						SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Affinity:       antiAffinity(workloadLabels),
 					InitContainers: initContainers,

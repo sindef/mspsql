@@ -221,6 +221,11 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if *statefulSet.Spec.Replicas != 1 {
 			t.Fatalf("member replicas = %d", *statefulSet.Spec.Replicas)
 		}
+		security := statefulSet.Spec.Template.Spec.SecurityContext
+		if security.FSGroupChangePolicy == nil ||
+			*security.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+			t.Fatalf("postgres fsGroup change policy = %v", security.FSGroupChangePolicy)
+		}
 		if _, found := statefulSet.Spec.Selector.MatchLabels["multisite-postgres.dev/desired-revision"]; found {
 			t.Fatal("revision label was included in immutable StatefulSet selector")
 		}
