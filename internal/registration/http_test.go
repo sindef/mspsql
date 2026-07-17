@@ -80,7 +80,7 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 		WithStatusSubresource(&api.SiteRegistration{}).
 		WithObjects(site, tokenSecret, signingKey).Build()
 	server := HTTPServer{
-		Client: kube, SystemNamespace: "system", PublicURL: "https://hub.example",
+		Client: kube, SystemNamespace: "system", PublicURL: "http://hub.example:30082",
 		HubDomain: "hub.example", HubAddress: "10.0.0.1:9444",
 		AgentImage: "agent:test", WireGuardImage: "wireguard:test",
 		WireGuardNetworkCIDR: "10.254.0.0/16", WireGuardEndpoint: "wireguard.example:51820",
@@ -92,6 +92,14 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	server.handle(getResponse, get)
 	if getResponse.Code != http.StatusOK || !bytes.Contains(getResponse.Body.Bytes(), []byte("kind: Deployment")) {
 		t.Fatalf("bundle response: code=%d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+	for _, expected := range []string{
+		"kind: NetworkPolicy", "kind: Service", "name: mspsql-agent-metrics",
+		"containerPort: 8080", "port: 30082", "- events.k8s.io",
+	} {
+		if !bytes.Contains(getResponse.Body.Bytes(), []byte(expected)) {
+			t.Fatalf("registration bundle is missing %q:\n%s", expected, getResponse.Body.String())
+		}
 	}
 
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

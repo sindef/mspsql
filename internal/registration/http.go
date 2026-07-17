@@ -28,8 +28,11 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -168,6 +171,8 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 		map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "mspsql-agent"}},
 		map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{
 			"name": "mspsql-agent", "namespace": "mspsql-agent"}},
+		agentMetricsService(),
+		agentNetworkPolicy(s.PublicURL, s.HubAddress),
 		map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
 			"metadata": map[string]any{"name": "mspsql-agent"},
@@ -190,6 +195,8 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 					[]string{"get", "list", "watch"}),
 				rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshots"},
 					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
+				rule([]string{""}, []string{"events"}, []string{"create", "patch"}),
+				rule([]string{"events.k8s.io"}, []string{"events"}, []string{"create", "patch"}),
 			},
 		},
 		map[string]any{
@@ -223,6 +230,82 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 		output.Write(encoded)
 	}
 	return []byte(output.String()), nil
+}
+
+func agentMetricsService() map[string]any {
+	return map[string]any{
+		"apiVersion": "v1", "kind": "Service",
+		"metadata": map[string]any{
+			"name": "mspsql-agent-metrics", "namespace": "mspsql-agent",
+			"labels": map[string]any{"app.kubernetes.io/name": "mspsql-agent"},
+		},
+		"spec": map[string]any{
+			"selector": map[string]any{"app.kubernetes.io/name": "mspsql-agent"},
+			"ports": []any{map[string]any{
+				"name": "metrics", "port": 8080, "targetPort": "metrics",
+			}},
+		},
+	}
+}
+
+func agentNetworkPolicy(registrationURL, hubAddress string) map[string]any {
+	tcpPortSet := map[int]struct{}{443: {}, 6443: {}, 8082: {}, 8200: {}, 9444: {}}
+	if parsed, err := url.Parse(registrationURL); err == nil {
+		addAddressPort(tcpPortSet, parsed.Host, defaultPort(parsed.Scheme))
+	}
+	addAddressPort(tcpPortSet, hubAddress, 9444)
+	tcpPortNumbers := make([]int, 0, len(tcpPortSet))
+	for port := range tcpPortSet {
+		tcpPortNumbers = append(tcpPortNumbers, port)
+	}
+	slices.Sort(tcpPortNumbers)
+	tcpPorts := make([]any, 0, len(tcpPortNumbers))
+	for _, port := range tcpPortNumbers {
+		tcpPorts = append(tcpPorts, map[string]any{"protocol": "TCP", "port": port})
+	}
+	return map[string]any{
+		"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+		"metadata": map[string]any{"name": "mspsql-agent", "namespace": "mspsql-agent"},
+		"spec": map[string]any{
+			"podSelector": map[string]any{"matchLabels": map[string]any{
+				"app.kubernetes.io/name": "mspsql-agent",
+			}},
+			"policyTypes": []any{"Ingress", "Egress"},
+			"ingress": []any{map[string]any{
+				"from": []any{map[string]any{"namespaceSelector": map[string]any{
+					"matchLabels": map[string]any{"metrics": "enabled"},
+				}}},
+				"ports": []any{map[string]any{"protocol": "TCP", "port": 8080}},
+			}},
+			"egress": []any{
+				map[string]any{"ports": tcpPorts},
+				map[string]any{"ports": []any{
+					map[string]any{"protocol": "UDP", "port": 51820},
+					map[string]any{"protocol": "TCP", "port": 53},
+					map[string]any{"protocol": "UDP", "port": 53},
+				}},
+			},
+		},
+	}
+}
+
+func addAddressPort(ports map[int]struct{}, address string, fallback int) {
+	_, value, err := net.SplitHostPort(address)
+	if err != nil {
+		ports[fallback] = struct{}{}
+		return
+	}
+	port, err := strconv.Atoi(value)
+	if err == nil && port > 0 && port <= 65535 {
+		ports[port] = struct{}{}
+	}
+}
+
+func defaultPort(scheme string) int {
+	if scheme == "http" {
+		return 80
+	}
+	return 443
 }
 
 func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
@@ -412,6 +495,9 @@ func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage stri
 	agentLabels := map[string]any{"app.kubernetes.io/name": "mspsql-agent"}
 	containers := []any{map[string]any{
 		"name": "site-agent", "image": agentImage,
+		"ports": []any{map[string]any{
+			"name": "metrics", "containerPort": 8080, "protocol": "TCP",
+		}},
 		"args": []any{
 			"--hub-address=$(HUB_ADDRESS)", "--hub-domain=$(HUB_DOMAIN)",
 			"--registration-uid=" + string(site.UID),
