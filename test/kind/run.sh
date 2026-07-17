@@ -567,6 +567,25 @@ test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${
   -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
 
+vault_selector="$(kubectl --kubeconfig="${replica_kubeconfig}" -n vault get service vault \
+  -o json | jq -c '.spec.selector')"
+kubectl --kubeconfig="${replica_kubeconfig}" -n vault patch service vault --type=merge \
+  -p '{"spec":{"selector":{"multisite-postgres.dev/unavailable":"true"}}}'
+for _ in $(seq 1 90); do
+  vault_ready="$(kubectl -n database-platform get multisitepostgres orders -o json | \
+    jq -r --arg site "${replica_site}" '.status.sites[] | select(.name == $site) |
+      .conditions[] | select(.type == "VaultReady") | .status')"
+  [[ "${vault_ready}" == "False" ]] && break
+  sleep 2
+done
+test "${vault_ready}" = "False"
+test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
+  -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
+kubectl --kubeconfig="${replica_kubeconfig}" -n vault patch service vault --type=merge \
+  -p "$(jq -cn --argjson selector "${vault_selector}" '{spec: {selector: $selector}}')"
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
+
 replica_tls_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
   get secret "${replica}-tls" -o jsonpath='{.metadata.uid}')"
 replica_pod_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
