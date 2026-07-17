@@ -281,6 +281,15 @@ func (r *Reconciler) reconcileRollbackRestore(ctx context.Context, desired plan.
 			Namespace: desired.Site.Namespace, Name: claimName,
 		}, &observed)
 		if err == nil && observed.Annotations["multisite-postgres.dev/rollback-source"] != rollbackName {
+			consumersGone, deleteErr := r.deleteManagedPVCConsumers(ctx, desired, claimName)
+			if deleteErr != nil {
+				return false, deleteErr
+			}
+			if !consumersGone {
+				setLocalCondition(&result.Conditions, "RollbackRestored", metav1.ConditionFalse,
+					"PVCConsumersDeleting", "Deleting failed upgrade Pods using "+claimName)
+				return false, nil
+			}
 			if err := r.Client.Delete(ctx, &observed); err != nil {
 				return false, err
 			}
@@ -309,6 +318,48 @@ func (r *Reconciler) reconcileRollbackRestore(ctx context.Context, desired plan.
 	setLocalCondition(&result.Conditions, "RollbackRestored", metav1.ConditionTrue,
 		"AllPVCsRestored", "Every local PostgreSQL PVC was restored from rollback storage")
 	return true, nil
+}
+
+func (r *Reconciler) deleteManagedPVCConsumers(ctx context.Context, desired plan.SitePlan,
+	claimName string,
+) (bool, error) {
+	var pods corev1.PodList
+	if err := r.Client.List(ctx, &pods, client.InNamespace(desired.Site.Namespace)); err != nil {
+		return false, err
+	}
+	found := false
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		usesClaim := false
+		for _, volume := range pod.Spec.Volumes {
+			if volume.PersistentVolumeClaim != nil &&
+				volume.PersistentVolumeClaim.ClaimName == claimName {
+				usesClaim = true
+				break
+			}
+		}
+		if !usesClaim {
+			continue
+		}
+		if pod.Labels["multisite-postgres.dev/instance-uid"] != desired.InstanceUID {
+			return false, fmt.Errorf("PVC %s is used by unmanaged Pod %s", claimName, pod.Name)
+		}
+		found = true
+		for _, owner := range pod.OwnerReferences {
+			if owner.Controller != nil && *owner.Controller && owner.Kind == "Job" {
+				job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+					Namespace: pod.Namespace, Name: owner.Name,
+				}}
+				if err := r.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+					return false, err
+				}
+			}
+		}
+		if err := r.Client.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	}
+	return !found, nil
 }
 
 func rollbackRestorePVC(desired plan.SitePlan, name, rollbackName string,
@@ -424,15 +475,21 @@ command -v %s
 func (r Renderer) MajorUpgradeJob(desired plan.SitePlan) *batchv1.Job {
 	upgrade := desired.MajorUpgrade
 	tool := "/opt/mspsql/new/bin/pg_upgrade"
-	extraOptions := ""
+	oldOptions := fmt.Sprintf("-c ssl=off -c archive_mode=off "+
+		"-c hba_file=/pgdata/data/.mspsql-old-%d/pg_hba.conf "+
+		"-c ident_file=/pgdata/data/.mspsql-old-%d/pg_ident.conf",
+		upgrade.SourceMajor, upgrade.SourceMajor)
+	newOptions := ""
 	if desired.TDE.Enabled {
 		tool = "pg_tde_upgrade"
-		extraOptions = ` --old-options='-c shared_preload_libraries=pg_tde'` +
-			` --new-options='-c shared_preload_libraries=pg_tde'`
+		oldOptions += " -c shared_preload_libraries=pg_tde"
+		newOptions = ` --new-options='-c shared_preload_libraries=pg_tde'`
 	}
+	extraOptions := ` --old-options='` + oldOptions + `'` + newOptions
 	script := fmt.Sprintf(`set -eu
 cd /pgdata/data
 mkdir -p .mspsql-old-%d .mspsql-new-%d
+chmod 0700 .mspsql-old-%d .mspsql-new-%d
 find . -mindepth 1 -maxdepth 1 ! -name '.mspsql-old-%d' ! -name '.mspsql-new-%d' \
   -exec mv -- {} .mspsql-old-%d/ \;
 export PATH=/opt/mspsql/new/bin:/opt/mspsql/old/bin:$PATH
@@ -445,6 +502,7 @@ export LD_LIBRARY_PATH=/opt/mspsql/new/lib:/opt/mspsql/old/lib
 find .mspsql-new-%d -mindepth 1 -maxdepth 1 -exec mv -- {} . \;
 rmdir .mspsql-new-%d
 `, upgrade.SourceMajor, upgrade.TargetMajor, upgrade.SourceMajor, upgrade.TargetMajor,
+		upgrade.SourceMajor, upgrade.TargetMajor,
 		upgrade.SourceMajor, upgrade.TargetMajor, tool, extraOptions, upgrade.SourceMajor,
 		upgrade.TargetMajor, tool, extraOptions, upgrade.SourceMajor, upgrade.TargetMajor,
 		upgrade.TargetMajor, upgrade.TargetMajor)
@@ -576,18 +634,23 @@ func (r Renderer) majorDCSResetJob(desired plan.SitePlan, prefix string) *batchv
 		}
 	}
 	slices.Sort(endpoints)
-	script := fmt.Sprintf(`set -eu
-export ETCDCTL_API=3
-etcdctl --endpoints=%q --cacert=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key \
-  del --prefix %q
-`, strings.Join(endpoints, ","), "/service/"+desired.InstanceUID+"/")
 	job := majorJob(desired, prefix+operationHash(desired.MajorUpgrade.OperationUID),
-		r.Images.Etcd, script, []corev1.Volume{{
+		r.Images.Etcd, "", []corev1.Volume{{
 			Name: "tls", VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{SecretName: "etcd-maintenance-client-tls"},
 			},
 		}}, []corev1.VolumeMount{{Name: "tls", MountPath: "/tls", ReadOnly: true}})
 	job.Spec.BackoffLimit = ptr(int32(3))
+	container := &job.Spec.Template.Spec.Containers[0]
+	container.Command = []string{"etcdctl"}
+	container.Args = []string{
+		"--endpoints=" + strings.Join(endpoints, ","),
+		"--cacert=/tls/ca.crt", "--cert=/tls/tls.crt", "--key=/tls/tls.key",
+		"del", "--prefix", "/service/" + desired.InstanceUID + "/",
+	}
+	container.Env = []corev1.EnvVar{{Name: "ETCDCTL_API", Value: "3"}}
+	container.SecurityContext.RunAsUser = ptr(int64(1000))
+	container.SecurityContext.RunAsGroup = ptr(int64(1000))
 	return job
 }
 

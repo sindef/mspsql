@@ -1296,6 +1296,15 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 		if !strings.Contains(command, "cd /pgdata/data") {
 			t.Fatalf("upgrade does not operate on the managed PGDATA directory:\n%s", command)
 		}
+		for _, required := range []string{
+			"chmod 0700 .mspsql-old-17 .mspsql-new-18",
+			"-c ssl=off -c archive_mode=off",
+			"hba_file=/pgdata/data/.mspsql-old-17/pg_hba.conf",
+		} {
+			if !strings.Contains(command, required) {
+				t.Fatalf("upgrade command is missing %q:\n%s", required, command)
+			}
+		}
 		if enabled && (!strings.Contains(command, "shared_preload_libraries=pg_tde") ||
 			!hasVolume(job.Spec.Template.Spec.Volumes, "pg-tde-vault")) {
 			t.Fatalf("TDE upgrade does not preload pg_tde with Vault access: %#v", job)
@@ -1324,6 +1333,15 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 		if !strings.Contains(acceptanceCommand, expected) {
 			t.Fatalf("acceptance command is missing %q:\n%s", expected, acceptanceCommand)
 		}
+	}
+	dcsJob := renderer.MajorDCSResetJob(desired)
+	dcsSecurity := dcsJob.Spec.Template.Spec.Containers[0].SecurityContext
+	if dcsSecurity.RunAsUser == nil || *dcsSecurity.RunAsUser != 1000 ||
+		dcsSecurity.RunAsGroup == nil || *dcsSecurity.RunAsGroup != 1000 {
+		t.Fatalf("DCS reset identity = %#v", dcsSecurity)
+	}
+	if command := dcsJob.Spec.Template.Spec.Containers[0].Command; !slices.Equal(command, []string{"etcdctl"}) {
+		t.Fatalf("DCS reset command = %v", command)
 	}
 }
 
@@ -1358,6 +1376,47 @@ func TestMajorUpgradeRollbackArtifactsAreRetainedAndRestorable(t *testing.T) {
 	if clone.Spec.DataSource == nil || clone.Spec.DataSource.Kind != "PersistentVolumeClaim" ||
 		clone.Spec.DataSource.APIGroup != nil {
 		t.Fatalf("clone restore dataSource = %#v", clone.Spec.DataSource)
+	}
+}
+
+func TestMajorRollbackDeletesFailedJobPVCConsumers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	controller := true
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "failed"}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "orders", Name: "failed-pod",
+			Labels:          map[string]string{"multisite-postgres.dev/instance-uid": "instance"},
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Job", Name: "failed", Controller: &controller}},
+		},
+		Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+			Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data-postgres-vic-0-0"}},
+		}}},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(job, pod).Build()
+	reconciler := Reconciler{Client: kube}
+	desired := plan.SitePlan{InstanceUID: "instance", Site: api.PostgresSiteSpec{Namespace: "orders"}}
+	gone, err := reconciler.deleteManagedPVCConsumers(
+		context.Background(), desired, "data-postgres-vic-0-0")
+	if err != nil || gone {
+		t.Fatalf("first cleanup = %t, %v", gone, err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(job), &batchv1.Job{}); err == nil {
+		t.Fatal("failed Job still exists")
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(pod), &corev1.Pod{}); err == nil {
+		t.Fatal("failed Job Pod still exists")
+	}
+	gone, err = reconciler.deleteManagedPVCConsumers(
+		context.Background(), desired, "data-postgres-vic-0-0")
+	if err != nil || !gone {
+		t.Fatalf("second cleanup = %t, %v", gone, err)
 	}
 }
 
