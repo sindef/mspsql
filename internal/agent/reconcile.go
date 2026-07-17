@@ -114,10 +114,18 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 		desired.MemberAddresses = fillMissingAddresses(desired.MemberAddresses, result.Addresses)
 		desired.AddressCandidates = mergeAddresses(desired.AddressCandidates, result.Addresses)
 		result.Phase = "IssuingCertificates"
-		ready, err := r.reconcileCertificates(ctx, desired, &result)
+		ready, err := r.reconcileCertificates(ctx, &desired, &result)
 		if err != nil || !ready {
 			return result, err
 		}
+	} else {
+		versions, hashErr := r.certificateHashes(ctx, r.Renderer.Certificates(desired))
+		if hashErr != nil {
+			setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionFalse,
+				"LastIssuedMaterialUnavailable", hashErr.Error())
+			return result, hashErr
+		}
+		desired.RuntimeCertificateHashes = versions
 	}
 
 	if ready, err := r.prepareOperations(ctx, &desired, &result); err != nil || !ready {
@@ -312,10 +320,10 @@ func (r *Reconciler) setCredentialConditions(ctx context.Context, desired plan.S
 	return version, nil
 }
 
-func (r *Reconciler) reconcileCertificates(ctx context.Context, desired plan.SitePlan,
+func (r *Reconciler) reconcileCertificates(ctx context.Context, desired *plan.SitePlan,
 	result *ApplyResult,
 ) (bool, error) {
-	certificates := r.Renderer.Certificates(desired)
+	certificates := r.Renderer.Certificates(*desired)
 	for _, object := range certificates {
 		if err := r.apply(ctx, object); err != nil {
 			return false, err
@@ -332,6 +340,11 @@ func (r *Reconciler) reconcileCertificates(ctx context.Context, desired plan.Sit
 	}
 	setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionTrue,
 		"CertificatesIssued", "All workload certificates are Ready")
+	versions, err := r.certificateHashes(ctx, certificates)
+	if err != nil {
+		return false, err
+	}
+	desired.RuntimeCertificateHashes = versions
 	etcdFingerprint, err := r.trustBundleFingerprint(ctx, desired.Site.Namespace,
 		"etcd-maintenance-client-tls")
 	if err != nil {
@@ -354,6 +367,32 @@ func (r *Reconciler) reconcileCertificates(ctx context.Context, desired plan.Sit
 	setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionTrue,
 		"TrustBundleObserved", fingerprint)
 	return true, nil
+}
+
+func (r *Reconciler) certificateHashes(ctx context.Context, certificates []client.Object) (map[string]string, error) {
+	versions := make(map[string]string, len(certificates))
+	for _, object := range certificates {
+		certificate, ok := object.(*unstructured.Unstructured)
+		if !ok {
+			return nil, fmt.Errorf("certificate renderer returned %T", object)
+		}
+		secretName, found, err := unstructured.NestedString(certificate.Object, "spec", "secretName")
+		if err != nil || !found || secretName == "" {
+			return nil, fmt.Errorf("Certificate %s has no output Secret", certificate.GetName())
+		}
+		var secret corev1.Secret
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: certificate.GetNamespace(), Name: secretName,
+		}, &secret); err != nil {
+			return nil, err
+		}
+		sum := sha256.New()
+		for _, key := range []string{"ca.crt", corev1.TLSCertKey, corev1.TLSPrivateKeyKey} {
+			_, _ = sum.Write(secret.Data[key])
+		}
+		versions[secretName] = hex.EncodeToString(sum.Sum(nil))
+	}
+	return versions, nil
 }
 
 func (r *Reconciler) reconcileAddressMigration(ctx context.Context, desired plan.SitePlan,

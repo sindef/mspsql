@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"maps"
 	"net"
@@ -198,7 +199,10 @@ func (r Renderer) postgresWorkloads(workloadPlan, desired plan.SitePlan,
 		if address == "" {
 			return nil, fmt.Errorf("address for %s is not allocated", name)
 		}
-		statefulSet := r.postgresStatefulSet(workloadPlan, name, address, labels)
+		statefulSet, err := r.postgresStatefulSet(workloadPlan, name, address, labels)
+		if err != nil {
+			return nil, err
+		}
 		if majorMemberStopped(desired, name) {
 			statefulSet.Spec.Replicas = ptr(int32(0))
 		}
@@ -453,7 +457,9 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 			ServiceName: name, Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: memberLabels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: memberLabels},
+				ObjectMeta: metav1.ObjectMeta{Labels: memberLabels, Annotations: map[string]string{
+					"multisite-postgres.dev/tls-hash": hashValues(desired.RuntimeCertificateHashes[name+"-tls"]),
+				}},
 				Spec: corev1.PodSpec{
 					ServiceAccountName:            workloadServiceAccount,
 					AutomountServiceAccountToken:  ptr(false),
@@ -909,12 +915,23 @@ done
 
 func (r Renderer) postgresStatefulSet(desired plan.SitePlan, name, address string,
 	labels map[string]string,
-) *appsv1.StatefulSet {
+) (*appsv1.StatefulSet, error) {
 	image := postgresMemberImage(desired, name)
 	workloadLabels := stableWorkloadLabels(labels)
 	workloadLabels["multisite-postgres.dev/component"] = "postgres"
 	workloadLabels["multisite-postgres.dev/member"] = name
-	podAnnotations := map[string]string{}
+	configHash, err := r.postgresConfigHash(desired)
+	if err != nil {
+		return nil, err
+	}
+	podAnnotations := map[string]string{
+		"multisite-postgres.dev/config-hash": configHash,
+		"multisite-postgres.dev/tls-hash": hashValues(
+			desired.RuntimeCertificateHashes[name+"-tls"],
+			desired.RuntimeCertificateHashes["patroni-etcd-client-tls"],
+			desired.RuntimeCertificateHashes[name+"-pgbackrest-tls"],
+		),
+	}
 	if version := credentialVersionForMember(desired, name); version != "" {
 		podAnnotations["multisite-postgres.dev/credential-version"] = version
 	}
@@ -1087,7 +1104,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 				pvcTemplate(desired.Site.Storage.Postgres, workloadLabels),
 			},
 		},
-	}
+	}, nil
 }
 
 func credentialVersionForMember(desired plan.SitePlan, member string) string {
@@ -1167,7 +1184,13 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas, Selector: &metav1.LabelSelector{MatchLabels: workloadLabels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels},
+				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels, Annotations: map[string]string{
+					"multisite-postgres.dev/config-hash": configMapDataHash(r.pgpoolConfig(desired, labels).Data),
+					"multisite-postgres.dev/tls-hash": hashValues(
+						desired.RuntimeCertificateHashes["pgpool-"+desired.Site.Name+"-tls"],
+						desired.RuntimeCertificateHashes["postgres-"+desired.Site.Name+"-0-tls"],
+					),
+				}},
 				Spec: corev1.PodSpec{
 					ServiceAccountName:           workloadServiceAccount,
 					AutomountServiceAccountToken: ptr(false),
@@ -1228,6 +1251,44 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 			},
 		},
 	}
+}
+
+func (r Renderer) postgresConfigHash(desired plan.SitePlan) (string, error) {
+	labels := resourceLabels(desired)
+	values := []string{configMapDataHash(r.patroniConfig(desired, labels).Data)}
+	if desired.Backup != nil {
+		config, err := r.pgBackRestConfig(desired, labels)
+		if err != nil {
+			return "", err
+		}
+		values = append(values, configMapDataHash(config.Data))
+	}
+	if desired.TDE.Enabled {
+		values = append(values, configMapDataHash(r.tdeBootstrapConfig(desired, labels).Data))
+	}
+	if desired.Restore != nil && desired.Restore.Phase == plan.RestorePhaseSeed {
+		values = append(values, configMapDataHash(r.restoreBootstrapConfig(desired, labels).Data))
+	}
+	return hashValues(values...), nil
+}
+
+func configMapDataHash(data map[string]string) string {
+	keys := slices.Sorted(maps.Keys(data))
+	values := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		values = append(values, key, data[key])
+	}
+	return hashValues(values...)
+}
+
+func hashValues(values ...string) string {
+	hash := sha256.New()
+	for _, value := range values {
+		_, _ = hash.Write([]byte(strconv.Itoa(len(value))))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(value))
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func etcdInitialCluster(desired plan.SitePlan) (string, error) {

@@ -467,6 +467,63 @@ func TestRendererRollsOnlyCredentialTarget(t *testing.T) {
 	}
 }
 
+func TestRendererRollsWorkloadsForConsumedConfigAndCertificates(t *testing.T) {
+	desired := plan.SitePlan{
+		InstanceUID: "instance", Revision: 4,
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 1, PostgresReplicas: 1, PgpoolReplicas: 1},
+			Storage:    api.SiteStorage{Etcd: &api.StorageRequest{}, Postgres: &api.StorageRequest{}},
+		},
+		Postgres: api.PostgresSpec{Image: "postgres:17"},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "10.0.0.1", "etcd-nsw-0": "10.0.1.1", "etcd-qld-0": "10.0.2.1",
+			"postgres-vic-0": "10.0.0.2",
+		},
+		RuntimeCertificateHashes: map[string]string{
+			"etcd-vic-0-tls": "etcd-a", "postgres-vic-0-tls": "postgres-a",
+			"patroni-etcd-client-tls": "client-a", "pgpool-vic-tls": "pgpool-a",
+		},
+	}
+	render := func(value plan.SitePlan) map[string]map[string]string {
+		t.Helper()
+		objects, err := (Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}).Workloads(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		annotations := map[string]map[string]string{}
+		for _, object := range objects {
+			switch workload := object.(type) {
+			case *appsv1.StatefulSet:
+				annotations[workload.Name] = maps.Clone(workload.Spec.Template.Annotations)
+			case *appsv1.Deployment:
+				annotations[workload.Name] = maps.Clone(workload.Spec.Template.Annotations)
+			}
+		}
+		return annotations
+	}
+	initial := render(desired)
+	if !maps.Equal(initial["postgres-vic-0"], render(desired)["postgres-vic-0"]) {
+		t.Fatal("identical plans produced different rollout annotations")
+	}
+	desired.RuntimeCertificateHashes["postgres-vic-0-tls"] = "postgres-b"
+	rotated := render(desired)
+	if initial["postgres-vic-0"]["multisite-postgres.dev/tls-hash"] ==
+		rotated["postgres-vic-0"]["multisite-postgres.dev/tls-hash"] ||
+		initial["pgpool-vic"]["multisite-postgres.dev/tls-hash"] ==
+			rotated["pgpool-vic"]["multisite-postgres.dev/tls-hash"] ||
+		initial["etcd-vic-0"]["multisite-postgres.dev/tls-hash"] !=
+			rotated["etcd-vic-0"]["multisite-postgres.dev/tls-hash"] {
+		t.Fatalf("certificate consumers did not roll selectively: before=%#v after=%#v", initial, rotated)
+	}
+	desired.Postgres.SynchronousStandbyCount = 1
+	configured := render(desired)
+	if rotated["postgres-vic-0"]["multisite-postgres.dev/config-hash"] ==
+		configured["postgres-vic-0"]["multisite-postgres.dev/config-hash"] {
+		t.Fatal("Patroni configuration change did not roll PostgreSQL")
+	}
+}
+
 func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
 	desired := plan.SitePlan{
 		SiteUID: "site", InstanceUID: "target", Revision: 1,

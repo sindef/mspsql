@@ -49,6 +49,7 @@ type SitePlan struct {
 	AddressMigration         *AddressMigrationPlan       `json:"addressMigration,omitempty"`
 	CredentialRotation       *CredentialRotationPlan     `json:"credentialRotation,omitempty"`
 	RuntimeCredentialVersion int64                       `json:"-"`
+	RuntimeCertificateHashes map[string]string           `json:"-"`
 	Restore                  *RestorePlan                `json:"restore,omitempty"`
 	Upgrade                  *UpgradePlan                `json:"upgrade,omitempty"`
 	MajorUpgrade             *MajorUpgradePlan           `json:"majorUpgrade,omitempty"`
