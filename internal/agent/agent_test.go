@@ -29,6 +29,7 @@ import (
 	"maps"
 	"math/big"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,11 +175,15 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		t.Fatalf("statefulSets=%d deployments=%d", statefulSets, deployments)
 	}
 	for _, object := range objects {
+		assertPatroniEtcdHosts(t, object)
 		statefulSet, ok := object.(*appsv1.StatefulSet)
 		if !ok {
 			continue
 		}
 		if statefulSet.Name == "etcd-vic-0" {
+			if command := statefulSet.Spec.Template.Spec.Containers[0].Command; !slices.Equal(command, []string{"etcd"}) {
+				t.Fatalf("etcd command = %v", command)
+			}
 			security := statefulSet.Spec.Template.Spec.SecurityContext
 			if security.RunAsUser == nil || *security.RunAsUser == 0 ||
 				security.RunAsGroup == nil || *security.RunAsGroup == 0 ||
@@ -199,6 +204,19 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
 		}
+	}
+}
+
+func assertPatroniEtcdHosts(t *testing.T, object client.Object) {
+	t.Helper()
+	configMap, ok := object.(*corev1.ConfigMap)
+	if !ok || configMap.Name != "patroni-vic" {
+		return
+	}
+	config := configMap.Data["patroni.yml"]
+	if strings.Contains(config, "hosts: https://") ||
+		!strings.Contains(config, "hosts: 10.0.0.1:2379,10.0.0.2:2379,10.0.1.1:2379") {
+		t.Fatalf("Patroni etcd hosts are invalid: %s", config)
 	}
 }
 
@@ -237,7 +255,7 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"enable_pool_hba = on", "ssl = on", "ssl_key = '/tls/tls.key'",
-		"ssl_cert = '/tls/tls.crt'", "ssl_ca_cert = '/tls/ca.crt'",
+		"ssl_cert = '/tls/tls.crt'", "ssl_ca_cert = '/backend-ca/ca.crt'",
 	} {
 		if !strings.Contains(config.Data["pgpool.conf"], expected) {
 			t.Errorf("Pgpool configuration is missing %q", expected)
@@ -249,7 +267,9 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 	if len(deployment.Spec.Template.Spec.InitContainers) != 1 ||
 		!strings.Contains(deployment.Spec.Template.Spec.InitContainers[0].Command[2], "chmod 600 /tls/tls.key") ||
 		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls-source") ||
-		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls") {
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls") ||
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "backend-ca") ||
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "runtime") {
 		t.Fatalf("Pgpool TLS preparation is incomplete: %#v", deployment.Spec.Template.Spec)
 	}
 }

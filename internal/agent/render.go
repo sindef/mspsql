@@ -462,6 +462,7 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 					},
 					Containers: []corev1.Container{{
 						Name: "etcd", Image: r.Images.Etcd,
+						Command: []string{"etcd"},
 						Args: []string{
 							"--name=" + name, "--data-dir=/var/lib/etcd",
 							"--listen-client-urls=https://0.0.0.0:2379",
@@ -506,7 +507,7 @@ func (r Renderer) patroniConfig(desired plan.SitePlan, labels map[string]string)
 	endpoints := make([]string, 0)
 	for member, address := range desired.MemberAddresses {
 		if strings.HasPrefix(member, "etcd-") {
-			endpoints = append(endpoints, "https://"+address+":2379")
+			endpoints = append(endpoints, address+":2379")
 		}
 	}
 	slices.Sort(endpoints)
@@ -1143,7 +1144,7 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 			"pgpool.conf": "listen_addresses = '*'\nport = 5432\n" +
 				"enable_pool_hba = on\nssl = on\n" +
 				"ssl_key = '/tls/tls.key'\nssl_cert = '/tls/tls.crt'\n" +
-				"ssl_ca_cert = '/tls/ca.crt'\n" + strings.Join(backends, ""),
+				"ssl_ca_cert = '/backend-ca/ca.crt'\n" + strings.Join(backends, ""),
 			"pool_hba.conf": "hostssl all all 0.0.0.0/0 password\n",
 		},
 	}
@@ -1195,6 +1196,8 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/config", ReadOnly: true},
 							{Name: "tls", MountPath: "/tls", ReadOnly: true},
+							{Name: "backend-ca", MountPath: "/backend-ca", ReadOnly: true},
+							{Name: "runtime", MountPath: "/var/run/pgpool"},
 						},
 					}},
 					Volumes: []corev1.Volume{
@@ -1207,6 +1210,13 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 							Secret: &corev1.SecretVolumeSource{SecretName: "pgpool-" + desired.Site.Name + "-tls"},
 						}},
 						{Name: "tls", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "backend-ca", VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "postgres-" + desired.Site.Name + "-0-tls",
+								Items:      []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
+							},
+						}},
+						{Name: "runtime", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
 				},
 			},
