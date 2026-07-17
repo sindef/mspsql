@@ -151,6 +151,39 @@ func TestRevokedRegistrationFailsSitePolicy(t *testing.T) {
 	}
 }
 
+func TestRegistrationStatusMergePreservesConcurrentHeartbeat(t *testing.T) {
+	scheme := testScheme(t)
+	now := time.Date(2026, 7, 17, 7, 0, 0, 0, time.UTC)
+	heartbeat := metav1.NewTime(now.Add(-time.Second))
+	expires := metav1.NewTime(now.Add(12 * time.Hour))
+	current := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "vic", Generation: 3},
+		Status: api.SiteRegistrationStatus{
+			ClusterUID: "cluster", LastHeartbeatTime: &heartbeat,
+			AgentCertificateExpiresAt: &expires,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(current).WithObjects(current).Build()
+	desired := current.DeepCopy()
+	desired.Status.LastHeartbeatTime = nil
+	desired.Status.RegistrationURL = "https://hub/register"
+	reconciler := &SiteRegistrationReconciler{Client: kube}
+	if _, err := reconciler.updateControllerStatus(context.Background(), desired, now, true); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.SiteRegistration
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(current), &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status.LastHeartbeatTime == nil || observed.Status.Phase != "Connected" ||
+		observed.Status.RegistrationURL != desired.Status.RegistrationURL ||
+		!conditionTrue(observed.Status.Conditions, "Connected") ||
+		!conditionTrue(observed.Status.Conditions, "IdentityReady") {
+		t.Fatalf("status = %#v", observed.Status)
+	}
+}
+
 func TestRegistrationStatusEnqueuesReferencingInstances(t *testing.T) {
 	scheme := testScheme(t)
 	instance := &api.MultiSitePostgres{

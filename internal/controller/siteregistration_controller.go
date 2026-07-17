@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -125,70 +126,98 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
-	requeueAfter := time.Duration(0)
-	site.Status.Phase = "Pending"
-	if site.Status.ClusterUID != "" {
-		site.Status.Phase = "Registered"
-		if site.Status.LastHeartbeatTime != nil &&
-			now().Sub(site.Status.LastHeartbeatTime.Time) <= siteHeartbeatTimeout {
-			site.Status.Phase = "Connected"
-			requeueAfter = siteHeartbeatTimeout - now().Sub(site.Status.LastHeartbeatTime.Time)
-			setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionTrue,
-				"HeartbeatCurrent", "The authenticated site agent heartbeat is current")
-		} else {
-			setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
-				"HeartbeatStale", "No authenticated site agent heartbeat is current")
-		}
-	}
-	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionFalse,
-		"AwaitingAgent", "Waiting for the site agent to bind this registration")
-	if site.Status.ClusterUID != "" {
-		setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionTrue,
-			"ClusterBound", "Registration is bound to an immutable Kubernetes cluster UID")
-		switch {
-		case site.Status.AgentCertificateExpiresAt == nil:
-			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
-				"CertificateExpiryUnknown", "The agent has not reported its certificate expiry")
-		case !now().Before(site.Status.AgentCertificateExpiresAt.Time):
-			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
-				"CertificateExpired", "The agent mTLS certificate has expired")
-		case now().Add(2 * time.Hour).After(site.Status.AgentCertificateExpiresAt.Time):
-			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
-				"CertificateExpiring", "The agent mTLS certificate is approaching expiry")
-			requeueAfter = minPositive(requeueAfter,
-				site.Status.AgentCertificateExpiresAt.Sub(now()))
-		default:
-			setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionTrue,
-				"CertificateCurrent", "The agent mTLS certificate is current")
-			requeueAfter = minPositive(requeueAfter,
-				site.Status.AgentCertificateExpiresAt.Add(-2*time.Hour).Sub(now()))
-		}
-	}
 	var peer corev1.Secret
 	peerErr := r.Get(ctx, types.NamespacedName{
 		Namespace: systemNamespace, Name: "wireguard-peer-" + string(site.UID),
 	}, &peer)
-	switch {
-	case peerErr == nil:
-		setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionTrue,
-			"PeerAuthorized", "The site WireGuard peer is present in the gateway configuration")
-	case apierrors.IsNotFound(peerErr):
-		setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionFalse,
-			"AwaitingPeer", "Waiting for the site agent to authorize its WireGuard key")
-	default:
+	if peerErr != nil && !apierrors.IsNotFound(peerErr) {
 		return ctrl.Result{}, peerErr
 	}
-	if err := r.Status().Update(ctx, &site); err != nil {
+	requeueAfter, err := r.updateControllerStatus(ctx, &site, now(), peerErr == nil)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
+func (r *SiteRegistrationReconciler) updateControllerStatus(ctx context.Context,
+	desired *multisitepostgresv1alpha1.SiteRegistration, now time.Time, peerReady bool,
+) (time.Duration, error) {
+	registrationURL := desired.Status.RegistrationURL
+	registrationExpiresAt := desired.Status.RegistrationExpiresAt
+	requeueAfter := time.Duration(0)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKeyFromObject(desired), &current); err != nil {
+			return err
+		}
+		current.Status.ObservedGeneration = current.Generation
+		if registrationURL != "" {
+			current.Status.RegistrationURL = registrationURL
+			current.Status.RegistrationExpiresAt = registrationExpiresAt
+		}
+		requeueAfter = refreshRegistrationHealth(&current, now)
+		if peerReady {
+			setCondition(&current.Status.Conditions, current.Generation, "WireGuardReady",
+				metav1.ConditionTrue, "PeerAuthorized",
+				"The site WireGuard peer is present in the gateway configuration")
+		} else {
+			setCondition(&current.Status.Conditions, current.Generation, "WireGuardReady",
+				metav1.ConditionFalse, "AwaitingPeer",
+				"Waiting for the site agent to authorize its WireGuard key")
+		}
+		return r.Status().Update(ctx, &current)
+	})
+	return requeueAfter, err
+}
+
+func refreshRegistrationHealth(site *multisitepostgresv1alpha1.SiteRegistration,
+	now time.Time,
+) time.Duration {
+	requeueAfter := time.Duration(0)
+	site.Status.Phase = "Pending"
+	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionFalse,
+		"AwaitingAgent", "Waiting for the site agent to bind this registration")
+	if site.Status.ClusterUID == "" {
+		return requeueAfter
+	}
+	site.Status.Phase = "Registered"
+	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionTrue,
+		"ClusterBound", "Registration is bound to an immutable Kubernetes cluster UID")
+	if site.Status.LastHeartbeatTime != nil &&
+		now.Sub(site.Status.LastHeartbeatTime.Time) <= siteHeartbeatTimeout {
+		site.Status.Phase = "Connected"
+		requeueAfter = siteHeartbeatTimeout - now.Sub(site.Status.LastHeartbeatTime.Time)
+		setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionTrue,
+			"HeartbeatCurrent", "The authenticated site agent heartbeat is current")
+	} else {
+		setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
+			"HeartbeatStale", "No authenticated site agent heartbeat is current")
+	}
+	switch {
+	case site.Status.AgentCertificateExpiresAt == nil:
+		setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+			"CertificateExpiryUnknown", "The agent has not reported its certificate expiry")
+	case !now.Before(site.Status.AgentCertificateExpiresAt.Time):
+		setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+			"CertificateExpired", "The agent mTLS certificate has expired")
+	case now.Add(2 * time.Hour).After(site.Status.AgentCertificateExpiresAt.Time):
+		setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
+			"CertificateExpiring", "The agent mTLS certificate is approaching expiry")
+		requeueAfter = minPositive(requeueAfter, site.Status.AgentCertificateExpiresAt.Sub(now))
+	default:
+		setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionTrue,
+			"CertificateCurrent", "The agent mTLS certificate is current")
+		requeueAfter = minPositive(requeueAfter,
+			site.Status.AgentCertificateExpiresAt.Add(-2*time.Hour).Sub(now))
+	}
+	return requeueAfter
+}
+
 func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
 	site *multisitepostgresv1alpha1.SiteRegistration, systemNamespace string,
 ) error {
-	site.Status.ObservedGeneration = site.Generation
 	for _, name := range []string{"registration-" + string(site.UID)} {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: systemNamespace, Name: name}}
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
@@ -198,18 +227,25 @@ func (r *SiteRegistrationReconciler) reconcileRevoked(ctx context.Context,
 	if err := wireguard.RevokePeer(ctx, r.Client, systemNamespace, site.UID); err != nil {
 		return err
 	}
-	site.Status.Phase = "Revoked"
-	site.Status.RegistrationURL = ""
-	site.Status.RegistrationExpiresAt = nil
-	setCondition(&site.Status.Conditions, site.Generation, "Registered", metav1.ConditionFalse,
-		"AdministrativelyRevoked", "The site identity has been revoked")
-	setCondition(&site.Status.Conditions, site.Generation, "Connected", metav1.ConditionFalse,
-		"AdministrativelyRevoked", "Control connections from this site are rejected")
-	setCondition(&site.Status.Conditions, site.Generation, "IdentityReady", metav1.ConditionFalse,
-		"AdministrativelyRevoked", "The site identity has been revoked")
-	setCondition(&site.Status.Conditions, site.Generation, "WireGuardReady", metav1.ConditionFalse,
-		"AdministrativelyRevoked", "The WireGuard peer has been removed")
-	return r.Status().Update(ctx, site)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKeyFromObject(site), &current); err != nil {
+			return err
+		}
+		current.Status.ObservedGeneration = current.Generation
+		current.Status.Phase = "Revoked"
+		current.Status.RegistrationURL = ""
+		current.Status.RegistrationExpiresAt = nil
+		setCondition(&current.Status.Conditions, current.Generation, "Registered", metav1.ConditionFalse,
+			"AdministrativelyRevoked", "The site identity has been revoked")
+		setCondition(&current.Status.Conditions, current.Generation, "Connected", metav1.ConditionFalse,
+			"AdministrativelyRevoked", "Control connections from this site are rejected")
+		setCondition(&current.Status.Conditions, current.Generation, "IdentityReady", metav1.ConditionFalse,
+			"AdministrativelyRevoked", "The site identity has been revoked")
+		setCondition(&current.Status.Conditions, current.Generation, "WireGuardReady", metav1.ConditionFalse,
+			"AdministrativelyRevoked", "The WireGuard peer has been removed")
+		return r.Status().Update(ctx, &current)
+	})
 }
 
 func tokenExpired(secret *corev1.Secret, now time.Time) bool {
