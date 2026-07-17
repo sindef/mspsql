@@ -768,30 +768,34 @@ func (s *Server) recordOwnedDirectiveResult(ctx context.Context, configMap *core
 func (s *Server) recordInstanceDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
 	name string, result *controlv1.PlanResult,
 ) error {
-	var object api.MultiSitePostgres
-	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: name}, &object); err != nil {
-		return err
-	}
-	succeeded := directiveSucceeded(result.Conditions)
-	for _, condition := range result.Conditions {
-		setInstanceCondition(&object.Status.Conditions, object.Generation, condition.Type,
-			metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
-	}
-	if succeeded {
-		updateBackupTimes(&object.Status.LastBackupTime, &object.Status.RecoveryWindowStart, result.Conditions)
-		setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
-			metav1.ConditionTrue, "BackupVerified",
-			"pgBackRest completed a backup and verified archived WAL metadata")
-		if object.Status.RecoveryWindowStart != nil {
-			setInstanceCondition(&object.Status.Conditions, object.Generation,
-				"RecoveryWindowAvailable", metav1.ConditionTrue, "ContinuousWALVerified",
-				"pgBackRest metadata contains a restorable backup and archived WAL range")
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var object api.MultiSitePostgres
+		if err := s.Client.Get(ctx, client.ObjectKey{
+			Namespace: configMap.Namespace, Name: name,
+		}, &object); err != nil {
+			return err
 		}
-	} else {
-		setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
-			metav1.ConditionFalse, "BackupFailed", "The scheduled pgBackRest operation failed")
-	}
-	return s.Client.Status().Update(ctx, &object)
+		succeeded := directiveSucceeded(result.Conditions)
+		for _, condition := range result.Conditions {
+			setInstanceCondition(&object.Status.Conditions, object.Generation, condition.Type,
+				metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
+		}
+		if succeeded {
+			updateBackupTimes(&object.Status.LastBackupTime, &object.Status.RecoveryWindowStart, result.Conditions)
+			setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
+				metav1.ConditionTrue, "BackupVerified",
+				"pgBackRest completed a backup and verified archived WAL metadata")
+			if object.Status.RecoveryWindowStart != nil {
+				setInstanceCondition(&object.Status.Conditions, object.Generation,
+					"RecoveryWindowAvailable", metav1.ConditionTrue, "ContinuousWALVerified",
+					"pgBackRest metadata contains a restorable backup and archived WAL range")
+			}
+		} else {
+			setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
+				metav1.ConditionFalse, "BackupFailed", "The scheduled pgBackRest operation failed")
+		}
+		return s.Client.Status().Update(ctx, &object)
+	})
 }
 
 func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
@@ -805,7 +809,7 @@ func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *c
 			return err
 		}
 		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
-			configMap.Data["deleting"] == "true", result.Conditions)
+			configMap.Data["deleting"] == "true", object.Generation, result.Conditions)
 		for _, condition := range result.Conditions {
 			if condition.Status != string(metav1.ConditionTrue) {
 				continue
@@ -840,7 +844,7 @@ func (s *Server) recordUserDirectiveResult(ctx context.Context, configMap *corev
 			return err
 		}
 		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
-			configMap.Data["deleting"] == "true", result.Conditions)
+			configMap.Data["deleting"] == "true", object.Generation, result.Conditions)
 		for _, condition := range result.Conditions {
 			if condition.Type == "CredentialVersion" && condition.Status == string(metav1.ConditionTrue) {
 				if version, err := strconv.ParseInt(condition.Message, 10, 64); err == nil {
@@ -856,13 +860,18 @@ func (s *Server) recordUserDirectiveResult(ctx context.Context, configMap *corev
 func (s *Server) recordRestoreDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
 	name string, result *controlv1.PlanResult,
 ) error {
-	var object api.PostgresRestore
-	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: name}, &object); err != nil {
-		return err
-	}
-	applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions, false, result.Conditions)
-	object.Status.ObservedGeneration = object.Generation
-	return s.Client.Status().Update(ctx, &object)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var object api.PostgresRestore
+		if err := s.Client.Get(ctx, client.ObjectKey{
+			Namespace: configMap.Namespace, Name: name,
+		}, &object); err != nil {
+			return err
+		}
+		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
+			false, object.Generation, result.Conditions)
+		object.Status.ObservedGeneration = object.Generation
+		return s.Client.Status().Update(ctx, &object)
+	})
 }
 
 func (s *Server) recordUpgradeDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
@@ -871,13 +880,18 @@ func (s *Server) recordUpgradeDirectiveResult(ctx context.Context, configMap *co
 	if configMap.Data["type"] == "Backup" {
 		return s.recordUpgradeBackupResult(ctx, configMap, name, result)
 	}
-	var object api.PostgresUpgrade
-	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: configMap.Namespace, Name: name}, &object); err != nil {
-		return err
-	}
-	applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions, false, result.Conditions)
-	object.Status.ObservedGeneration = object.Generation
-	return s.Client.Status().Update(ctx, &object)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var object api.PostgresUpgrade
+		if err := s.Client.Get(ctx, client.ObjectKey{
+			Namespace: configMap.Namespace, Name: name,
+		}, &object); err != nil {
+			return err
+		}
+		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
+			false, object.Generation, result.Conditions)
+		object.Status.ObservedGeneration = object.Generation
+		return s.Client.Status().Update(ctx, &object)
+	})
 }
 
 func (s *Server) recordUpgradeBackupResult(ctx context.Context, configMap *corev1.ConfigMap,
@@ -953,13 +967,16 @@ func directiveSucceeded(reported []*controlv1.Condition) bool {
 	return found
 }
 
-func applyDirectiveStatus(phase *string, conditions *[]metav1.Condition, deleting bool,
+func applyDirectiveStatus(phase *string, conditions *[]metav1.Condition, deleting bool, generation int64,
 	reported []*controlv1.Condition,
 ) {
 	succeeded := directiveSucceeded(reported)
 	for _, condition := range reported {
 		setSiteCondition(conditions, condition.Type, metav1.ConditionStatus(condition.Status),
 			condition.Reason, condition.Message)
+		if observed := meta.FindStatusCondition(*conditions, condition.Type); observed != nil {
+			observed.ObservedGeneration = generation
+		}
 	}
 	if !succeeded {
 		*phase = "Failed"

@@ -19,17 +19,23 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
+	controlv1 "github.com/sindef/mspsql/gen/control/v1"
 )
 
 func TestSiteConditionTransitionTimeChangesOnlyWithStatus(t *testing.T) {
@@ -45,6 +51,50 @@ func TestSiteConditionTransitionTimeChangesOnlyWithStatus(t *testing.T) {
 	setSiteCondition(&conditions, "Ready", metav1.ConditionTrue, "Completed", "ready")
 	if conditions[0].LastTransitionTime.Equal(&original) {
 		t.Fatal("transition time did not change when status transitioned")
+	}
+}
+
+func TestDirectiveResultRetriesStatusConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	restore := &api.PostgresRestore{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "platform", Name: "orders-restore", Generation: 3,
+	}}
+	attempts := 0
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(restore).
+		WithObjects(restore).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, underlying client.Client, subresource string,
+			object client.Object, options ...client.SubResourceUpdateOption,
+		) error {
+			attempts++
+			if attempts == 1 {
+				return apierrors.NewConflict(schema.GroupResource{
+					Group: api.GroupVersion.Group, Resource: "postgresrestores",
+				}, object.GetName(), errors.New("injected conflict"))
+			}
+			return underlying.Status().Update(ctx, object, options...)
+		},
+	}).Build()
+	server := &Server{Client: kube}
+	result := &controlv1.PlanResult{Conditions: []*controlv1.Condition{
+		{Type: "Succeeded", Status: string(metav1.ConditionTrue), Reason: "RestoreVerified",
+			Message: "restore completed"},
+	}}
+	if err := server.recordRestoreDirectiveResult(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
+	}, restore.Name, result); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.PostgresRestore
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(restore), &observed); err != nil {
+		t.Fatal(err)
+	}
+	condition := meta.FindStatusCondition(observed.Status.Conditions, "Succeeded")
+	if attempts != 2 || observed.Status.Phase != "Ready" || observed.Status.ObservedGeneration != 3 ||
+		condition == nil || condition.ObservedGeneration != 3 {
+		t.Fatalf("attempts=%d status=%#v", attempts, observed.Status)
 	}
 }
 
