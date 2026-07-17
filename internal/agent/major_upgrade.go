@@ -183,15 +183,8 @@ func (r *Reconciler) ensureRollbackWorkloadsStopped(ctx context.Context, desired
 	}
 	var stopped []client.Object
 	for _, object := range objects {
-		switch object := object.(type) {
-		case *appsv1.StatefulSet:
-			if strings.HasPrefix(object.Name, "postgres-") {
-				stopped = append(stopped, object)
-			}
-		case *appsv1.Deployment:
-			if object.Name == "pgpool" {
-				stopped = append(stopped, object)
-			}
+		if isRollbackStoppedWorkload(object, desired.Site.Name) {
+			stopped = append(stopped, object)
 		}
 	}
 	for _, object := range stopped {
@@ -208,6 +201,17 @@ func (r *Reconciler) ensureRollbackWorkloadsStopped(ctx context.Context, desired
 			"WorkloadsStopping", message)
 	}
 	return ready, nil
+}
+
+func isRollbackStoppedWorkload(object client.Object, siteName string) bool {
+	switch object := object.(type) {
+	case *appsv1.StatefulSet:
+		return strings.HasPrefix(object.Name, "postgres-")
+	case *appsv1.Deployment:
+		return object.Name == "pgpool-"+siteName
+	default:
+		return false
+	}
 }
 
 func (r *Reconciler) reconcileRollbackStorage(ctx context.Context, desired plan.SitePlan,

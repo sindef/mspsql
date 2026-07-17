@@ -429,6 +429,23 @@ func TestRendererStagesEtcdAddressMigration(t *testing.T) {
 	}
 }
 
+func TestRollbackStopsPostgresAndSitePgpool(t *testing.T) {
+	for _, test := range []struct {
+		object client.Object
+		want   bool
+	}{
+		{object: &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "postgres-vic-0"}}, want: true},
+		{object: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "pgpool-vic"}}, want: true},
+		{object: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "pgpool-nsw"}}, want: false},
+		{object: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "pgpool-vic"}}, want: false},
+	} {
+		if got := isRollbackStoppedWorkload(test.object, "vic"); got != test.want {
+			t.Errorf("isRollbackStoppedWorkload(%T/%s) = %t, want %t",
+				test.object, test.object.GetName(), got, test.want)
+		}
+	}
+}
+
 func TestFillMissingAddressesPreservesSerializedPlan(t *testing.T) {
 	planned := map[string]string{"etcd-vic-0": "10.0.0.1"}
 	observed := map[string]string{
