@@ -175,7 +175,7 @@ route_site_pool() {
 pool_offset=10
 for site in vic nsw qld; do
   kind load docker-image "${vault_image}" --name "mspsql-${site}"
-  site_kubeconfig="$(mktemp)"
+  site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
   ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}" \
     "${temp_dir}/ca.crt" "${temp_dir}/ca.key" \
@@ -199,7 +199,6 @@ for site in vic nsw qld; do
     exit 1
   fi
   pool_offset=$((pool_offset + 20))
-  rm -f "${site_kubeconfig}"
 done
 
 docker build -t "${image}" .
@@ -291,14 +290,12 @@ EOF
     sleep 1
   done
   test -n "${registration_url}"
-  site_kubeconfig="$(mktemp)"
-  kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
+  site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
   curl -fsS "${registration_url}" | kubectl --kubeconfig="${site_kubeconfig}" apply -f -
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic vault-ca \
     --from-file=ca.crt="${temp_dir}/ca.crt"
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic minio-ca \
     --from-file=ca.crt="${temp_dir}/ca.crt"
-  rm -f "${site_kubeconfig}"
   for _ in $(seq 1 120); do
     phase="$(kubectl get siteregistration "${site}" -o jsonpath='{.status.phase}')"
     [[ "${phase}" == "Connected" ]] && break
@@ -346,8 +343,7 @@ kubectl create namespace database-platform
 sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml | kubectl apply -f -
 
 for site in vic nsw qld; do
-  site_kubeconfig="$(mktemp)"
-  kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
+  site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
   for _ in $(seq 1 90); do
     namespace_uid="$(kubectl --kubeconfig="${site_kubeconfig}" get namespace orders-postgres \
       -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
@@ -366,7 +362,6 @@ for site in vic nsw qld; do
     kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres get secret postgres-auth \
       -o jsonpath='{.data.superuser-password}' | base64 -d | grep -qx super
   fi
-  rm -f "${site_kubeconfig}"
 done
 
 # KIND clusters share a Docker network but MetalLB L2 advertisements do not cross
@@ -397,11 +392,9 @@ case "${primary}" in
   postgres-nsw-*) primary_site=nsw; replica_site=vic ;;
   *) echo "unexpected primary ${primary}" >&2; exit 1 ;;
 esac
-primary_kubeconfig="${temp_dir}/${primary_site}.kubeconfig"
-replica_kubeconfig="${temp_dir}/${replica_site}.kubeconfig"
+primary_kubeconfig="${temp_dir}/mspsql-${primary_site}.kubeconfig"
+replica_kubeconfig="${temp_dir}/mspsql-${replica_site}.kubeconfig"
 primary_pod="${primary}-0"
-kind get kubeconfig --name "mspsql-${primary_site}" >"${primary_kubeconfig}"
-kind get kubeconfig --name "mspsql-${replica_site}" >"${replica_kubeconfig}"
 primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
   get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
 kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
@@ -447,8 +440,9 @@ kubectl -n mspsql-system rollout restart deployment/mspsql-controller-manager
 kubectl -n mspsql-system rollout status deployment/mspsql-controller-manager --timeout=180s
 kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
 for site in vic nsw qld; do
-  kubectl --context "kind-mspsql-${site}" -n mspsql-agent rollout restart deployment/mspsql-agent
-  kubectl --context "kind-mspsql-${site}" -n mspsql-agent rollout status \
+  site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
+  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent rollout restart deployment/mspsql-agent
+  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent rollout status \
     deployment/mspsql-agent --timeout=180s
 done
 for site in vic nsw qld; do
@@ -580,8 +574,8 @@ case "${primary}" in
   postgres-nsw-*) primary_site=nsw; replica_site=vic ;;
   *) echo "unexpected primary after failover ${primary}" >&2; exit 1 ;;
 esac
-primary_kubeconfig="${temp_dir}/${primary_site}.kubeconfig"
-replica_kubeconfig="${temp_dir}/${replica_site}.kubeconfig"
+primary_kubeconfig="${temp_dir}/mspsql-${primary_site}.kubeconfig"
+replica_kubeconfig="${temp_dir}/mspsql-${replica_site}.kubeconfig"
 primary_pod="${primary}-0"
 replica="postgres-${replica_site}-0"
 replica_pod="${replica}-0"
