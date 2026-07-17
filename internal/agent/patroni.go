@@ -42,7 +42,7 @@ type PatroniTopology struct {
 
 type PatroniObserver struct {
 	Client     client.Client
-	HTTP       func(*x509.CertPool) *http.Client
+	HTTP       func(*tls.Config) *http.Client
 	ActionHTTP func(*tls.Config) *http.Client
 }
 
@@ -63,15 +63,11 @@ func (o *PatroniObserver) Observe(ctx context.Context, desired plan.SitePlan) (P
 }
 
 func (o *PatroniObserver) observeMember(ctx context.Context, namespace, name string) (PatroniTopology, error) {
-	var secret corev1.Secret
-	if err := o.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name + "-tls"}, &secret); err != nil {
+	config, err := o.patroniTLSConfig(ctx, namespace)
+	if err != nil {
 		return PatroniTopology{}, err
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
-		return PatroniTopology{}, errors.New("PostgreSQL issuer Secret contains no CA certificates")
-	}
-	httpClient := o.httpClient(roots)
+	httpClient := o.httpClient(config)
 	url := fmt.Sprintf("https://%s.%s.svc:8008/cluster", name, namespace)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -140,19 +136,9 @@ func (o *PatroniObserver) Switchover(ctx context.Context, desired plan.SitePlan,
 	if _, found := desired.MemberAddresses[candidate]; !found {
 		return fmt.Errorf("candidate %q is absent from the accepted plan", candidate)
 	}
-	var secret corev1.Secret
-	if err := o.Client.Get(ctx, client.ObjectKey{
-		Namespace: desired.Site.Namespace, Name: fromPrimary + "-tls",
-	}, &secret); err != nil {
-		return err
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
-		return errors.New("PostgreSQL issuer Secret contains no CA certificates")
-	}
-	certificate, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
+	tlsConfig, err := o.patroniTLSConfig(ctx, desired.Site.Namespace)
 	if err != nil {
-		return fmt.Errorf("load Patroni client certificate: %w", err)
+		return err
 	}
 	body, err := json.Marshal(map[string]string{"leader": fromPrimary, "candidate": candidate})
 	if err != nil {
@@ -165,9 +151,6 @@ func (o *PatroniObserver) Switchover(ctx context.Context, desired plan.SitePlan,
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{certificate},
-	}
 	httpClient := o.actionHTTP(tlsConfig)
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -193,15 +176,32 @@ func (o *PatroniObserver) actionHTTP(config *tls.Config) *http.Client {
 	}
 }
 
-func (o *PatroniObserver) httpClient(roots *x509.CertPool) *http.Client {
+func (o *PatroniObserver) patroniTLSConfig(ctx context.Context, namespace string) (*tls.Config, error) {
+	var secret corev1.Secret
+	if err := o.Client.Get(ctx, client.ObjectKey{
+		Namespace: namespace, Name: "patroni-api-client-tls",
+	}, &secret); err != nil {
+		return nil, err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
+		return nil, errors.New("Patroni API client Secret contains no CA certificates")
+	}
+	certificate, err := tls.X509KeyPair(secret.Data["tls.crt"], secret.Data["tls.key"])
+	if err != nil {
+		return nil, fmt.Errorf("load Patroni API client certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{certificate},
+	}, nil
+}
+
+func (o *PatroniObserver) httpClient(config *tls.Config) *http.Client {
 	if o.HTTP != nil {
-		return o.HTTP(roots)
+		return o.HTTP(config)
 	}
 	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			RootCAs:    roots,
-		}},
+		Timeout:   10 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: config},
 	}
 }

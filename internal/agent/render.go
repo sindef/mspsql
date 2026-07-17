@@ -109,6 +109,8 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	if desired.Site.Role == api.SiteRoleData {
 		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-etcd-client",
 			"patroni-etcd-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels))
+		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-api-client",
+			"patroni-api-client-tls", desired.Site.Certificates.PostgresIssuerRef, labels))
 		if desired.Backup != nil {
 			objects = append(objects, clientCertificate(desired.Site.Namespace, "pgbackrest-client",
 				"pgbackrest-client-tls", desired.Site.Certificates.BackupIssuerRef, labels))
@@ -588,7 +590,7 @@ name: ${MEMBER_NAME}
   certfile: /postgres-tls/tls.crt
   keyfile: /postgres-tls/tls.key
   cafile: /postgres-tls/ca.crt
-  verify_client: optional
+  verify_client: required
 ctl:
   cacert: /postgres-tls/ca.crt
   certfile: /postgres-tls/tls.crt
@@ -1005,9 +1007,8 @@ exec patroni /tmp/patroni.yml`, name, address)
 			{Name: "patroni", ContainerPort: 8008},
 		},
 		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-				Path: "/readiness", Port: intstr.FromString("patroni"),
-				Scheme: corev1.URISchemeHTTPS,
+			ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromString("postgres"),
 			}},
 			PeriodSeconds: 10, FailureThreshold: 6,
 		},

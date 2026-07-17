@@ -170,7 +170,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		}
 	}
 	certificates := renderer.Certificates(desired)
-	if got := len(certificates); got != 7 {
+	if got := len(certificates); got != 8 {
 		t.Fatalf("Certificate count = %d", got)
 	}
 	clientSecrets := map[string]bool{}
@@ -182,7 +182,8 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		}
 		clientSecrets[secretName] = true
 	}
-	if !clientSecrets["patroni-etcd-client-tls"] || !clientSecrets["etcd-maintenance-client-tls"] {
+	if !clientSecrets["patroni-etcd-client-tls"] || !clientSecrets["patroni-api-client-tls"] ||
+		!clientSecrets["etcd-maintenance-client-tls"] {
 		t.Fatalf("client certificate Secrets = %#v", clientSecrets)
 	}
 	objects, err := renderer.Workloads(desired)
@@ -933,7 +934,7 @@ func TestRendererConfiguresPgTDEBootstrap(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"shared_preload_libraries=pg_tde", "pg_tde_basebackup", "post_init: /operator/tde-bootstrap.sh",
-		"verify_client: optional", "certfile: /postgres-tls/tls.crt",
+		"verify_client: required", "certfile: /postgres-tls/tls.crt",
 		"synchronous_mode_strict: true", "hostssl all all 0.0.0.0/0 scram-sha-256",
 	} {
 		if !strings.Contains(patroniConfig, expected) {

@@ -50,22 +50,27 @@ func TestPatroniObserverReportsHealthyTopology(t *testing.T) {
 
 	certificate := server.Certificate()
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+	privateKey, err := x509.MarshalPKCS8PrivateKey(server.TLS.Certificates[0].PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKey})
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres-vic-0-tls"},
-		Data:       map[string][]byte{"ca.crt": caPEM},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "patroni-api-client-tls"},
+		Data:       map[string][]byte{"ca.crt": caPEM, "tls.crt": caPEM, "tls.key": keyPEM},
 	}).Build()
 	observer := PatroniObserver{
 		Client: kube,
-		HTTP: func(_ *x509.CertPool) *http.Client {
+		HTTP: func(_ *tls.Config) *http.Client {
 			return server.Client()
 		},
 	}
 	originalTransport := observer.HTTP(nil).Transport
-	observer.HTTP = func(_ *x509.CertPool) *http.Client {
+	observer.HTTP = func(_ *tls.Config) *http.Client {
 		return &http.Client{Transport: rewriteTransport{
 			target: server.URL, delegate: originalTransport,
 		}}
@@ -109,7 +114,7 @@ func TestPatroniSwitchoverUsesAuthenticatedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres-vic-0-tls"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "patroni-api-client-tls"},
 		Data: map[string][]byte{
 			"ca.crt": caPEM, "tls.crt": caPEM, "tls.key": keyPEM,
 		},
