@@ -274,10 +274,11 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 		Postgres: api.PostgresSpec{Image: "postgres:17"},
 		MemberAddresses: map[string]string{
 			"etcd-vic-0": "10.0.0.1", "etcd-nsw-0": "10.0.1.1", "etcd-qld-0": "10.0.2.1",
-			"postgres-vic-0": "10.0.0.10",
+			"postgres-vic-0": "10.0.0.10", "postgres-nsw-0": "10.0.1.10",
 		},
 	}
-	objects, err := (Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}).Workloads(desired)
+	renderer := Renderer{Images: Images{Etcd: "etcd", Pgpool: "pgpool"}}
+	objects, err := renderer.Workloads(desired)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,6 +296,12 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 	}
 	if config == nil || deployment == nil {
 		t.Fatal("Pgpool resources were not rendered")
+	}
+	for range 100 {
+		rendered := renderer.pgpoolConfig(desired, resourceLabels(desired))
+		if rendered.Data["pgpool.conf"] != config.Data["pgpool.conf"] {
+			t.Fatal("Pgpool backend rendering is nondeterministic")
+		}
 	}
 	for _, expected := range []string{
 		"enable_pool_hba = on", "pool_passwd = ''", "ssl = on", "ssl_key = '/tls/tls.key'",

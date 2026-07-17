@@ -1127,18 +1127,21 @@ func postgresMemberImage(desired plan.SitePlan, member string) string {
 }
 
 func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) *corev1.ConfigMap {
-	var backends []string
-	var ordinal int
-	for member, address := range desired.MemberAddresses {
+	var members []string
+	for member := range desired.MemberAddresses {
 		if !strings.HasPrefix(member, "postgres-") {
 			continue
 		}
+		members = append(members, member)
+	}
+	slices.Sort(members)
+	backends := make([]string, 0, len(members))
+	for ordinal, member := range members {
+		address := desired.MemberAddresses[member]
 		backends = append(backends, fmt.Sprintf(
 			"backend_hostname%d = '%s'\nbackend_port%d = 5432\nbackend_weight%d = 1\n",
 			ordinal, address, ordinal, ordinal))
-		ordinal++
 	}
-	slices.Sort(backends)
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "pgpool-" + desired.Site.Name, Labels: copyMap(labels),
