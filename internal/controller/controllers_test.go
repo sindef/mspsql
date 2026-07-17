@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -287,7 +287,7 @@ func TestStatusTransitionEmitsKubernetesEvent(t *testing.T) {
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(instance).WithObjects(instance).Build()
-	recorder := record.NewFakeRecorder(1)
+	recorder := events.NewFakeRecorder(1)
 	reconciler := &MultiSitePostgresReconciler{Client: kube, Recorder: recorder}
 	desired := instance.DeepCopy()
 	setCondition(&desired.Status.Conditions, desired.Generation, "Ready",

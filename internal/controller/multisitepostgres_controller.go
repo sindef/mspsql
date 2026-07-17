@@ -34,7 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -55,7 +55,7 @@ type MultiSitePostgresReconciler struct {
 	SystemNamespace       string
 	DefaultBackupSchedule string
 	Now                   func() time.Time
-	Recorder              record.EventRecorder
+	Recorder              events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch;create;update;patch;delete
@@ -64,6 +64,7 @@ type MultiSitePostgresReconciler struct {
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var instance multisitepostgresv1alpha1.MultiSitePostgres
@@ -696,8 +697,8 @@ func (r *MultiSitePostgresReconciler) updateInstanceStatus(ctx context.Context,
 			if condition.Status == metav1.ConditionFalse {
 				eventType = corev1.EventTypeWarning
 			}
-			r.Recorder.Eventf(instance, eventType, condition.Reason,
-				"%s: %s", condition.Type, condition.Message)
+			r.Recorder.Eventf(instance, nil, eventType, condition.Reason,
+				"ConditionChanged", "%s: %s", condition.Type, condition.Message)
 		}
 	}
 	return err
