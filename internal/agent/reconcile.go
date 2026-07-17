@@ -538,7 +538,8 @@ func restoreExpectsPostgres(desired plan.SitePlan) bool {
 			plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
 			plan.MajorUpgradePhaseRollback:
 			return false
-		case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites:
+		case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRollbackStart,
+			plan.MajorUpgradePhaseRestoreWrites:
 			return memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name)
 		}
 	}
@@ -866,7 +867,12 @@ func (r *Reconciler) workloadsReady(ctx context.Context, objects []client.Object
 					break
 				}
 				if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
-					return false, fmt.Sprintf("Job %s failed: %s", observed.Name, condition.Message), nil
+					message := condition.Message
+					if detail, detailErr := r.jobFailureDetail(ctx, &observed); detailErr == nil && detail != "" {
+						message += ": " + detail
+					}
+					return false, fmt.Sprintf("Job %s failed: %s", observed.Name,
+						boundedEventNote("%s", message)), nil
 				}
 			}
 			if complete {
@@ -876,6 +882,28 @@ func (r *Reconciler) workloadsReady(ctx context.Context, objects []client.Object
 		}
 	}
 	return true, "", nil
+}
+
+func (r *Reconciler) jobFailureDetail(ctx context.Context, job *batchv1.Job) (string, error) {
+	var pods corev1.PodList
+	if err := r.Client.List(ctx, &pods, client.InNamespace(job.Namespace),
+		client.MatchingLabels{"job-name": job.Name}); err != nil {
+		return "", err
+	}
+	for i := len(pods.Items) - 1; i >= 0; i-- {
+		for _, status := range pods.Items[i].Status.ContainerStatuses {
+			if status.State.Terminated == nil {
+				continue
+			}
+			terminated := status.State.Terminated
+			if terminated.Message != "" {
+				return terminated.Message, nil
+			}
+			return fmt.Sprintf("container %s exited %d (%s)", status.Name,
+				terminated.ExitCode, terminated.Reason), nil
+		}
+	}
+	return "", nil
 }
 
 func loadBalancerAddress(service *corev1.Service) (string, error) {

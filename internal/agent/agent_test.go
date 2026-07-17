@@ -784,6 +784,40 @@ func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 	}
 }
 
+func TestFailedJobReportsContainerOutput(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "major-upgrade"},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Message: "backoff limit reached",
+		}}},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "major-upgrade-pod",
+			Labels: map[string]string{"job-name": job.Name}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name: "upgrade", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: 1, Reason: "Error", Message: "pg_upgrade: incompatible extension",
+			}},
+		}}},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(job, pod).Build()
+	ready, message, err := (&Reconciler{Client: kube}).workloadsReady(
+		context.Background(), []client.Object{job})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready || !strings.Contains(message, "pg_upgrade: incompatible extension") {
+		t.Fatalf("failed Job detail = ready %t, message %q", ready, message)
+	}
+}
+
 func testTLSSecret(t *testing.T, namespace, name string, dnsNames []string, ipAddresses []net.IP) *corev1.Secret {
 	t.Helper()
 	now := time.Now()
@@ -1360,10 +1394,15 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	}
 	acceptanceJob := renderer.MajorAcceptanceJob(desired)
 	acceptanceCommand := acceptanceJob.Spec.Template.Spec.Containers[0].Command[2]
-	for _, expected := range []string{"SHOW server_version_num", "CREATE SCHEMA", "write_test", "DROP SCHEMA"} {
+	for _, expected := range []string{
+		"SHOW server_version_num", "SET synchronous_commit = local", "CREATE SCHEMA", "write_test", "DROP SCHEMA",
+	} {
 		if !strings.Contains(acceptanceCommand, expected) {
 			t.Fatalf("acceptance command is missing %q:\n%s", expected, acceptanceCommand)
 		}
+	}
+	if policy := acceptanceJob.Spec.Template.Spec.Containers[0].TerminationMessagePolicy; policy != corev1.TerminationMessageFallbackToLogsOnError {
+		t.Fatalf("acceptance termination message policy = %q", policy)
 	}
 	dcsJob := renderer.MajorDCSResetJob(desired)
 	dcsSecurity := dcsJob.Spec.Template.Spec.Containers[0].SecurityContext
@@ -1373,6 +1412,22 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	}
 	if command := dcsJob.Spec.Template.Spec.Containers[0].Command; !slices.Equal(command, []string{"etcdctl"}) {
 		t.Fatalf("DCS reset command = %v", command)
+	}
+}
+
+func TestMajorRollbackOnlyStartsSourcePrimary(t *testing.T) {
+	desired := plan.SitePlan{
+		Site: api.PostgresSiteSpec{Name: "vic", Role: api.SiteRoleData},
+		MajorUpgrade: &plan.MajorUpgradePlan{
+			Phase: plan.MajorUpgradePhaseRollbackStart, Primary: "postgres-nsw-0",
+		},
+	}
+	if restoreExpectsPostgres(desired) {
+		t.Fatal("non-primary rollback site expected PostgreSQL to run")
+	}
+	desired.Site.Name = "nsw"
+	if !restoreExpectsPostgres(desired) {
+		t.Fatal("source-primary rollback site did not expect PostgreSQL to run")
 	}
 }
 

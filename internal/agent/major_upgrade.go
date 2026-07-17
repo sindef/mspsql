@@ -597,6 +597,7 @@ done
 test "$ready" = true
 test "$(psql -X -h %q -d postgres -Atqc 'SHOW server_version_num')" -ge %d0000
 psql -X -h %q -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+SET synchronous_commit = local;
 DROP SCHEMA IF EXISTS %s CASCADE;
 CREATE SCHEMA %s;
 CREATE TABLE %s.write_test (value integer PRIMARY KEY);
@@ -704,6 +705,7 @@ func majorJob(desired plan.SitePlan, name, image, script string,
 					Containers: []corev1.Container{{
 						Name: "upgrade", Image: image, Command: []string{"/bin/sh", "-ec", script},
 						SecurityContext: restrictedContainer(), VolumeMounts: mounts,
+						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 					}},
 					Volumes: volumes,
 				},
