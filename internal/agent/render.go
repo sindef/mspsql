@@ -1032,8 +1032,11 @@ exec patroni /tmp/patroni.yml`, name, address)
 			corev1.Volume{Name: "pgbackrest-spool", VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			}},
-			corev1.Volume{Name: "pgbackrest-tls", VolumeSource: corev1.VolumeSource{
+			corev1.Volume{Name: "pgbackrest-tls-source", VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{SecretName: name + "-pgbackrest-tls"},
+			}},
+			corev1.Volume{Name: "pgbackrest-tls", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			}},
 		)
 		containers[0].VolumeMounts = append(containers[0].VolumeMounts,
@@ -1056,6 +1059,17 @@ exec patroni /tmp/patroni.yml`, name, address)
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "pgbackrest-template", MountPath: "/template", ReadOnly: true},
 				{Name: "pgbackrest-runtime", MountPath: "/runtime"},
+			},
+		})
+		initContainers = append(initContainers, corev1.Container{
+			Name: "pgbackrest-tls", Image: image,
+			Command: []string{"/bin/bash", "-ec",
+				"cp /tls-source/ca.crt /tls/ca.crt; cp /tls-source/tls.crt /tls/tls.crt; " +
+					"cp /tls-source/tls.key /tls/tls.key; chmod 644 /tls/ca.crt /tls/tls.crt; chmod 600 /tls/tls.key"},
+			SecurityContext: restrictedContainer(),
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "pgbackrest-tls-source", MountPath: "/tls-source", ReadOnly: true},
+				{Name: "pgbackrest-tls", MountPath: "/tls"},
 			},
 		})
 		containers = append(containers, corev1.Container{

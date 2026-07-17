@@ -1027,9 +1027,12 @@ func TestRendererConfiguresPgBackRestDataPlane(t *testing.T) {
 	if strings.Contains(config.String(), "s3-secret-key") {
 		t.Fatal("repository credentials were rendered into a ConfigMap")
 	}
-	if postgres == nil || len(postgres.Spec.Template.Spec.InitContainers) != 1 ||
+	if postgres == nil || len(postgres.Spec.Template.Spec.InitContainers) != 2 ||
 		!hasContainer(postgres.Spec.Template.Spec.Containers, "pgbackrest") ||
-		!hasVolume(postgres.Spec.Template.Spec.Volumes, "pgbackrest-tls") {
+		!hasVolume(postgres.Spec.Template.Spec.Volumes, "pgbackrest-tls") ||
+		!hasVolume(postgres.Spec.Template.Spec.Volumes, "pgbackrest-tls-source") ||
+		!strings.Contains(postgres.Spec.Template.Spec.InitContainers[1].Command[2],
+			"chmod 600 /tls/tls.key") {
 		t.Fatalf("PostgreSQL pgBackRest pod layout = %#v", postgres)
 	}
 	certificates := renderer.Certificates(desired)

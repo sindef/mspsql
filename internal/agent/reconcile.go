@@ -354,7 +354,7 @@ func (r *Reconciler) reconcileCertificates(ctx context.Context, desired *plan.Si
 	}
 	setLocalCondition(&result.Conditions, "EtcdTLSReady", metav1.ConditionTrue,
 		"TrustBundleObserved", etcdFingerprint)
-	if desired.Backup == nil {
+	if desired.Backup == nil || desired.Site.Role == api.SiteRoleWitness {
 		return true, nil
 	}
 	fingerprint, err := r.trustBundleFingerprint(ctx, desired.Site.Namespace,
