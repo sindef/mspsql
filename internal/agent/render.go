@@ -1183,10 +1183,7 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 				"backend_clustering_mode = 'streaming_replication'\n" +
 				"sr_check_period = 5\nsr_check_user = '${POSTGRES_SUPERUSER_USERNAME}'\n" +
 				"sr_check_password = '${POSTGRES_SUPERUSER_PASSWORD}'\n" +
-				"sr_check_database = 'postgres'\nhealth_check_period = 5\n" +
-				"health_check_user = '${POSTGRES_SUPERUSER_USERNAME}'\n" +
-				"health_check_password = '${POSTGRES_SUPERUSER_PASSWORD}'\n" +
-				"health_check_database = 'postgres'\nhealth_check_max_retries = 3\n" +
+				"sr_check_database = 'postgres'\nhealth_check_period = 0\n" +
 				"auto_failback = on\nfailover_on_backend_error = off\n" +
 				"enable_pool_hba = on\npool_passwd = ''\nssl = on\n" +
 				"ssl_key = '/tls/tls.key'\nssl_cert = '/tls/tls.crt'\n" +

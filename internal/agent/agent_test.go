@@ -327,7 +327,7 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 		"enable_pool_hba = on", "pool_passwd = ''", "ssl = on", "ssl_key = '/tls/tls.key'",
 		"ssl_cert = '/tls/tls.crt'", "ssl_ca_cert = '/backend-ca/ca.crt'",
 		"backend_clustering_mode = 'streaming_replication'", "sr_check_period = 5",
-		"health_check_period = 5", "${POSTGRES_SUPERUSER_PASSWORD}",
+		"health_check_period = 0", "${POSTGRES_SUPERUSER_PASSWORD}",
 	} {
 		if !strings.Contains(config.Data["pgpool.conf"], expected) {
 			t.Errorf("Pgpool configuration is missing %q", expected)
