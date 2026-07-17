@@ -480,6 +480,25 @@ func TestMajorUpgradeRetainsOldPGDATAPath(t *testing.T) {
 	}
 }
 
+func TestOldPGDATAPathValidation(t *testing.T) {
+	now := time.Now()
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+		"multisite-postgres.dev/old-data-path":       "data/.mspsql-old-17",
+		"multisite-postgres.dev/old-data-expires-at": now.Add(time.Hour).Format(time.RFC3339),
+		"multisite-postgres.dev/old-data-operation":  "upgrade",
+	}}}
+	cleaned, err := (&Reconciler{}).cleanupExpiredOldData(
+		context.Background(), plan.SitePlan{}, claim, now)
+	if err != nil || !cleaned {
+		t.Fatalf("valid retained path = %t, %v", cleaned, err)
+	}
+	claim.Annotations["multisite-postgres.dev/old-data-path"] = "data/../../etc"
+	if _, err := (&Reconciler{}).cleanupExpiredOldData(
+		context.Background(), plan.SitePlan{}, claim, now); err == nil {
+		t.Fatal("unsafe retained path was accepted")
+	}
+}
+
 func TestFillMissingAddressesPreservesSerializedPlan(t *testing.T) {
 	planned := map[string]string{"etcd-vic-0": "10.0.0.1"}
 	observed := map[string]string{
@@ -1216,6 +1235,13 @@ func TestRendererMajorUpgradeControlsServiceRestorationBoundary(t *testing.T) {
 		"pgpool-vic":     {replicas: 0},
 	})
 
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseRollbackStart
+	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
+		"postgres-vic-0": {replicas: 1, image: "postgres:17"},
+		"postgres-vic-1": {replicas: 0, image: "postgres:17"},
+		"pgpool-vic":     {replicas: 0},
+	})
+
 	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseReplicas
 	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
 		"postgres-vic-0": {replicas: 1, image: "postgres:18"},
@@ -1326,6 +1352,11 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	stanzaCommand := stanzaJob.Spec.Template.Spec.Containers[0].Command[2]
 	if !strings.Contains(stanzaCommand, "--no-online stanza-upgrade") {
 		t.Fatalf("stanza upgrade command = %q", stanzaCommand)
+	}
+	if !hasVolumeMount(stanzaJob.Spec.Template.Spec.Containers[0].VolumeMounts,
+		"data", "/var/lib/postgresql") {
+		t.Fatalf("stanza upgrade data mounts = %#v",
+			stanzaJob.Spec.Template.Spec.Containers[0].VolumeMounts)
 	}
 	acceptanceJob := renderer.MajorAcceptanceJob(desired)
 	acceptanceCommand := acceptanceJob.Spec.Template.Spec.Containers[0].Command[2]

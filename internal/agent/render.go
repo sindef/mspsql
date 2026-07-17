@@ -258,7 +258,8 @@ func majorMemberStopped(desired plan.SitePlan, member string) bool {
 		plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
 		plan.MajorUpgradePhaseRollback:
 		return true
-	case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites:
+	case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRollbackStart,
+		plan.MajorUpgradePhaseRestoreWrites:
 		return member != desired.MajorUpgrade.Primary
 	default:
 		return false

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -555,7 +556,7 @@ pgbackrest --config=/tmp/pgbackrest.conf --stanza=%q --no-online stanza-upgrade
 				Secret: &corev1.SecretVolumeSource{SecretName: upgrade.Primary + "-pgbackrest-tls"},
 			}},
 		}, []corev1.VolumeMount{
-			{Name: "data", MountPath: "/var/lib/postgresql/data"},
+			{Name: "data", MountPath: "/var/lib/postgresql"},
 			{Name: "template", MountPath: "/template", ReadOnly: true},
 			{Name: "repository", MountPath: "/repository", ReadOnly: true},
 			{Name: "pgbackrest-tls", MountPath: "/pgbackrest-tls", ReadOnly: true},
@@ -770,7 +771,12 @@ func (r *Reconciler) cleanupExpiredOldData(ctx context.Context, desired plan.Sit
 	if path == "" || expires == "" || operation == "" {
 		return false, nil
 	}
-	if !strings.HasPrefix(path, ".mspsql-old-") || strings.Contains(path, "/") {
+	const oldDataPrefix = "data/.mspsql-old-"
+	major := strings.TrimPrefix(path, oldDataPrefix)
+	if major == path || major == "" || strings.ContainsAny(major, `/\`) {
+		return true, fmt.Errorf("refusing invalid retained old-data path %q", path)
+	}
+	if _, err := strconv.ParseUint(major, 10, 32); err != nil {
 		return true, fmt.Errorf("refusing invalid retained old-data path %q", path)
 	}
 	expiresAt, err := time.Parse(time.RFC3339, expires)
