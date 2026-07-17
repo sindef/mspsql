@@ -367,7 +367,9 @@ func memberService(namespace, name, podName string, labels map[string]string, lo
 	ports []corev1.ServicePort,
 ) *corev1.Service {
 	selector := map[string]string{"statefulset.kubernetes.io/pod-name": podName}
-	return loadBalancerService(namespace, name, labels, selector, loadBalancer, ports)
+	service := loadBalancerService(namespace, name, labels, selector, loadBalancer, ports)
+	service.Spec.PublishNotReadyAddresses = true
+	return service
 }
 
 func loadBalancerService(namespace, name string, labels, selector map[string]string,

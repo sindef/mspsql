@@ -139,8 +139,16 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		},
 	}
 	renderer := Renderer{Images: Images{Etcd: "etcd:3.6", Pgpool: "pgpool:4.6"}}
-	if got := len(renderer.LoadBalancers(desired)); got != 5 {
+	loadBalancers := renderer.LoadBalancers(desired)
+	if got := len(loadBalancers); got != 5 {
 		t.Fatalf("LoadBalancer count = %d", got)
+	}
+	for _, object := range loadBalancers {
+		service := object.(*corev1.Service)
+		isMember := strings.HasPrefix(service.Name, "etcd-") || strings.HasPrefix(service.Name, "postgres-")
+		if service.Spec.PublishNotReadyAddresses != isMember {
+			t.Fatalf("Service %s publishNotReadyAddresses = %t", service.Name, service.Spec.PublishNotReadyAddresses)
+		}
 	}
 	certificates := renderer.Certificates(desired)
 	if got := len(certificates); got != 7 {
