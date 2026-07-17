@@ -600,8 +600,17 @@ test "${vault_ready}" = "False"
 test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
   -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
-kubectl --kubeconfig="${replica_kubeconfig}" -n vault patch service vault --type=merge \
-  -p "$(jq -cn --argjson selector "${vault_selector}" '{spec: {selector: $selector}}')"
+kubectl --kubeconfig="${replica_kubeconfig}" -n vault patch service vault --type=json \
+  -p "$(jq -cn --argjson selector "${vault_selector}" \
+    '[{op: "replace", path: "/spec/selector", value: $selector}]')"
+for _ in $(seq 1 60); do
+  vault_endpoints="$(kubectl --kubeconfig="${replica_kubeconfig}" -n vault \
+    get endpointslice -l kubernetes.io/service-name=vault -o json | \
+    jq '[.items[]?.endpoints[]? | select(.conditions.ready == true)] | length')"
+  [[ "${vault_endpoints}" -ge 1 ]] && break
+  sleep 1
+done
+test "${vault_endpoints}" -ge 1
 kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
 
 replica_tls_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
