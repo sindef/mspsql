@@ -25,7 +25,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -76,7 +75,7 @@ func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 			{Name: "postgres", Port: 5432, TargetPort: intstr.FromInt32(5432)},
 			{Name: "patroni", Port: 8008, TargetPort: intstr.FromInt32(8008)},
 		}
-		if desired.Backup != nil {
+		if backupWorkloadsEnabled(desired) {
 			ports = append(ports, corev1.ServicePort{
 				Name: "pgbackrest", Port: 8432, TargetPort: intstr.FromInt32(8432),
 			})
@@ -111,7 +110,7 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 			"patroni-etcd-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels))
 		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-api-client",
 			"patroni-api-client-tls", desired.Site.Certificates.PostgresIssuerRef, labels))
-		if desired.Backup != nil {
+		if backupWorkloadsEnabled(desired) {
 			objects = append(objects, clientCertificate(desired.Site.Namespace, "pgbackrest-client",
 				"pgbackrest-client-tls", desired.Site.Certificates.BackupIssuerRef, labels))
 		}
@@ -121,7 +120,7 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
 			desired.Site.Certificates.PostgresIssuerRef, labels, certificateAddresses(desired, name),
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
-		if desired.Backup != nil {
+		if backupWorkloadsEnabled(desired) {
 			objects = append(objects, certificate(desired.Site.Namespace, name+"-pgbackrest",
 				name+"-pgbackrest-tls", desired.Site.Certificates.BackupIssuerRef, labels,
 				certificateAddresses(desired, name),
@@ -135,6 +134,12 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 	}
 	return objects
+}
+
+func backupWorkloadsEnabled(desired plan.SitePlan) bool {
+	return desired.Backup != nil || desired.Restore != nil &&
+		desired.Restore.Phase == plan.RestorePhaseSeed &&
+		desired.Site.Name == desired.Restore.SeedSite
 }
 
 func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
@@ -714,7 +719,7 @@ func (r Renderer) restoreBootstrapConfig(desired plan.SitePlan,
 		"--pg1-path=/var/lib/postgresql/data",
 		"--delta",
 		"--type=time",
-		"--target=" + desired.Restore.TargetTime.UTC().Format(time.RFC3339Nano),
+		"--target=" + desired.Restore.TargetTime.UTC().Format("2006-01-02 15:04:05.999999999+00"),
 		"--target-action=promote",
 	}
 	if desired.Restore.BackupSet != "" {

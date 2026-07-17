@@ -602,10 +602,30 @@ func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"--stanza=mspsql-source", "--type=time", "--target-action=promote",
-		"--set=20260716-010000F",
+		"--target=2026-07-16 02:15:00+00", "--set=20260716-010000F",
 	} {
 		if !strings.Contains(restoreScript, expected) {
 			t.Fatalf("restore script is missing %q:\n%s", expected, restoreScript)
+		}
+	}
+	certificateNames := map[string]bool{}
+	for _, object := range (Renderer{}).Certificates(desired) {
+		certificateNames[object.GetName()] = true
+	}
+	for _, expected := range []string{"pgbackrest-client", "postgres-vic-0-pgbackrest", "postgres-vic-1-pgbackrest"} {
+		if !certificateNames[expected] {
+			t.Errorf("restore seed certificate %q was not rendered", expected)
+		}
+	}
+	for _, object := range (Renderer{}).LoadBalancers(desired) {
+		service, ok := object.(*corev1.Service)
+		if !ok || service.Name != "postgres-vic-0" {
+			continue
+		}
+		if !slices.ContainsFunc(service.Spec.Ports, func(port corev1.ServicePort) bool {
+			return port.Name == "pgbackrest" && port.Port == 8432
+		}) {
+			t.Error("restore seed service does not expose pgBackRest")
 		}
 	}
 }
