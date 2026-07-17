@@ -1142,7 +1142,7 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 		},
 		Data: map[string]string{
 			"pgpool.conf": "listen_addresses = '*'\nport = 5432\n" +
-				"enable_pool_hba = on\nssl = on\n" +
+				"enable_pool_hba = on\npool_passwd = ''\nssl = on\n" +
 				"ssl_key = '/tls/tls.key'\nssl_cert = '/tls/tls.crt'\n" +
 				"ssl_ca_cert = '/backend-ca/ca.crt'\n" + strings.Join(backends, ""),
 			"pool_hba.conf": "hostssl all all 0.0.0.0/0 password\n",

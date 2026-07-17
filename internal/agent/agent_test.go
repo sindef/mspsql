@@ -254,7 +254,7 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 		t.Fatal("Pgpool resources were not rendered")
 	}
 	for _, expected := range []string{
-		"enable_pool_hba = on", "ssl = on", "ssl_key = '/tls/tls.key'",
+		"enable_pool_hba = on", "pool_passwd = ''", "ssl = on", "ssl_key = '/tls/tls.key'",
 		"ssl_cert = '/tls/tls.crt'", "ssl_ca_cert = '/backend-ca/ca.crt'",
 	} {
 		if !strings.Contains(config.Data["pgpool.conf"], expected) {
