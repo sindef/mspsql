@@ -340,6 +340,12 @@ test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
   wg show wg0 peers | wc -l | tr -d ' ')" = "3"
 
 kubectl create namespace database-platform
+if validation_error="$(sed 's/deletionPolicy: Retain/deletionPolicy: Destroy/' \
+  test/kind/instance.yaml | kubectl apply -f - 2>&1)"; then
+  echo "invalid deletionPolicy was accepted" >&2
+  exit 1
+fi
+grep -q 'Unsupported value.*Destroy' <<<"${validation_error}"
 sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml | kubectl apply -f -
 
 for site in vic nsw qld; do
@@ -379,6 +385,33 @@ done
 test "${phase}" = "Ready"
 test "$(kubectl -n database-platform get configmap \
   -l multisite-postgres.dev/site-registration-uid -o name | wc -l | tr -d ' ')" = "3"
+for _ in $(seq 1 30); do
+  hub_events="$(kubectl -n database-platform get events.events.k8s.io -o json | jq \
+    '[.items[] | select(.reportingController == "multisitepostgres" and .regarding.name == "orders")] | length')"
+  [[ "${hub_events}" -gt 0 ]] && break
+  sleep 2
+done
+test "${hub_events}" -gt 0
+hub_metrics="$(kubectl get --raw \
+  '/api/v1/namespaces/mspsql-system/services/http:mspsql-controller-external:8080/proxy/metrics')"
+grep -q '^mspsql_agent_connected' <<<"${hub_metrics}"
+grep -q '^mspsql_plan_revision_lag' <<<"${hub_metrics}"
+grep -q '^mspsql_synchronous_write_available' <<<"${hub_metrics}"
+for site in vic nsw qld; do
+  site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
+  agent_metrics="$(kubectl --kubeconfig="${site_kubeconfig}" get --raw \
+    '/api/v1/namespaces/mspsql-agent/services/http:mspsql-agent-metrics:8080/proxy/metrics')"
+  grep -q '^mspsql_agent_connected' <<<"${agent_metrics}"
+  grep -q '^mspsql_agent_certificate_expiry_timestamp_seconds' <<<"${agent_metrics}"
+  for _ in $(seq 1 30); do
+    agent_events="$(kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent \
+      get events.events.k8s.io -o json | jq \
+      '[.items[] | select(.reportingController == "multisite-postgres.dev/site-agent" and .regarding.kind == "ConfigMap")] | length')"
+    [[ "${agent_events}" -gt 0 ]] && break
+    sleep 2
+  done
+  test "${agent_events}" -gt 0
+done
 
 kubectl apply -f test/kind/tenant.yaml
 kubectl -n database-platform wait --for=condition=Ready postgresdatabase/orders-api --timeout=300s
@@ -546,6 +579,55 @@ done
 test "${backup_jobs}" -ge 1
 test "$(docker exec mspsql-minio mc find local/mspsql-backups --insecure | wc -l | tr -d ' ')" -gt 0
 
+upgrade_source_primary="${primary}"
+kubectl -n database-platform apply -f - <<'EOF'
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: PostgresUpgrade
+metadata:
+  name: orders-patch
+spec:
+  instanceRef: orders
+  targetImage: percona/percona-distribution-postgresql@sha256:f10a110088699edd09ab706446f2c55db9390dd56381d5d0032ee70e3fe01d2a
+  targetMajorVersion: 17
+  serviceRestorationTarget: 10m
+EOF
+kubectl -n database-platform wait --for=condition=Ready \
+  postgresupgrade/orders-patch --timeout=900s
+test "$(kubectl -n database-platform get postgresupgrade orders-patch \
+  -o jsonpath='{.status.phase}')" = "Completed"
+test "$(kubectl -n database-platform get postgresupgrade orders-patch \
+  -o json | jq '.status.upgradedMembers | length')" = "2"
+target_image="$(kubectl -n database-platform get postgresupgrade orders-patch \
+  -o jsonpath='{.spec.targetImage}')"
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.spec.postgres.image}')" = "${target_image}"
+for site in vic nsw; do
+  site_config="${temp_dir}/mspsql-${site}.kubeconfig"
+  test "$(kubectl --kubeconfig="${site_config}" -n orders-postgres get statefulset \
+    "postgres-${site}-0" -o jsonpath='{.spec.template.spec.containers[?(@.name=="postgres-patroni")].image}')" = \
+    "${target_image}"
+done
+primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+test -n "${primary}"
+test "${primary}" != "${upgrade_source_primary}"
+case "${primary}" in
+  postgres-vic-*) primary_site=vic; replica_site=nsw ;;
+  postgres-nsw-*) primary_site=nsw; replica_site=vic ;;
+  *) echo "unexpected primary after patch upgrade ${primary}" >&2; exit 1 ;;
+esac
+primary_kubeconfig="${temp_dir}/mspsql-${primary_site}.kubeconfig"
+replica_kubeconfig="${temp_dir}/mspsql-${replica_site}.kubeconfig"
+primary_pod="${primary}-0"
+replica="postgres-${replica_site}-0"
+replica_pod="${replica}-0"
+primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+replica_password="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
+  -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
+
 docker pause "mspsql-${primary_site}-control-plane" >/dev/null
 for _ in $(seq 1 120); do
   promoted="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
@@ -648,9 +730,32 @@ restored_rows="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_na
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT count(*) FROM mspsql_e2e')"
 test "${restored_rows}" = "1"
 
+kubectl -n database-platform patch multisitepostgres orders --type=merge \
+  -p '{"spec":{"deletionPolicy":"Delete"}}'
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
+docker pause mspsql-qld-control-plane >/dev/null
 kubectl -n database-platform delete multisitepostgres orders --wait=false
-kubectl -n database-platform wait --for=delete multisitepostgres/orders --timeout=180s
+kubectl -n database-platform wait --for=condition=DeletionBlocked \
+  multisitepostgres/orders --timeout=300s
+kubectl -n database-platform get multisitepostgres orders >/dev/null
+docker unpause mspsql-qld-control-plane >/dev/null
+for _ in $(seq 1 120); do
+  kubectl --kubeconfig="${temp_dir}/mspsql-qld.kubeconfig" get --raw=/readyz >/dev/null 2>&1 && break
+  sleep 2
+done
+kubectl --kubeconfig="${temp_dir}/mspsql-qld.kubeconfig" get --raw=/readyz >/dev/null
+kubectl -n database-platform wait --for=delete multisitepostgres/orders --timeout=600s
 for site in vic nsw qld; do
-  kind get kubeconfig --name "mspsql-${site}" |
-    kubectl --kubeconfig=/dev/stdin get namespace orders-postgres >/dev/null
+  if kubectl --kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig" \
+    get namespace orders-postgres >/dev/null 2>&1; then
+    echo "Delete policy retained orders-postgres in ${site}" >&2
+    exit 1
+  fi
+done
+
+kubectl -n database-platform delete multisitepostgres orders-recovered --wait=false
+kubectl -n database-platform wait --for=delete multisitepostgres/orders-recovered --timeout=300s
+for site in vic nsw qld; do
+  kubectl --kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig" \
+    get namespace "orders-recovered-${site}" >/dev/null
 done
