@@ -483,7 +483,7 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 						Ports: []corev1.ContainerPort{{Name: "client", ContainerPort: 2379}, {Name: "peer", ContainerPort: 2380}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
-								"etcdctl", "--endpoints=https://127.0.0.1:2379",
+								"etcdctl", "--endpoints=https://" + address + ":2379",
 								"--cacert=/tls/ca.crt", "--cert=/tls/tls.crt", "--key=/tls/tls.key", "endpoint", "health",
 							}}},
 							PeriodSeconds: 10, FailureThreshold: 6,

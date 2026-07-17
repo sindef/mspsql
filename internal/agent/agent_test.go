@@ -225,6 +225,10 @@ func assertEtcdSupportsLoadBalancedPeers(t *testing.T, statefulSet *appsv1.State
 	if !slices.Contains(args, "--peer-skip-client-san-verification=true") {
 		t.Fatalf("etcd does not support authenticated peers through load balancers: %v", args)
 	}
+	probe := statefulSet.Spec.Template.Spec.Containers[0].ReadinessProbe.Exec.Command
+	if !slices.Contains(probe, "--endpoints=https://10.0.0.1:2379") {
+		t.Fatalf("etcd readiness does not verify the issued service identity: %v", probe)
+	}
 }
 
 func assertPatroniEtcdHosts(t *testing.T, object client.Object) {
