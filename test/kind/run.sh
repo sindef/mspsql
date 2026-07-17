@@ -357,7 +357,16 @@ EOF
   done
   test -n "${registration_url}"
   site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
-  curl -fsS "${registration_url}" | kubectl --kubeconfig="${site_kubeconfig}" apply -f -
+  registration_bundle="${temp_dir}/${site}-registration.yaml"
+  for _ in $(seq 1 120); do
+    if curl -fsS --connect-timeout 2 --max-time 10 "${registration_url}" \
+      -o "${registration_bundle}" && test -s "${registration_bundle}"; then
+      break
+    fi
+    sleep 1
+  done
+  test -s "${registration_bundle}"
+  kubectl --kubeconfig="${site_kubeconfig}" apply -f "${registration_bundle}"
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic vault-ca \
     --from-file=ca.crt="${temp_dir}/ca.crt"
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent create secret generic minio-ca \
