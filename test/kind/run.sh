@@ -559,6 +559,13 @@ test "${promoted}" = "t"
 test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
   -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
+for _ in $(seq 1 180); do
+  ready_status="$(kubectl -n database-platform get multisitepostgres orders \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+  [[ "${ready_status}" == "False" ]] && break
+  sleep 2
+done
+test "${ready_status}" = "False"
 docker unpause "mspsql-${primary_site}-control-plane" >/dev/null
 for _ in $(seq 1 120); do
   kubectl --kubeconfig="${primary_kubeconfig}" get --raw=/readyz >/dev/null 2>&1 && break
@@ -567,8 +574,16 @@ done
 kubectl --kubeconfig="${primary_kubeconfig}" get --raw=/readyz >/dev/null
 kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres wait --for=condition=Ready \
   pod/"${primary_pod}" --timeout=300s
-kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=600s
-primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+for _ in $(seq 1 300); do
+  primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+  ready_status="$(kubectl -n database-platform get multisitepostgres orders \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+  [[ -n "${primary}" && "${ready_status}" == "True" ]] && break
+  sleep 2
+done
+test -n "${primary}"
+test "${ready_status}" = "True"
+test "${primary}" = "${replica}"
 case "${primary}" in
   postgres-vic-*) primary_site=vic; replica_site=nsw ;;
   postgres-nsw-*) primary_site=nsw; replica_site=vic ;;
