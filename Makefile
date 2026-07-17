@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+UPGRADE_IMG ?= mspsql-postgres-upgrade:17-to-18
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 BUF_VERSION ?= v1.71.0
@@ -118,6 +119,10 @@ tun-device-plugin-build: fmt vet ## Build the TUN device plugin binary.
 .PHONY: wireguard-image
 wireguard-image: ## Build the userspace WireGuard image.
 	$(CONTAINER_TOOL) build -f Dockerfile.wireguard -t ghcr.io/sindef/mspsql-wireguard:latest .
+
+.PHONY: upgrade-image
+upgrade-image: ## Build the pinned PostgreSQL 17-to-18 upgrade image.
+	$(CONTAINER_TOOL) build -f Dockerfile.upgrade -t $(UPGRADE_IMG) .
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.

@@ -1,0 +1,14 @@
+FROM percona/percona-distribution-postgresql@sha256:f10a110088699edd09ab706446f2c55db9390dd56381d5d0032ee70e3fe01d2a AS source
+FROM percona/percona-distribution-postgresql@sha256:e2cc221e458a11b8cc39cbf74e947289568d3e182de5036eadef66d9c15569fb
+
+USER 0:0
+COPY --from=source /usr/pgsql-17 /opt/mspsql/old
+RUN cp -a /usr/pgsql-18 /opt/mspsql/new \
+    && test -x /opt/mspsql/old/bin/postgres \
+    && test -x /opt/mspsql/old/bin/pg_upgrade \
+    && test -x /opt/mspsql/new/bin/postgres \
+    && test -x /opt/mspsql/new/bin/initdb \
+    && test -x /opt/mspsql/new/bin/pg_ctl
+
+ENV PATH=/opt/mspsql/new/bin:/opt/mspsql/old/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER 26:26

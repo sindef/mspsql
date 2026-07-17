@@ -61,3 +61,4 @@ jobs:
           docker build -f Dockerfile.gateway -t mspsql-gateway:test .
           docker build -f Dockerfile.wireguard -t mspsql-wireguard:test .
           docker build -f Dockerfile.tun-device-plugin -t mspsql-tun-device-plugin:test .
+          docker build -f Dockerfile.upgrade -t mspsql-postgres-upgrade:test .
