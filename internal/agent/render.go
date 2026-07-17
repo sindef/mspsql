@@ -928,7 +928,7 @@ export PATRONI_CONNECT_ADDRESS=%q
 envsubst < /config/patroni.yml > /tmp/patroni.yml
 exec patroni /tmp/patroni.yml`, name, address)
 	volumeMounts := []corev1.VolumeMount{
-		{Name: "data", MountPath: "/var/lib/postgresql/data"},
+		{Name: "data", MountPath: "/var/lib/postgresql"},
 		{Name: "config", MountPath: "/config", ReadOnly: true},
 		{Name: "credentials", MountPath: "/credentials", ReadOnly: true},
 		{Name: "etcd-tls", MountPath: "/etcd-tls", ReadOnly: true},
@@ -1052,7 +1052,7 @@ exec patroni /tmp/patroni.yml`, name, address)
 			},
 			SecurityContext: restrictedContainer(),
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "data", MountPath: "/var/lib/postgresql/data", ReadOnly: true},
+				{Name: "data", MountPath: "/var/lib/postgresql", ReadOnly: true},
 				{Name: "pgbackrest-runtime", MountPath: "/etc/pgbackrest", ReadOnly: true},
 				{Name: "pgbackrest-repository", MountPath: "/repository", ReadOnly: true},
 				{Name: "pgbackrest-spool", MountPath: "/var/spool/pgbackrest"},

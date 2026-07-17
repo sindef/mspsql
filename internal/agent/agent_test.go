@@ -189,6 +189,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 			continue
 		}
 		assertEtcdSupportsLoadBalancedPeers(t, statefulSet)
+		assertPostgresOwnsDataDirectory(t, statefulSet)
 		if statefulSet.Name == "etcd-vic-0" {
 			if command := statefulSet.Spec.Template.Spec.Containers[0].Command; !slices.Equal(command, []string{"etcd"}) {
 				t.Fatalf("etcd command = %v", command)
@@ -212,6 +213,18 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		command := statefulSet.Spec.Template.Spec.Containers[0].Command[2]
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
+		}
+	}
+}
+
+func assertPostgresOwnsDataDirectory(t *testing.T, statefulSet *appsv1.StatefulSet) {
+	t.Helper()
+	if statefulSet.Name != "postgres-vic-0" {
+		return
+	}
+	for _, mount := range statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if mount.Name == "data" && mount.MountPath != "/var/lib/postgresql" {
+			t.Fatalf("PostgreSQL PVC root is used as PGDATA: %#v", mount)
 		}
 	}
 }
