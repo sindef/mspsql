@@ -64,10 +64,21 @@ type Reconciler struct {
 	Topology  *PatroniObserver
 	HubDomain string
 	SiteUID   string
+	Events    *EventReporter
 	applyLock sync.Mutex
 }
 
 func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
+	connected bool,
+) (ApplyResult, error) {
+	result, err := r.reconcile(ctx, desired, previous, connected)
+	if r.Events != nil {
+		r.Events.Observe(desired.InstanceUID, result, err)
+	}
+	return result, err
+}
+
+func (r *Reconciler) reconcile(ctx context.Context, desired, previous plan.SitePlan,
 	connected bool,
 ) (ApplyResult, error) {
 	r.applyLock.Lock()

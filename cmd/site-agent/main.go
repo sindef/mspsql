@@ -41,7 +41,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -151,6 +153,7 @@ func main() {
 		LockConfig: resourcelock.ResourceLockConfig{Identity: identity},
 	}
 	ctx := ctrl.SetupSignalHandler()
+	reconciler.Events = targetEventReporter(ctx, config, namespace)
 	serveMetrics(ctx, metricsAddress, agentMetrics)
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock: lock, LeaseDuration: 60 * time.Second, RenewDeadline: 40 * time.Second,
@@ -180,6 +183,21 @@ func main() {
 			},
 		},
 	})
+}
+
+func targetEventReporter(ctx context.Context, config *rest.Config, namespace string) *agent.EventReporter {
+	broadcaster := events.NewBroadcaster(&events.EventSinkImpl{
+		Interface: kubernetes.NewForConfigOrDie(config).EventsV1(),
+	})
+	go func() {
+		if err := broadcaster.StartRecordingToSinkWithContext(ctx); err != nil && ctx.Err() == nil {
+			crlog.FromContext(ctx).Error(err, "Target event recorder stopped")
+		}
+	}()
+	return &agent.EventReporter{
+		Recorder:  broadcaster.NewRecorder(clientgoscheme.Scheme, "multisite-postgres.dev/site-agent"),
+		Namespace: namespace,
+	}
 }
 
 func clients(config *rest.Config) client.Client {
