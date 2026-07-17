@@ -608,7 +608,7 @@ func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 		return err
 	}
 	if err := r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
-		client.FieldOwner("mspsql-agent")); err != nil {
+		client.FieldOwner("mspsql-agent"), client.ForceOwnership); err != nil {
 		return fmt.Errorf("apply %T %s/%s: %w",
 			object, object.GetNamespace(), object.GetName(), err)
 	}
