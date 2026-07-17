@@ -84,6 +84,11 @@ func (c *Cache) Store(ctx context.Context, envelope plan.Envelope, instanceUID s
 	} else if err != nil {
 		return plan.SitePlan{}, err
 	}
+	if configMap.Data["revision"] == data["revision"] &&
+		configMap.Data["site-plan.json"] == data["site-plan.json"] &&
+		configMap.Data["signature"] == data["signature"] {
+		return desired, nil
+	}
 	configMap.Data = data
 	if err := c.Client.Update(ctx, &configMap); err != nil {
 		return plan.SitePlan{}, err

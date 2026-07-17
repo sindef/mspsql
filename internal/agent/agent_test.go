@@ -60,9 +60,10 @@ func TestCacheRejectsRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	now := time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC)
 	cache := Cache{
 		Client: kube, Namespace: "system", PublicKey: publicKey, SiteUID: "site",
-		Now: func() time.Time { return time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC) },
+		Now: func() time.Time { return now },
 	}
 	sign := func(revision int64) plan.Envelope {
 		envelope, err := plan.Sign(privateKey, plan.SitePlan{
@@ -73,8 +74,26 @@ func TestCacheRejectsRollback(t *testing.T) {
 		}
 		return envelope
 	}
-	if _, err := cache.Store(context.Background(), sign(2), "instance"); err != nil {
+	envelope := sign(2)
+	if _, err := cache.Store(context.Background(), envelope, "instance"); err != nil {
 		t.Fatal(err)
+	}
+	var before corev1.ConfigMap
+	key := client.ObjectKey{Namespace: "system", Name: cacheName("instance")}
+	if err := kube.Get(context.Background(), key, &before); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := cache.Store(context.Background(), envelope, "instance"); err != nil {
+		t.Fatal(err)
+	}
+	var after corev1.ConfigMap
+	if err := kube.Get(context.Background(), key, &after); err != nil {
+		t.Fatal(err)
+	}
+	if before.ResourceVersion != after.ResourceVersion {
+		t.Fatalf("duplicate plan changed cache resourceVersion: %s -> %s",
+			before.ResourceVersion, after.ResourceVersion)
 	}
 	if _, err := cache.Store(context.Background(), sign(1), "instance"); err == nil {
 		t.Fatal("rollback plan was accepted")
