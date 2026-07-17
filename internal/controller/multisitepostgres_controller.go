@@ -292,6 +292,13 @@ func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgr
 			"Waiting for a common etcd trust bundle across all sites")
 		return
 	}
+	if !conditionTrue(instance.Status.Conditions, "TopologyReady") {
+		instance.Status.Phase = "Reconciling"
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "TopologyPending",
+			"Waiting for current topology consensus across all data sites")
+		return
+	}
 	if instance.Spec.Postgres.SynchronousStandbyCount > 0 &&
 		!conditionTrue(instance.Status.Conditions, "SynchronousReplicationReady") {
 		instance.Status.Phase = "Reconciling"

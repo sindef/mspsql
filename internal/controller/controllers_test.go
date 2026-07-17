@@ -542,6 +542,25 @@ func TestAggregateTopologyRequiresCurrentConsensus(t *testing.T) {
 	}
 }
 
+func TestReadyRequiresTopologyConsensusWithoutSynchronousStandbys(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Generation: 4},
+		Status: api.MultiSitePostgresStatus{Conditions: []metav1.Condition{
+			{Type: "EtcdTLSReady", Status: metav1.ConditionTrue},
+			{Type: "TopologyReady", Status: metav1.ConditionFalse},
+		}},
+	}
+
+	setAppliedInstanceReady(instance, nil, nil)
+
+	ready := meta.FindStatusCondition(instance.Status.Conditions, "Ready")
+	if instance.Status.Phase != "Reconciling" || ready == nil ||
+		ready.Status != metav1.ConditionFalse || ready.Reason != "TopologyPending" ||
+		ready.ObservedGeneration != instance.Generation {
+		t.Fatalf("status = %#v", instance.Status)
+	}
+}
+
 func TestBackupSchedulerIssuesOneCatchUpDirective(t *testing.T) {
 	scheme := testScheme(t)
 	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
