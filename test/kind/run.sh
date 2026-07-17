@@ -2,7 +2,13 @@
 
 set -euo pipefail
 
+kind_bin="$(command -v "${KIND:-kind}")"
+kind() {
+  "${kind_bin}" "$@"
+}
+
 clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
+kind_node_image="${KIND_NODE_IMAGE:-kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f}"
 image="${IMG:-mspsql:test}"
 agent_image="${AGENT_IMG:-mspsql-agent:test}"
 gateway_image="${GATEWAY_IMG:-mspsql-gateway:test}"
@@ -12,10 +18,30 @@ vault_image="hashicorp/vault:1.21.4"
 cert_manager_version="v1.21.0"
 metallb_version="v0.16.0"
 temp_dir="$(mktemp -d)"
+diagnostics_dir="${ARTIFACT_DIR:-${temp_dir}/diagnostics}"
+mkdir -p "${diagnostics_dir}"
+original_inotify_instances="$(sysctl -n fs.inotify.max_user_instances)"
+inotify_instances_changed=false
+
+if (( original_inotify_instances < 8192 )); then
+  if [[ "${EUID}" -eq 0 ]]; then
+    sysctl -q -w fs.inotify.max_user_instances=8192
+  elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+    sudo sysctl -q -w fs.inotify.max_user_instances=8192
+  else
+    echo "four-cluster KIND requires fs.inotify.max_user_instances >= 8192" >&2
+    echo "current value is ${original_inotify_instances}; rerun with permission to raise it" >&2
+    exit 1
+  fi
+  inotify_instances_changed=true
+fi
 
 cleanup() {
   status=$?
   if [[ "${status}" -ne 0 ]]; then
+    for cluster in "${clusters[@]}"; do
+      kind export logs "${diagnostics_dir}/${cluster}" --name "${cluster}" || true
+    done
     if [[ -n "${KUBECONFIG:-}" ]]; then
       kubectl -n database-platform get multisitepostgres -o yaml || true
       kubectl -n mspsql-system logs deployment/mspsql-controller-manager \
@@ -43,6 +69,13 @@ cleanup() {
   for cluster in "${clusters[@]}"; do
     kind delete cluster --name "${cluster}" >/dev/null 2>&1 || true
   done
+  if [[ "${inotify_instances_changed}" == "true" ]]; then
+    if [[ "${EUID}" -eq 0 ]]; then
+      sysctl -q -w "fs.inotify.max_user_instances=${original_inotify_instances}" || true
+    else
+      sudo sysctl -q -w "fs.inotify.max_user_instances=${original_inotify_instances}" || true
+    fi
+  fi
   rm -rf "${temp_dir}"
 }
 trap cleanup EXIT
@@ -60,7 +93,20 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=mspsql-kind-ca" \
   -keyout "${temp_dir}/ca.key" -out "${temp_dir}/ca.crt" >/dev/null 2>&1
 
 for cluster in "${clusters[@]}"; do
-  kind create cluster --name "${cluster}" --wait 120s
+  created=false
+  for attempt in 1 2 3; do
+    if kind create cluster --name "${cluster}" --image "${kind_node_image}" --wait 120s; then
+      created=true
+      break
+    fi
+    kind export logs "${diagnostics_dir}/${cluster}-attempt-${attempt}" \
+      --name "${cluster}" || true
+    kind delete cluster --name "${cluster}" || true
+  done
+  if [[ "${created}" != "true" ]]; then
+    echo "KIND cluster ${cluster} failed to start after three attempts" >&2
+    exit 1
+  fi
 done
 
 kind_subnet="$(docker network inspect kind \
