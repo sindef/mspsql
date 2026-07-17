@@ -15,8 +15,10 @@ agent_image="${AGENT_IMG:-mspsql-agent:test}"
 gateway_image="${GATEWAY_IMG:-mspsql-gateway:test}"
 wireguard_image="${WIREGUARD_IMG:-mspsql-wireguard:test}"
 tun_plugin_image="${TUN_PLUGIN_IMG:-mspsql-tun-device-plugin:test}"
+upgrade_image="${UPGRADE_IMG:-mspsql-postgres-upgrade:17-to-18}"
 vault_image="hashicorp/vault:1.21.4"
 minio_image="minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
+registry_image="registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 cert_manager_version="v1.21.0"
 metallb_version="v0.16.0"
 temp_dir="$(mktemp -d)"
@@ -72,6 +74,7 @@ cleanup() {
     done
   fi
   docker rm -f mspsql-minio >/dev/null 2>&1 || true
+  docker rm -f mspsql-registry >/dev/null 2>&1 || true
   for cluster in "${clusters[@]}"; do
     kind delete cluster --name "${cluster}" >/dev/null 2>&1 || true
   done
@@ -88,6 +91,7 @@ trap cleanup EXIT
 
 docker pull "${vault_image}"
 docker pull "${minio_image}"
+docker pull "${registry_image}"
 curl -fsSL -o "${temp_dir}/cert-manager.yaml" \
   "https://github.com/cert-manager/cert-manager/releases/download/${cert_manager_version}/cert-manager.yaml"
 echo "6e499c3f1ab356abe79a7853911f80cb09c213885bfdf81092fdff142ba63c4a  ${temp_dir}/cert-manager.yaml" |
@@ -96,6 +100,17 @@ curl -fsSL -o "${temp_dir}/metallb.yaml" \
   "https://raw.githubusercontent.com/metallb/metallb/${metallb_version}/config/manifests/metallb-native.yaml"
 echo "b0b9be2802f10aa32d45308b4457d06cde0c70544712c8d0cf5511657ffd2b69  ${temp_dir}/metallb.yaml" |
   sha256sum -c -
+curl -fsSL --retry 5 -o "${temp_dir}/csi-hostpath.tar.gz" \
+  "https://github.com/kubernetes-csi/csi-driver-host-path/archive/refs/tags/v1.18.0.tar.gz"
+curl -fsSL --retry 5 -o "${temp_dir}/snapshotter.tar.gz" \
+  "https://github.com/kubernetes-csi/external-snapshotter/archive/refs/tags/v8.6.0.tar.gz"
+echo "03d581877ed8a0a87851c59ca3d50b04663e17f8d5310eb964002b0a7fd73421  ${temp_dir}/csi-hostpath.tar.gz" |
+  sha256sum -c -
+echo "44bc3f2bb78cbd7fb6ebff5f5bb488e2171e2cef42849f85d28b85446f8956c4  ${temp_dir}/snapshotter.tar.gz" |
+  sha256sum -c -
+mkdir -p "${temp_dir}/csi-hostpath" "${temp_dir}/snapshotter"
+tar -xzf "${temp_dir}/csi-hostpath.tar.gz" --strip-components=1 -C "${temp_dir}/csi-hostpath"
+tar -xzf "${temp_dir}/snapshotter.tar.gz" --strip-components=1 -C "${temp_dir}/snapshotter"
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=mspsql-kind-ca" \
   -keyout "${temp_dir}/ca.key" -out "${temp_dir}/ca.crt" >/dev/null 2>&1
 
@@ -198,6 +213,12 @@ for site in vic nsw qld; do
     tail -200 "${diagnostics_dir}/${site}-platform.log" >&2
     exit 1
   fi
+  if [[ "${site}" != "qld" ]] && ! ./test/kind/configure-csi-snapshot.sh \
+    "${site_kubeconfig}" "${temp_dir}/csi-hostpath" "${temp_dir}/snapshotter" \
+    >"${diagnostics_dir}/${site}-csi.log" 2>&1; then
+    tail -300 "${diagnostics_dir}/${site}-csi.log" >&2
+    exit 1
+  fi
   pool_offset=$((pool_offset + 20))
 done
 
@@ -206,6 +227,27 @@ docker build -f Dockerfile.agent -t "${agent_image}" .
 docker build -f Dockerfile.gateway -t "${gateway_image}" .
 docker build -f Dockerfile.wireguard -t "${wireguard_image}" .
 docker build -f Dockerfile.tun-device-plugin -t "${tun_plugin_image}" .
+docker build -f Dockerfile.upgrade -t "${upgrade_image}" .
+docker run -d --name mspsql-registry --network kind -p 127.0.0.1::5000 \
+  "${registry_image}" >/dev/null
+registry_port="$(docker port mspsql-registry 5000/tcp | awk -F: '{print $NF}')"
+registry_ip="$(docker inspect mspsql-registry \
+  --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
+test -n "${registry_port}"
+test -n "${registry_ip}"
+docker tag "${upgrade_image}" "localhost:${registry_port}/mspsql-postgres-upgrade:17-to-18"
+upgrade_push="$(docker push "localhost:${registry_port}/mspsql-postgres-upgrade:17-to-18")"
+upgrade_digest="$(awk '/digest:/ {print $3}' <<<"${upgrade_push}")"
+[[ "${upgrade_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+upgrade_ref="${registry_ip}:5000/mspsql-postgres-upgrade@${upgrade_digest}"
+for site in vic nsw; do
+  node="mspsql-${site}-control-plane"
+  registry_directory="/etc/containerd/certs.d/${registry_ip}:5000"
+  docker exec "${node}" mkdir -p "${registry_directory}"
+  printf 'server = "http://%s:5000"\n\n[host."http://%s:5000"]\n  capabilities = ["pull", "resolve"]\n' \
+    "${registry_ip}" "${registry_ip}" |
+    docker exec -i "${node}" sh -c "cat > '${registry_directory}/hosts.toml'"
+done
 kind load docker-image "${image}" --name mspsql-hub
 kind load docker-image "${gateway_image}" --name mspsql-hub
 for site in vic nsw qld; do
@@ -272,7 +314,11 @@ metadata:
 spec:
   permittedStorageClasses:
     etcd: [standard]
-    postgres: [standard]
+    postgres: [standard, csi-hostpath]
+  storageRollbackPolicies:
+  - storageClassName: csi-hostpath
+    strategy: VolumeSnapshot
+    volumeSnapshotClassName: csi-hostpath-snapclass
   permittedIssuers:
     etcd:
     - {name: test, kind: ClusterIssuer, group: cert-manager.io}
@@ -628,6 +674,46 @@ test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${
   -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
 
+# A completed rolling upgrade can briefly precede Patroni's refreshed
+# synchronous-member observation. Prove the failover target has replayed the
+# current primary flush position before removing the primary site.
+for _ in $(seq 1 120); do
+  primary_lsn="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+    exec "${primary_pod}" -c postgres-patroni -- \
+    env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+    psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT pg_current_wal_flush_lsn()')"
+  replica_caught_up="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+    exec "${replica_pod}" -c postgres-patroni -- \
+    env PGPASSWORD="${replica_password}" PGSSLMODE=require \
+    psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
+    "SELECT pg_last_wal_replay_lsn() >= '${primary_lsn}'::pg_lsn" 2>/dev/null || true)"
+  synchronous_state="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+    exec "${primary_pod}" -c postgres-patroni -- \
+    env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+    psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
+    "SELECT sync_state FROM pg_stat_replication WHERE application_name = '${replica}'" \
+    2>/dev/null || true)"
+  [[ "${replica_caught_up}" == "t" && "${synchronous_state}" == "sync" ]] && break
+  sleep 2
+done
+test "${replica_caught_up}" = "t"
+test "${synchronous_state}" = "sync"
+
+# Patroni's DCS sync assignment can trail pg_stat_replication briefly after a
+# rolling restart. Promotion is deliberately unsafe until every observer sees
+# the target in Patroni's synchronous failover set.
+for _ in $(seq 1 120); do
+  synchronous_ready="$(kubectl -n database-platform get multisitepostgres orders \
+    -o jsonpath='{.status.conditions[?(@.type=="SynchronousReplicationReady")].status}')"
+  observed_standby="$(kubectl -n database-platform get multisitepostgres orders -o json | \
+    jq -r --arg replica "${replica}" \
+      '[.status.sites[] | select(.synchronousStandbys // [] | index($replica))] | length')"
+  [[ "${synchronous_ready}" == "True" && "${observed_standby}" -eq 2 ]] && break
+  sleep 2
+done
+test "${synchronous_ready}" = "True"
+test "${observed_standby}" -eq 2
+
 docker pause "mspsql-${primary_site}-control-plane" >/dev/null
 for _ in $(seq 1 120); do
   promoted="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
@@ -729,6 +815,83 @@ restored_rows="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_na
   env PGPASSWORD="${restored_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT count(*) FROM mspsql_e2e')"
 test "${restored_rows}" = "1"
+
+benchmark_tested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+benchmark_file="${diagnostics_dir}/major-upgrade-benchmark.json"
+jq -n --sort-keys \
+  --arg testedAt "${benchmark_tested_at}" \
+  --arg upgradeImage "${upgrade_ref}" \
+  '{testedAt: $testedAt, estimatedWriteOutageSeconds: 840,
+    upgradeImage: $upgradeImage, sourceMajorVersion: 17, targetMajorVersion: 18,
+    tdeEnabled: false, postgresStorageClasses: ["csi-hostpath"]}' >"${benchmark_file}"
+benchmark_digest="$(sha256sum "${benchmark_file}" | awk '{print $1}')"
+kubectl -n database-platform apply -f - <<EOF
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: PostgresUpgrade
+metadata:
+  name: orders-pg18
+spec:
+  instanceRef: orders
+  targetImage: percona/percona-distribution-postgresql@sha256:e2cc221e458a11b8cc39cbf74e947289568d3e182de5036eadef66d9c15569fb
+  targetMajorVersion: 18
+  upgradeImage: ${upgrade_ref}
+  serviceRestorationTarget: 15m
+  rollbackRetention: 1h
+  benchmark:
+    testedAt: "${benchmark_tested_at}"
+    estimatedWriteOutage: 14m
+    upgradeImage: ${upgrade_ref}
+    sourceMajorVersion: 17
+    targetMajorVersion: 18
+    tdeEnabled: false
+    postgresStorageClasses: [csi-hostpath]
+    evidence: file://major-upgrade-benchmark.json@sha256:${benchmark_digest}
+EOF
+kubectl -n database-platform wait --for=condition=Ready \
+  postgresupgrade/orders-pg18 --timeout=2400s
+test "$(kubectl -n database-platform get postgresupgrade orders-pg18 \
+  -o jsonpath='{.status.phase}')" = "Completed"
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.spec.postgres.majorVersion}')" = "18"
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.spec.postgres.image}')" = \
+  "percona/percona-distribution-postgresql@sha256:e2cc221e458a11b8cc39cbf74e947289568d3e182de5036eadef66d9c15569fb"
+outage_started="$(kubectl -n database-platform get postgresupgrade orders-pg18 \
+  -o jsonpath='{.status.writeOutageStartedAt}')"
+service_restored="$(kubectl -n database-platform get postgresupgrade orders-pg18 \
+  -o jsonpath='{.status.writeServiceRestoredAt}')"
+test -n "${outage_started}"
+test -n "${service_restored}"
+outage_seconds="$(( $(date -d "${service_restored}" +%s) - $(date -d "${outage_started}" +%s) ))"
+test "${outage_seconds}" -ge 0
+test "${outage_seconds}" -le 900
+jq -n --sort-keys --argjson writeOutageSeconds "${outage_seconds}" \
+  --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{completedAt: $completedAt, writeOutageSeconds: $writeOutageSeconds,
+    serviceRestorationObjectiveSeconds: 900, passed: ($writeOutageSeconds <= 900)}' \
+  >"${diagnostics_dir}/major-upgrade-result.json"
+for site in vic nsw; do
+  site_config="${temp_dir}/mspsql-${site}.kubeconfig"
+  test "$(kubectl --kubeconfig="${site_config}" -n orders-postgres get volumesnapshots \
+    -o json | jq '[.items[] | select(.metadata.name | startswith("rollback-")) |
+      select(.status.readyToUse == true)] | length')" -ge 1
+  test "$(kubectl --kubeconfig="${site_config}" -n orders-postgres get statefulset \
+    "postgres-${site}-0" -o jsonpath='{.spec.template.spec.containers[?(@.name=="postgres-patroni")].image}')" = \
+    "percona/percona-distribution-postgresql@sha256:e2cc221e458a11b8cc39cbf74e947289568d3e182de5036eadef66d9c15569fb"
+done
+primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+case "${primary}" in
+  postgres-vic-*) primary_site=vic ;;
+  postgres-nsw-*) primary_site=nsw ;;
+  *) echo "unexpected primary after major upgrade ${primary}" >&2; exit 1 ;;
+esac
+primary_kubeconfig="${temp_dir}/mspsql-${primary_site}.kubeconfig"
+primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}-0" \
+  -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
+  'SELECT count(*) FROM mspsql_e2e')" = "2"
 
 kubectl -n database-platform patch multisitepostgres orders --type=merge \
   -p '{"spec":{"deletionPolicy":"Delete"}}'

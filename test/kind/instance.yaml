@@ -37,7 +37,7 @@ spec:
     components: {etcdReplicas: 1, postgresReplicas: 1, pgpoolReplicas: 1}
     storage:
       etcd: {storageClassName: standard, size: 1Gi}
-      postgres: {storageClassName: standard, size: 1Gi}
+      postgres: {storageClassName: csi-hostpath, size: 1Gi}
     loadBalancer: {addressPool: database-services}
     vaultAuth:
       address: "https://vault.vault.svc:8200"
@@ -57,7 +57,7 @@ spec:
     components: {etcdReplicas: 1, postgresReplicas: 1, pgpoolReplicas: 1}
     storage:
       etcd: {storageClassName: standard, size: 1Gi}
-      postgres: {storageClassName: standard, size: 1Gi}
+      postgres: {storageClassName: csi-hostpath, size: 1Gi}
     loadBalancer: {addressPool: database-services}
     vaultAuth:
       address: "https://vault.vault.svc:8200"
