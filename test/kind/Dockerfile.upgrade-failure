@@ -1,0 +1,9 @@
+FROM mspsql-postgres-upgrade:17-to-18
+
+USER 0:0
+RUN mv /opt/mspsql/new/bin/pg_upgrade /opt/mspsql/new/bin/pg_upgrade-real \
+    && printf '%s\n' '#!/bin/sh' \
+      'echo "injected pg_upgrade conversion failure" >&2' \
+      'exit 42' > /opt/mspsql/new/bin/pg_upgrade \
+    && chmod 0755 /opt/mspsql/new/bin/pg_upgrade
+USER 26:26

@@ -16,6 +16,7 @@ gateway_image="${GATEWAY_IMG:-mspsql-gateway:test}"
 wireguard_image="${WIREGUARD_IMG:-mspsql-wireguard:test}"
 tun_plugin_image="${TUN_PLUGIN_IMG:-mspsql-tun-device-plugin:test}"
 upgrade_image="${UPGRADE_IMG:-mspsql-postgres-upgrade:17-to-18}"
+failed_upgrade_image="mspsql-postgres-upgrade:injected-failure"
 previous_revision="006c1d864b1dfab5fcf29dbb9921fff2216ac322"
 previous_image="mspsql:previous"
 previous_agent_image="mspsql-agent:previous"
@@ -231,6 +232,7 @@ docker build -f Dockerfile.gateway -t "${gateway_image}" .
 docker build -f Dockerfile.wireguard -t "${wireguard_image}" .
 docker build -f Dockerfile.tun-device-plugin -t "${tun_plugin_image}" .
 docker build -f Dockerfile.upgrade -t "${upgrade_image}" .
+docker build -f test/kind/Dockerfile.upgrade-failure -t "${failed_upgrade_image}" .
 previous_source="${temp_dir}/previous"
 mkdir -p "${previous_source}"
 git archive "${previous_revision}" | tar -x -C "${previous_source}"
@@ -249,6 +251,13 @@ upgrade_push="$(docker push "localhost:${registry_port}/mspsql-postgres-upgrade:
 upgrade_digest="$(awk '/digest:/ {print $3}' <<<"${upgrade_push}")"
 [[ "${upgrade_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
 upgrade_ref="${registry_ip}:5000/mspsql-postgres-upgrade@${upgrade_digest}"
+docker tag "${failed_upgrade_image}" \
+  "localhost:${registry_port}/mspsql-postgres-upgrade:injected-failure"
+failed_upgrade_push="$(docker push \
+  "localhost:${registry_port}/mspsql-postgres-upgrade:injected-failure")"
+failed_upgrade_digest="$(awk '/digest:/ {print $3}' <<<"${failed_upgrade_push}")"
+[[ "${failed_upgrade_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+failed_upgrade_ref="${registry_ip}:5000/mspsql-postgres-upgrade@${failed_upgrade_digest}"
 for site in vic nsw; do
   node="mspsql-${site}-control-plane"
   registry_directory="/etc/containerd/certs.d/${registry_ip}:5000"
@@ -866,6 +875,64 @@ restored_rows="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_na
 test "${restored_rows}" = "1"
 
 benchmark_tested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+kubectl -n database-platform apply -f - <<EOF
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: PostgresUpgrade
+metadata:
+  name: orders-pg18-failure
+spec:
+  instanceRef: orders
+  targetImage: percona/percona-distribution-postgresql@sha256:e2cc221e458a11b8cc39cbf74e947289568d3e182de5036eadef66d9c15569fb
+  targetMajorVersion: 18
+  upgradeImage: ${failed_upgrade_ref}
+  serviceRestorationTarget: 15m
+  rollbackRetention: 1h
+  benchmark:
+    testedAt: "${benchmark_tested_at}"
+    estimatedWriteOutage: 14m
+    upgradeImage: ${failed_upgrade_ref}
+    sourceMajorVersion: 17
+    targetMajorVersion: 18
+    tdeEnabled: false
+    postgresStorageClasses: [csi-hostpath]
+    evidence: file://injected-failure@${failed_upgrade_digest}
+EOF
+for _ in $(seq 1 900); do
+  failed_phase="$(kubectl -n database-platform get postgresupgrade orders-pg18-failure \
+    -o jsonpath='{.status.phase}')"
+  failed_reason="$(kubectl -n database-platform get postgresupgrade orders-pg18-failure \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}')"
+  [[ "${failed_phase}" == "Failed" && "${failed_reason}" == "RolledBack" ]] && break
+  sleep 2
+done
+test "${failed_phase}" = "Failed"
+test "${failed_reason}" = "RolledBack"
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.spec.postgres.majorVersion}')" = "17"
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=600s
+primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+case "${primary}" in
+  postgres-vic-*) primary_site=vic ;;
+  postgres-nsw-*) primary_site=nsw ;;
+  *) echo "unexpected primary after rollback ${primary}" >&2; exit 1 ;;
+esac
+primary_kubeconfig="${temp_dir}/mspsql-${primary_site}.kubeconfig"
+primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}-0" \
+  -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
+  'SELECT count(*) FROM mspsql_e2e')" = "2"
+failure_events=0
+for site in vic nsw; do
+  site_config="${temp_dir}/mspsql-${site}.kubeconfig"
+  count="$(kubectl --kubeconfig="${site_config}" -n mspsql-agent \
+    get events.events.k8s.io -o json | jq \
+    '[.items[] | select((.note // "") | contains("injected pg_upgrade conversion failure"))] | length')"
+  failure_events=$((failure_events + count))
+done
+test "${failure_events}" -ge 1
+
 benchmark_file="${diagnostics_dir}/major-upgrade-benchmark.json"
 jq -n --sort-keys \
   --arg testedAt "${benchmark_tested_at}" \
