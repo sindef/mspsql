@@ -12,6 +12,22 @@ spec:
   credentials:
     postgresVaultRef: {mount: mspsql, path: postgres/orders/bootstrap}
     pgpoolVaultRef: {mount: mspsql, path: postgres/orders/pgpool}
+  backup:
+    repository:
+      type: S3
+      bucket: mspsql-backups
+      prefix: orders-e2e
+      endpoint: "https://MINIO_ENDPOINT:9000"
+      region: us-east-1
+      uriStyle: path
+      caBundleSecretRef: {name: minio-ca, key: ca.crt}
+      credentialVaultRef: {mount: mspsql, path: postgres/orders/backup}
+    schedules:
+      full: "* * * * *"
+      timezone: UTC
+    retention:
+      duration: 168h
+      walDuration: 168h
   sites:
   - name: vic
     siteRegistrationRef: vic
@@ -32,6 +48,7 @@ spec:
       etcdIssuerRef: {name: test, kind: ClusterIssuer}
       postgresIssuerRef: {name: test, kind: ClusterIssuer}
       pgpoolIssuerRef: {name: test, kind: ClusterIssuer}
+      backupIssuerRef: {name: test, kind: ClusterIssuer}
   - name: nsw
     siteRegistrationRef: nsw
     namespace: orders-postgres
@@ -51,6 +68,7 @@ spec:
       etcdIssuerRef: {name: test, kind: ClusterIssuer}
       postgresIssuerRef: {name: test, kind: ClusterIssuer}
       pgpoolIssuerRef: {name: test, kind: ClusterIssuer}
+      backupIssuerRef: {name: test, kind: ClusterIssuer}
   - name: qld
     siteRegistrationRef: qld
     namespace: orders-postgres

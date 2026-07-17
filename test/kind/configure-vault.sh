@@ -68,7 +68,7 @@ EOF
 "${kubectl[@]}" -n vault exec deployment/vault -- "${vault_env[@]}" vault write \
   auth/kubernetes/role/orders-"${site}" \
   bound_service_account_names=mspsql-workload \
-  bound_service_account_namespaces=orders-postgres,vault-auth-test \
+  bound_service_account_namespaces=orders-postgres,orders-recovered-vic,orders-recovered-nsw,vault-auth-test \
   audience=vault \
   policies=orders \
   ttl=10m

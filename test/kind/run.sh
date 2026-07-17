@@ -39,6 +39,9 @@ fi
 
 cleanup() {
   status=$?
+  for cluster in "${clusters[@]}"; do
+    docker unpause "${cluster}-control-plane" >/dev/null 2>&1 || true
+  done
   if [[ "${status}" -ne 0 ]]; then
     for cluster in "${clusters[@]}"; do
       kind export logs "${diagnostics_dir}/${cluster}" --name "${cluster}" || true
@@ -122,8 +125,15 @@ if [[ "${prefix_length}" -gt 16 ]]; then
   exit 1
 fi
 
-minio_ip="${subnet_a}.${subnet_b}.250.250"
 mkdir -p "${temp_dir}/minio-certs/CAs"
+docker create --name mspsql-minio --network kind \
+  -e MINIO_ROOT_USER=access -e MINIO_ROOT_PASSWORD=secretsecret \
+  -v "${temp_dir}/minio-certs:/root/.minio/certs:ro" \
+  "${minio_image}" server /data --address :9000 >/dev/null
+docker start mspsql-minio >/dev/null
+minio_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  mspsql-minio)"
+test -n "${minio_ip}"
 openssl req -newkey rsa:2048 -nodes -subj "/CN=${minio_ip}" \
   -keyout "${temp_dir}/minio-certs/private.key" \
   -out "${temp_dir}/minio.csr" >/dev/null 2>&1
@@ -134,10 +144,7 @@ openssl x509 -req -days 2 -sha256 -in "${temp_dir}/minio.csr" \
   -extfile "${temp_dir}/minio-extensions.cnf" \
   -out "${temp_dir}/minio-certs/public.crt" >/dev/null 2>&1
 cp "${temp_dir}/ca.crt" "${temp_dir}/minio-certs/CAs/ca.crt"
-docker run -d --name mspsql-minio --network kind --ip "${minio_ip}" \
-  -e MINIO_ROOT_USER=access -e MINIO_ROOT_PASSWORD=secretsecret \
-  -v "${temp_dir}/minio-certs:/root/.minio/certs:ro" \
-  "${minio_image}" server /data --address :9000 >/dev/null
+docker restart mspsql-minio >/dev/null
 for _ in $(seq 1 60); do
   if curl -fsS --cacert "${temp_dir}/ca.crt" \
     "https://${minio_ip}:9000/minio/health/live" >/dev/null; then
@@ -318,7 +325,7 @@ test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
   wg show wg0 peers | wc -l | tr -d ' ')" = "3"
 
 kubectl create namespace database-platform
-kubectl apply -f test/kind/instance.yaml
+sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml | kubectl apply -f -
 
 for site in vic nsw qld; do
   site_kubeconfig="$(mktemp)"
@@ -358,7 +365,7 @@ for _ in $(seq 1 450); do
 done
 test "${phase}" = "Ready"
 test "$(kubectl -n database-platform get configmap \
-  -l multisite-postgres.dev/instance-uid -o name | wc -l | tr -d ' ')" = "3"
+  -l multisite-postgres.dev/site-registration-uid -o name | wc -l | tr -d ' ')" = "3"
 
 kubectl apply -f test/kind/tenant.yaml
 kubectl -n database-platform wait --for=condition=Ready postgresdatabase/orders-api --timeout=300s
@@ -402,6 +409,131 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 test "${value}" = "1"
+
+pgpool_address="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get service "pgpool-${primary_site}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+for _ in $(seq 1 60); do
+  pgpool_value="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
+    -c postgres-patroni -- env PGPASSWORD=application-secret PGSSLMODE=require PGCONNECT_TIMEOUT=5 \
+    psql -h "${pgpool_address}" -U orders_app -d orders -Atqc \
+    'SELECT id FROM orders.application_write' 2>/dev/null || true)"
+  [[ "${pgpool_value}" == "1" ]] && break
+  sleep 2
+done
+if [[ "${pgpool_value}" != "1" ]]; then
+  echo "cross-site Pgpool query through ${pgpool_address} returned ${pgpool_value@Q}" >&2
+  exit 1
+fi
+
+postgres_signature="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get statefulset "${primary}" \
+  -o jsonpath='{.metadata.uid}:{.metadata.generation}:{.spec.template.metadata.annotations}')"
+pgpool_signature="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get deployment "pgpool-${primary_site}" \
+  -o jsonpath='{.metadata.uid}:{.metadata.generation}:{.spec.template.metadata.annotations}')"
+patroni_signature="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get configmap "patroni-${primary_site}" -o jsonpath='{.metadata.uid}:{.metadata.resourceVersion}')"
+sleep 70
+test "${postgres_signature}" = "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get statefulset "${primary}" \
+  -o jsonpath='{.metadata.uid}:{.metadata.generation}:{.spec.template.metadata.annotations}')"
+test "${pgpool_signature}" = "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get deployment "pgpool-${primary_site}" \
+  -o jsonpath='{.metadata.uid}:{.metadata.generation}:{.spec.template.metadata.annotations}')"
+test "${patroni_signature}" = "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get configmap "patroni-${primary_site}" -o jsonpath='{.metadata.uid}:{.metadata.resourceVersion}')"
+
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres patch \
+  deployment "pgpool-${primary_site}" --type=merge -p '{"spec":{"replicas":0}}'
+for _ in $(seq 1 90); do
+  replicas="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres get \
+    deployment "pgpool-${primary_site}" -o jsonpath='{.spec.replicas}')"
+  [[ "${replicas}" == "1" ]] && break
+  sleep 2
+done
+test "${replicas}" = "1"
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres rollout status \
+  deployment/"pgpool-${primary_site}" --timeout=180s
+pgpool_config_uid="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get configmap "pgpool-${primary_site}" -o jsonpath='{.metadata.uid}')"
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres delete \
+  configmap "pgpool-${primary_site}"
+for _ in $(seq 1 90); do
+  recreated_uid="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+    get configmap "pgpool-${primary_site}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  [[ -n "${recreated_uid}" && "${recreated_uid}" != "${pgpool_config_uid}" ]] && break
+  sleep 2
+done
+test -n "${recreated_uid}"
+test "${recreated_uid}" != "${pgpool_config_uid}"
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres get \
+  configmap "pgpool-${primary_site}" -o jsonpath='{.data.pgpool\.conf}' |
+  grep -q "backend_clustering_mode = 'streaming_replication'"
+
+kubectl -n database-platform wait --for=condition=BackupReady \
+  multisitepostgres/orders --timeout=900s
+test -n "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.status.lastBackupTime}')"
+test -n "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.status.recoveryWindowStart}')"
+backup_jobs=0
+for site in vic nsw; do
+  site_config="${temp_dir}/mspsql-${site}.kubeconfig"
+  completed="$(kubectl --kubeconfig="${site_config}" -n orders-postgres get jobs \
+    -l multisite-postgres.dev/operation-uid \
+    -o jsonpath='{range .items[?(@.status.succeeded==1)]}{.metadata.name}{"\n"}{end}' | wc -l | tr -d ' ')"
+  backup_jobs=$((backup_jobs + completed))
+done
+test "${backup_jobs}" -ge 1
+test "$(docker exec mspsql-minio mc find local/mspsql-backups --insecure | wc -l | tr -d ' ')" -gt 0
+kubectl -n database-platform patch multisitepostgres orders --type=merge \
+  -p '{"spec":{"backup":{"schedules":{"full":"0 0 1 1 *","timezone":"UTC"}}}}'
+expected_generation="$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.metadata.generation}')"
+kubectl -n database-platform wait --for=jsonpath='{.status.observedGeneration}'="${expected_generation}" \
+  multisitepostgres/orders --timeout=300s
+restore_target_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sleep 2
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
+  -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'INSERT INTO mspsql_e2e VALUES (2); SELECT pg_switch_wal();'
+sleep 20
+source_uid="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.metadata.uid}')"
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary_pod}" \
+  -c postgres-patroni -- pgbackrest --config=/etc/pgbackrest/pgbackrest.conf \
+  --stanza="mspsql-${source_uid}" check
+
+kubectl -n database-platform apply -f - <<EOF
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: PostgresRestore
+metadata:
+  name: orders-pitr
+spec:
+  sourceInstanceRef: orders
+  targetInstanceRef: orders-recovered
+  targetTime: "${restore_target_time}"
+EOF
+kubectl -n database-platform wait --for=condition=Completed \
+  postgresrestore/orders-pitr --timeout=1200s
+test "$(kubectl -n database-platform get postgresrestore orders-pitr \
+  -o jsonpath='{.status.recoveredTo}')" = "${restore_target_time}"
+restored_primary="$(kubectl -n database-platform get multisitepostgres orders-recovered \
+  -o jsonpath='{.status.primary}')"
+case "${restored_primary}" in
+  postgres-vic-*) restored_site=vic ;;
+  postgres-nsw-*) restored_site=nsw ;;
+  *) echo "unexpected restored primary ${restored_primary}" >&2; exit 1 ;;
+esac
+restored_kubeconfig="${temp_dir}/mspsql-${restored_site}.kubeconfig"
+restored_namespace="orders-recovered-${restored_site}"
+restored_password="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_namespace}" \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+restored_rows="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_namespace}" \
+  exec "${restored_primary}-0" -c postgres-patroni -- \
+  env PGPASSWORD="${restored_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT count(*) FROM mspsql_e2e')"
+test "${restored_rows}" = "1"
 
 kubectl -n database-platform delete multisitepostgres orders --wait=false
 kubectl -n database-platform wait --for=delete multisitepostgres/orders --timeout=180s
