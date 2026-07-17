@@ -3,6 +3,7 @@
 set -euo pipefail
 
 kind_bin="$(command -v "${KIND:-kind}")"
+command -v jq >/dev/null
 kind() {
   "${kind_bin}" "$@"
 }
@@ -314,8 +315,7 @@ for _ in $(seq 1 90); do
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
   gateway_endpoints="$(kubectl -n mspsql-system get endpointslice \
     -l kubernetes.io/service-name=mspsql-wireguard \
-    -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.addresses[0]}{"\n"}{end}' |
-    sed '/^$/d' | wc -l | tr -d ' ')"
+    -o json | jq '[.items[]?.endpoints[]? | select(.conditions.ready == true)] | length')"
   [[ -n "${active_gateway}" && "${gateway_endpoints}" == "1" ]] && break
   sleep 2
 done
@@ -331,8 +331,7 @@ for _ in $(seq 1 90); do
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
   gateway_endpoints="$(kubectl -n mspsql-system get endpointslice \
     -l kubernetes.io/service-name=mspsql-wireguard \
-    -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.addresses[0]}{"\n"}{end}' |
-    sed '/^$/d' | wc -l | tr -d ' ')"
+    -o json | jq '[.items[]?.endpoints[]? | select(.conditions.ready == true)] | length')"
   [[ -n "${active_gateway}" && "${active_gateway}" != "${failed_gateway}" &&
     "${gateway_endpoints}" == "1" ]] && break
   sleep 2
