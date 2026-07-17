@@ -119,6 +119,21 @@ if [[ "${prefix_length}" -gt 16 ]]; then
   exit 1
 fi
 
+route_site_pool() {
+  local target_site="$1"
+  local first_address="$2"
+  local target_node="mspsql-${target_site}-control-plane"
+  local gateway
+  gateway="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${target_node}")"
+  for source_site in vic nsw qld; do
+    [[ "${source_site}" == "${target_site}" ]] && continue
+    for host in $(seq "${first_address}" "$((first_address + 19))"); do
+      docker exec "mspsql-${source_site}-control-plane" ip route replace \
+        "${subnet_a}.${subnet_b}.100.${host}/32" via "${gateway}"
+    done
+  done
+}
+
 pool_offset=10
 for site in vic nsw qld; do
   kind load docker-image "${vault_image}" --name "mspsql-${site}"
@@ -290,6 +305,13 @@ for site in vic nsw qld; do
   fi
   rm -f "${site_kubeconfig}"
 done
+
+# KIND clusters share a Docker network but MetalLB L2 advertisements do not cross
+# cluster bridges. Explicit routes model the routed data-plane networks required
+# between production sites while retaining real LoadBalancer Services and traffic.
+route_site_pool vic 10
+route_site_pool nsw 30
+route_site_pool qld 50
 
 for _ in $(seq 1 450); do
   phase="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.phase}')"

@@ -188,6 +188,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if !ok {
 			continue
 		}
+		assertEtcdSupportsLoadBalancedPeers(t, statefulSet)
 		if statefulSet.Name == "etcd-vic-0" {
 			if command := statefulSet.Spec.Template.Spec.Containers[0].Command; !slices.Equal(command, []string{"etcd"}) {
 				t.Fatalf("etcd command = %v", command)
@@ -212,6 +213,17 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
 		}
+	}
+}
+
+func assertEtcdSupportsLoadBalancedPeers(t *testing.T, statefulSet *appsv1.StatefulSet) {
+	t.Helper()
+	if statefulSet.Name != "etcd-vic-0" {
+		return
+	}
+	args := statefulSet.Spec.Template.Spec.Containers[0].Args
+	if !slices.Contains(args, "--peer-skip-client-san-verification=true") {
+		t.Fatalf("etcd does not support authenticated peers through load balancers: %v", args)
 	}
 }
 

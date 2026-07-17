@@ -477,6 +477,7 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 							"--trusted-ca-file=/tls/ca.crt", "--client-cert-auth=true",
 							"--peer-cert-file=/tls/tls.crt", "--peer-key-file=/tls/tls.key",
 							"--peer-trusted-ca-file=/tls/ca.crt", "--peer-client-cert-auth=true",
+							"--peer-skip-client-san-verification=true",
 							"--auto-compaction-retention=1h",
 						},
 						Ports: []corev1.ContainerPort{{Name: "client", ContainerPort: 2379}, {Name: "peer", ContainerPort: 2380}},
