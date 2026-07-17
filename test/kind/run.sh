@@ -323,6 +323,25 @@ test -n "${active_gateway}"
 test "${gateway_endpoints}" = "1"
 test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
   wg show wg0 peers | wc -l | tr -d ' ')" = "3"
+failed_gateway="${active_gateway}"
+kubectl -n mspsql-system delete pod "${failed_gateway}" --wait=false
+for _ in $(seq 1 90); do
+  active_gateway="$(kubectl -n mspsql-system get pods \
+    -l multisite-postgres.dev/gateway-active=true \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  gateway_endpoints="$(kubectl -n mspsql-system get endpointslice \
+    -l kubernetes.io/service-name=mspsql-wireguard \
+    -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.addresses[0]}{"\n"}{end}' |
+    sed '/^$/d' | wc -l | tr -d ' ')"
+  [[ -n "${active_gateway}" && "${active_gateway}" != "${failed_gateway}" &&
+    "${gateway_endpoints}" == "1" ]] && break
+  sleep 2
+done
+test -n "${active_gateway}"
+test "${active_gateway}" != "${failed_gateway}"
+test "${gateway_endpoints}" = "1"
+test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
+  wg show wg0 peers | wc -l | tr -d ' ')" = "3"
 
 kubectl create namespace database-platform
 sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml | kubectl apply -f -
@@ -425,6 +444,53 @@ if [[ "${pgpool_value}" != "1" ]]; then
   exit 1
 fi
 
+kubectl -n mspsql-system rollout restart deployment/mspsql-controller-manager
+kubectl -n mspsql-system rollout status deployment/mspsql-controller-manager --timeout=180s
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
+for site in vic nsw qld; do
+  kubectl --context "kind-mspsql-${site}" -n mspsql-agent rollout restart deployment/mspsql-agent
+  kubectl --context "kind-mspsql-${site}" -n mspsql-agent rollout status \
+    deployment/mspsql-agent --timeout=180s
+done
+for site in vic nsw qld; do
+  for _ in $(seq 1 90); do
+    phase="$(kubectl get siteregistration "${site}" -o jsonpath='{.status.phase}')"
+    [[ "${phase}" == "Connected" ]] && break
+    sleep 2
+  done
+  test "${phase}" = "Connected"
+done
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
+test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
+  -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
+
+replica_tls_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+  get secret "${replica}-tls" -o jsonpath='{.metadata.uid}')"
+replica_pod_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+  get pod "${replica_pod}" -o jsonpath='{.metadata.uid}')"
+kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres delete secret "${replica}-tls"
+for _ in $(seq 1 120); do
+  rotated_tls_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+    get secret "${replica}-tls" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  rotated_pod_uid="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+    get pod "${replica_pod}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  pod_ready="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+    get pod "${replica_pod}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' \
+    2>/dev/null || true)"
+  [[ -n "${rotated_tls_uid}" && "${rotated_tls_uid}" != "${replica_tls_uid}" &&
+    -n "${rotated_pod_uid}" && "${rotated_pod_uid}" != "${replica_pod_uid}" &&
+    "${pod_ready}" == "True" ]] && break
+  sleep 2
+done
+test "${rotated_tls_uid}" != "${replica_tls_uid}"
+test "${rotated_pod_uid}" != "${replica_pod_uid}"
+test "${pod_ready}" = "True"
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
+test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
+  -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
+
 postgres_signature="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
   get statefulset "${primary}" \
   -o jsonpath='{.metadata.uid}:{.metadata.generation}:{.spec.template.metadata.annotations}')"
@@ -486,6 +552,45 @@ for site in vic nsw; do
 done
 test "${backup_jobs}" -ge 1
 test "$(docker exec mspsql-minio mc find local/mspsql-backups --insecure | wc -l | tr -d ' ')" -gt 0
+
+docker pause "mspsql-${primary_site}-control-plane" >/dev/null
+for _ in $(seq 1 120); do
+  promoted="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
+    -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
+    psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
+    'SELECT NOT pg_is_in_recovery()' 2>/dev/null || true)"
+  [[ "${promoted}" == "t" ]] && break
+  sleep 2
+done
+test "${promoted}" = "t"
+test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
+  -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
+  psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
+docker unpause "mspsql-${primary_site}-control-plane" >/dev/null
+for _ in $(seq 1 120); do
+  kubectl --kubeconfig="${primary_kubeconfig}" get --raw=/readyz >/dev/null 2>&1 && break
+  sleep 2
+done
+kubectl --kubeconfig="${primary_kubeconfig}" get --raw=/readyz >/dev/null
+kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres wait --for=condition=Ready \
+  pod/"${primary_pod}" --timeout=300s
+kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=600s
+primary="$(kubectl -n database-platform get multisitepostgres orders -o jsonpath='{.status.primary}')"
+case "${primary}" in
+  postgres-vic-*) primary_site=vic; replica_site=nsw ;;
+  postgres-nsw-*) primary_site=nsw; replica_site=vic ;;
+  *) echo "unexpected primary after failover ${primary}" >&2; exit 1 ;;
+esac
+primary_kubeconfig="${temp_dir}/${primary_site}.kubeconfig"
+replica_kubeconfig="${temp_dir}/${replica_site}.kubeconfig"
+primary_pod="${primary}-0"
+replica="postgres-${replica_site}-0"
+replica_pod="${replica}-0"
+primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+replica_password="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
+  get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
+
 kubectl -n database-platform patch multisitepostgres orders --type=merge \
   -p '{"spec":{"backup":{"schedules":{"full":"0 0 1 1 *","timezone":"UTC"}}}}'
 expected_generation="$(kubectl -n database-platform get multisitepostgres orders \

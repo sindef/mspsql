@@ -62,6 +62,7 @@ path "sys/mounts/mspsql/*" {
 }
 EOF
 )"
+# shellcheck disable=SC2016 # Positional parameters expand inside the pod.
 "${kubectl[@]}" -n vault exec deployment/vault -- sh -ec \
   'printf "%s" "$1" | env VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/vault/tls/ca.crt VAULT_TOKEN="$2" vault policy write orders -' \
   sh "${policy}" "${root_token}"
