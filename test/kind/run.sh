@@ -16,6 +16,9 @@ gateway_image="${GATEWAY_IMG:-mspsql-gateway:test}"
 wireguard_image="${WIREGUARD_IMG:-mspsql-wireguard:test}"
 tun_plugin_image="${TUN_PLUGIN_IMG:-mspsql-tun-device-plugin:test}"
 upgrade_image="${UPGRADE_IMG:-mspsql-postgres-upgrade:17-to-18}"
+previous_revision="006c1d864b1dfab5fcf29dbb9921fff2216ac322"
+previous_image="mspsql:previous"
+previous_agent_image="mspsql-agent:previous"
 vault_image="hashicorp/vault:1.21.4"
 minio_image="minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
 registry_image="registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
@@ -228,6 +231,12 @@ docker build -f Dockerfile.gateway -t "${gateway_image}" .
 docker build -f Dockerfile.wireguard -t "${wireguard_image}" .
 docker build -f Dockerfile.tun-device-plugin -t "${tun_plugin_image}" .
 docker build -f Dockerfile.upgrade -t "${upgrade_image}" .
+previous_source="${temp_dir}/previous"
+mkdir -p "${previous_source}"
+git archive "${previous_revision}" | tar -x -C "${previous_source}"
+docker build -t "${previous_image}" "${previous_source}"
+docker build -f "${previous_source}/Dockerfile.agent" -t "${previous_agent_image}" \
+  "${previous_source}"
 docker run -d --name mspsql-registry --network kind -p 127.0.0.1::5000 \
   "${registry_image}" >/dev/null
 registry_port="$(docker port mspsql-registry 5000/tcp | awk -F: '{print $NF}')"
@@ -249,9 +258,11 @@ for site in vic nsw; do
     docker exec -i "${node}" sh -c "cat > '${registry_directory}/hosts.toml'"
 done
 kind load docker-image "${image}" --name mspsql-hub
+kind load docker-image "${previous_image}" --name mspsql-hub
 kind load docker-image "${gateway_image}" --name mspsql-hub
 for site in vic nsw qld; do
   kind load docker-image "${agent_image}" --name "mspsql-${site}"
+  kind load docker-image "${previous_agent_image}" --name "mspsql-${site}"
 done
 for cluster in "${clusters[@]}"; do
   kind load docker-image "${wireguard_image}" --name "${cluster}"
@@ -295,10 +306,10 @@ test -n "${wireguard_ip}"
 
 hub_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   mspsql-hub-control-plane)"
-./bin/kustomize build test/kind/hub |
-  sed "s|image: controller:latest|image: ${image}|" |
+./bin/kustomize build "${previous_source}/test/kind/hub" |
+  sed "s|image: controller:latest|image: ${previous_image}|" |
   sed "s|HUB_NODE_IP|${hub_ip}|g" |
-  sed "s|SITE_AGENT_IMAGE|${agent_image}|g" |
+  sed "s|SITE_AGENT_IMAGE|${previous_agent_image}|g" |
   sed "s|WIREGUARD_IMAGE|${wireguard_image}|g" |
   sed "s|WIREGUARD_ENDPOINT|${wireguard_ip}:51820|g" |
   kubectl apply -f -
@@ -515,14 +526,33 @@ if [[ "${pgpool_value}" != "1" ]]; then
   exit 1
 fi
 
-kubectl -n mspsql-system rollout restart deployment/mspsql-controller-manager
+controller_uid="$(kubectl -n mspsql-system get deployment mspsql-controller-manager \
+  -o jsonpath='{.metadata.uid}')"
+./bin/kustomize build test/kind/hub |
+  sed "s|image: controller:latest|image: ${image}|" |
+  sed "s|HUB_NODE_IP|${hub_ip}|g" |
+  sed "s|SITE_AGENT_IMAGE|${agent_image}|g" |
+  sed "s|WIREGUARD_IMAGE|${wireguard_image}|g" |
+  sed "s|WIREGUARD_ENDPOINT|${wireguard_ip}:51820|g" |
+  kubectl apply -f -
 kubectl -n mspsql-system rollout status deployment/mspsql-controller-manager --timeout=180s
+test "${controller_uid}" = "$(kubectl -n mspsql-system get deployment \
+  mspsql-controller-manager -o jsonpath='{.metadata.uid}')"
+test "$(kubectl get crd multisitepostgres.multisite-postgres.dev \
+  -o jsonpath='{.status.storedVersions[*]}')" = "v1alpha1"
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.metadata.uid}')" != ""
 kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
 for site in vic nsw qld; do
   site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
-  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent rollout restart deployment/mspsql-agent
+  agent_uid="$(kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent \
+    get deployment mspsql-agent -o jsonpath='{.metadata.uid}')"
+  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent set image \
+    deployment/mspsql-agent site-agent="${agent_image}"
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent rollout status \
     deployment/mspsql-agent --timeout=180s
+  test "${agent_uid}" = "$(kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent \
+    get deployment mspsql-agent -o jsonpath='{.metadata.uid}')"
 done
 for site in vic nsw qld; do
   for _ in $(seq 1 90); do
