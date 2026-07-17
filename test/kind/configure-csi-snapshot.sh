@@ -10,7 +10,7 @@ kubectl=(kubectl "--kubeconfig=${kubeconfig}")
 "${kubectl[@]}" kustomize "${snapshotter_dir}/client/config/crd" | "${kubectl[@]}" apply -f -
 "${kubectl[@]}" kustomize "${snapshotter_dir}/deploy/kubernetes/snapshot-controller" |
   "${kubectl[@]}" apply -f -
-"${kubectl[@]}" rollout status deployment/snapshot-controller --timeout=300s
+"${kubectl[@]}" -n kube-system rollout status deployment/snapshot-controller --timeout=300s
 
 KUBECONFIG="${kubeconfig}" "${hostpath_dir}/deploy/kubernetes-1.34/deploy.sh"
 "${kubectl[@]}" apply -f - <<'EOF'
