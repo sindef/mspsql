@@ -43,12 +43,14 @@ spec:
             ip link delete wg0 2>/dev/null || true
           export WG_QUICK_USERSPACE_IMPLEMENTATION=wireguard-go
           wg-quick up /run/mspsql/wireguard/wg0.conf
+          printf ready > /run/mspsql/wireguard-ready
           hub_address="$(awk '/^Address/ {split($3, address, "/"); print address[1]}' \
             /etc/wireguard/interface.conf)"
           socat TCP-LISTEN:9444,bind="${hub_address}",reuseaddr,fork \
             TCP:mspsql-agent-control:9444 &
           socat_pid="$!"
           cleanup() {
+            rm -f /run/mspsql/wireguard-ready
             kill "${socat_pid}" 2>/dev/null || true
             wg-quick down /run/mspsql/wireguard/wg0.conf 2>/dev/null || true
             ip link delete wg0 2>/dev/null || true
@@ -58,18 +60,18 @@ spec:
           while [ -f /run/mspsql/leader ]; do
             sleep 5
             cat /etc/wireguard/interface.conf /etc/wireguard-peers/peers.conf \
-              > /run/mspsql/wireguard/wg0.next
-            if ! cmp -s /run/mspsql/wireguard/wg0.conf /run/mspsql/wireguard/wg0.next; then
-              wg-quick strip /run/mspsql/wireguard/wg0.next \
+              > /run/mspsql/wireguard/wg0-next.conf
+            if ! cmp -s /run/mspsql/wireguard/wg0.conf /run/mspsql/wireguard/wg0-next.conf; then
+              wg-quick strip /run/mspsql/wireguard/wg0-next.conf \
                 > /run/mspsql/wireguard/wg0.sync
               wg syncconf wg0 /run/mspsql/wireguard/wg0.sync
-              mv /run/mspsql/wireguard/wg0.next /run/mspsql/wireguard/wg0.conf
+              mv /run/mspsql/wireguard/wg0-next.conf /run/mspsql/wireguard/wg0.conf
             fi
           done
         ports:
         - {name: wireguard, containerPort: 51820, protocol: UDP}
         readinessProbe:
-          exec: {command: [/bin/sh, -ec, "test -f /run/mspsql/leader && wg show wg0 >/dev/null"]}
+          exec: {command: [/bin/sh, -ec, "test ! -f /run/mspsql/leader || wg show wg0 >/dev/null"]}
           periodSeconds: 2
         securityContext:
           allowPrivilegeEscalation: false

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -42,10 +43,10 @@ func main() {
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 	identity := envOrDefault("POD_NAME", fmt.Sprintf("gateway-%d", os.Getpid()))
-	client := kubernetes.NewForConfigOrDie(ctrl.GetConfigOrDie()).CoordinationV1()
+	kube := kubernetes.NewForConfigOrDie(ctrl.GetConfigOrDie())
 	lock := &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{Name: leaseName, Namespace: namespace},
-		Client:    client, LockConfig: resourcelock.ResourceLockConfig{Identity: identity},
+		Client:    kube.CoordinationV1(), LockConfig: resourcelock.ResourceLockConfig{Identity: identity},
 	}
 	ctx := ctrl.SetupSignalHandler()
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
@@ -59,14 +60,57 @@ func main() {
 				if err := os.WriteFile(activationPath, []byte(identity), 0o600); err != nil {
 					panic(err)
 				}
+				readyPath := filepath.Join(filepath.Dir(activationPath), "wireguard-ready")
+				if err := waitForFile(ctx, readyPath); err != nil {
+					_ = os.Remove(activationPath)
+					return
+				}
+				if err := setActiveLabel(ctx, kube, namespace, identity, true); err != nil {
+					_ = os.Remove(activationPath)
+					return
+				}
 				<-ctx.Done()
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = setActiveLabel(cleanupCtx, kube, namespace, identity, false)
 				_ = os.Remove(activationPath)
+				_ = os.Remove(readyPath)
 			},
 			OnStoppedLeading: func() {
 				_ = os.Remove(activationPath)
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = setActiveLabel(cleanupCtx, kube, namespace, identity, false)
 			},
 		},
 	})
+}
+
+func waitForFile(ctx context.Context, path string) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func setActiveLabel(ctx context.Context, kube kubernetes.Interface, namespace, pod string,
+	active bool,
+) error {
+	value := "null"
+	if active {
+		value = `"true"`
+	}
+	patch := []byte(`{"metadata":{"labels":{"multisite-postgres.dev/gateway-active":` + value + `}}}`)
+	_, err := kube.CoreV1().Pods(namespace).Patch(ctx, pod, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
 }
 
 func envOrDefault(name, fallback string) string {
