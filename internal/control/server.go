@@ -1001,7 +1001,7 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 
 func aggregateInstanceConditions(instance *api.MultiSitePostgres) {
 	for _, conditionType := range []string{
-		"LoadBalancersAllocated", "CertificatesReady", "EtcdQuorate", "PatroniReady",
+		"LoadBalancersAllocated", "CertificatesReady", "EtcdTLSReady", "EtcdQuorate", "PatroniReady",
 		"TDEVerified",
 	} {
 		if conditionType == "TDEVerified" && !instance.Spec.TDE.Enabled {
@@ -1033,6 +1033,7 @@ func aggregateInstanceConditions(instance *api.MultiSitePostgres) {
 			Reason: reason, Message: message,
 		})
 	}
+	aggregateCommonTrust(instance, "EtcdTLSReady", false, "etcd")
 	aggregateBackupTLS(instance)
 }
 
@@ -1040,35 +1041,41 @@ func aggregateBackupTLS(instance *api.MultiSitePostgres) {
 	if instance.Spec.Backup == nil {
 		return
 	}
+	aggregateCommonTrust(instance, "BackupTLSReady", true, "pgBackRest")
+}
+
+func aggregateCommonTrust(instance *api.MultiSitePostgres, conditionType string,
+	dataSitesOnly bool, component string,
+) {
 	var fingerprint string
 	applicable := 0
 	for _, site := range instance.Status.Sites {
-		if siteRole(instance, site.Name) == api.SiteRoleWitness {
+		if dataSitesOnly && siteRole(instance, site.Name) == api.SiteRoleWitness {
 			continue
 		}
 		applicable++
-		condition := meta.FindStatusCondition(site.Conditions, "BackupTLSReady")
+		condition := meta.FindStatusCondition(site.Conditions, conditionType)
 		if condition == nil || condition.Status != metav1.ConditionTrue {
-			setInstanceCondition(&instance.Status.Conditions, instance.Generation, "BackupTLSReady",
+			setInstanceCondition(&instance.Status.Conditions, instance.Generation, conditionType,
 				metav1.ConditionFalse, "AwaitingSites",
-				"Waiting for all data sites to report their pgBackRest trust bundle")
+				"Waiting for all applicable sites to report their "+component+" trust bundle")
 			return
 		}
 		if fingerprint == "" {
 			fingerprint = condition.Message
 		} else if condition.Message != fingerprint {
-			setInstanceCondition(&instance.Status.Conditions, instance.Generation, "BackupTLSReady",
+			setInstanceCondition(&instance.Status.Conditions, instance.Generation, conditionType,
 				metav1.ConditionFalse, "TrustBundleMismatch",
-				"pgBackRest issuers do not publish the same CA bundle across data sites")
+				component+" issuers do not publish the same CA bundle across sites")
 			return
 		}
 	}
 	if applicable == 0 {
 		return
 	}
-	setInstanceCondition(&instance.Status.Conditions, instance.Generation, "BackupTLSReady",
+	setInstanceCondition(&instance.Status.Conditions, instance.Generation, conditionType,
 		metav1.ConditionTrue, "CommonTrustBundle",
-		"All data sites use the same pgBackRest CA bundle")
+		"All applicable sites use the same "+component+" CA bundle")
 }
 
 func siteRole(instance *api.MultiSitePostgres, siteName string) api.SiteRole {

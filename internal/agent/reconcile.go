@@ -25,6 +25,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -331,10 +332,20 @@ func (r *Reconciler) reconcileCertificates(ctx context.Context, desired plan.Sit
 	}
 	setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionTrue,
 		"CertificatesIssued", "All workload certificates are Ready")
+	etcdFingerprint, err := r.trustBundleFingerprint(ctx, desired.Site.Namespace,
+		"etcd-maintenance-client-tls")
+	if err != nil {
+		setLocalCondition(&result.Conditions, "EtcdTLSReady", metav1.ConditionFalse,
+			"TrustBundleInvalid", err.Error())
+		return false, err
+	}
+	setLocalCondition(&result.Conditions, "EtcdTLSReady", metav1.ConditionTrue,
+		"TrustBundleObserved", etcdFingerprint)
 	if desired.Backup == nil {
 		return true, nil
 	}
-	fingerprint, err := r.backupTrustBundleFingerprint(ctx, desired)
+	fingerprint, err := r.trustBundleFingerprint(ctx, desired.Site.Namespace,
+		"pgbackrest-client-tls")
 	if err != nil {
 		setLocalCondition(&result.Conditions, "BackupTLSReady", metav1.ConditionFalse,
 			"TrustBundleInvalid", err.Error())
@@ -373,12 +384,10 @@ func (r *Reconciler) reconcileAddressMigration(ctx context.Context, desired plan
 	return true, nil
 }
 
-func (r *Reconciler) backupTrustBundleFingerprint(ctx context.Context,
-	desired plan.SitePlan,
-) (string, error) {
+func (r *Reconciler) trustBundleFingerprint(ctx context.Context, namespace, secretName string) (string, error) {
 	var secret corev1.Secret
 	if err := r.Client.Get(ctx, client.ObjectKey{
-		Namespace: desired.Site.Namespace, Name: "pgbackrest-client-tls",
+		Namespace: namespace, Name: secretName,
 	}, &secret); err != nil {
 		return "", err
 	}
@@ -401,7 +410,7 @@ func (r *Reconciler) backupTrustBundleFingerprint(ctx context.Context,
 		fingerprints = append(fingerprints, hex.EncodeToString(sum[:]))
 	}
 	if len(fingerprints) == 0 {
-		return "", fmt.Errorf("pgBackRest client Secret contains no CA certificates")
+		return "", fmt.Errorf("Secret %s contains no CA certificates", secretName)
 	}
 	slices.Sort(fingerprints)
 	return strings.Join(fingerprints, ","), nil
@@ -644,20 +653,121 @@ func (r *Reconciler) certificatesReady(ctx context.Context, certificates []clien
 		isReady := false
 		for _, raw := range conditions {
 			condition, conditionOK := raw.(map[string]any)
-			if conditionOK && condition["type"] == "Ready" && condition["status"] == "True" {
+			if conditionOK && condition["type"] == "Ready" && condition["status"] == "True" &&
+				integerValue(condition["observedGeneration"]) >= observed.GetGeneration() {
 				isReady = true
 				break
 			}
 		}
-		if isReady {
-			continue
-		}
 		if !found {
 			return false, fmt.Sprintf("Certificate %s has not reported status", observed.GetName()), nil
 		}
-		return false, fmt.Sprintf("Certificate %s is not Ready", observed.GetName()), nil
+		if !isReady {
+			return false, fmt.Sprintf("Certificate %s is not Ready for generation %d",
+				observed.GetName(), observed.GetGeneration()), nil
+		}
+		secretName, found, err := unstructured.NestedString(observed.Object, "spec", "secretName")
+		if err != nil || !found || secretName == "" {
+			return false, fmt.Sprintf("Certificate %s has no output Secret", observed.GetName()), err
+		}
+		var secret corev1.Secret
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: observed.GetNamespace(), Name: secretName,
+		}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, fmt.Sprintf("Certificate %s output Secret is absent", observed.GetName()), nil
+			}
+			return false, "", err
+		}
+		if err := validateIssuedCertificate(observed, &secret, time.Now()); err != nil {
+			return false, fmt.Sprintf("Certificate %s is unusable: %v", observed.GetName(), err), nil
+		}
 	}
 	return true, "", nil
+}
+
+func integerValue(value any) int64 {
+	switch value := value.(type) {
+	case int64:
+		return value
+	case int32:
+		return int64(value)
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	default:
+		return 0
+	}
+}
+
+func validateIssuedCertificate(expected *unstructured.Unstructured, secret *corev1.Secret,
+	now time.Time,
+) error {
+	leafBlock, _ := pem.Decode(secret.Data[corev1.TLSCertKey])
+	if leafBlock == nil || leafBlock.Type != "CERTIFICATE" {
+		return fmt.Errorf("Secret %s has no leaf certificate", secret.Name)
+	}
+	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse leaf certificate: %w", err)
+	}
+	if now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) {
+		return fmt.Errorf("leaf certificate is outside its validity period")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
+		return fmt.Errorf("Secret %s has no valid CA bundle", secret.Name)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}, CurrentTime: now,
+	}); err != nil {
+		return fmt.Errorf("verify CA chain: %w", err)
+	}
+	dnsNames, _, err := unstructured.NestedStringSlice(expected.Object, "spec", "dnsNames")
+	if err != nil {
+		return err
+	}
+	for _, name := range dnsNames {
+		if err := leaf.VerifyHostname(name); err != nil {
+			return fmt.Errorf("required DNS SAN %q is absent", name)
+		}
+	}
+	ipAddresses, _, err := unstructured.NestedStringSlice(expected.Object, "spec", "ipAddresses")
+	if err != nil {
+		return err
+	}
+	for _, address := range ipAddresses {
+		ip := net.ParseIP(address)
+		if ip == nil || !slices.ContainsFunc(leaf.IPAddresses, ip.Equal) {
+			return fmt.Errorf("required IP SAN %q is absent", address)
+		}
+	}
+	usages, _, err := unstructured.NestedStringSlice(expected.Object, "spec", "usages")
+	if err != nil {
+		return err
+	}
+	for _, usage := range usages {
+		switch usage {
+		case "digital signature":
+			if leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+				return fmt.Errorf("digital signature key usage is absent")
+			}
+		case "key encipherment":
+			if leaf.KeyUsage&x509.KeyUsageKeyEncipherment == 0 {
+				return fmt.Errorf("key encipherment usage is absent")
+			}
+		case "server auth":
+			if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) {
+				return fmt.Errorf("server auth usage is absent")
+			}
+		case "client auth":
+			if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
+				return fmt.Errorf("client auth usage is absent")
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Reconciler) workloadsReady(ctx context.Context, objects []client.Object) (bool, string, error) {

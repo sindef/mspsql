@@ -76,6 +76,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		return ctrl.Result{}, nil
 	}
+	instance.Status.ObservedGeneration = instance.Generation
 
 	registrations := make(map[string]*multisitepostgresv1alpha1.SiteRegistration, len(instance.Spec.Sites))
 	allConnected := true
@@ -282,6 +283,13 @@ func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgr
 		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 			metav1.ConditionFalse, "BackupTrustPending",
 			"Waiting for a common pgBackRest trust bundle across all data sites")
+		return
+	}
+	if !conditionTrue(instance.Status.Conditions, "EtcdTLSReady") {
+		instance.Status.Phase = "Reconciling"
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "EtcdTrustPending",
+			"Waiting for a common etcd trust bundle across all sites")
 		return
 	}
 	instance.Status.Phase = "Ready"

@@ -193,3 +193,33 @@ func TestBackupTLSRequiresCommonTrustBundle(t *testing.T) {
 		t.Fatalf("BackupTLSReady = %#v", condition)
 	}
 }
+
+func TestEtcdTLSRequiresCommonTrustBundleAcrossWitnesses(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", Role: api.SiteRoleData},
+			{Name: "qld", Role: api.SiteRoleWitness},
+		}},
+		Status: api.MultiSitePostgresStatus{Sites: []api.SiteRevisionStatus{
+			{Name: "vic", Conditions: []metav1.Condition{{
+				Type: "EtcdTLSReady", Status: metav1.ConditionTrue, Message: "ca-a",
+			}}},
+			{Name: "qld", Conditions: []metav1.Condition{{
+				Type: "EtcdTLSReady", Status: metav1.ConditionTrue, Message: "ca-b",
+			}}},
+		}},
+	}
+	aggregateInstanceConditions(instance)
+	condition := meta.FindStatusCondition(instance.Status.Conditions, "EtcdTLSReady")
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != "TrustBundleMismatch" || condition.ObservedGeneration != 3 {
+		t.Fatalf("EtcdTLSReady = %#v", condition)
+	}
+	instance.Status.Sites[1].Conditions[0].Message = "ca-a"
+	aggregateInstanceConditions(instance)
+	condition = meta.FindStatusCondition(instance.Status.Conditions, "EtcdTLSReady")
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("EtcdTLSReady = %#v", condition)
+	}
+}

@@ -20,9 +20,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"maps"
+	"math/big"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -379,6 +385,9 @@ func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
 
 func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
@@ -390,13 +399,22 @@ func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 		"apiVersion": "cert-manager.io/v1",
 		"kind":       "Certificate",
 		"metadata": map[string]any{
-			"namespace": "orders",
-			"name":      "postgres-vic-0",
+			"namespace":  "orders",
+			"name":       "postgres-vic-0",
+			"generation": int64(3),
+		},
+		"spec": map[string]any{
+			"secretName":  "postgres-vic-0-tls",
+			"dnsNames":    []any{"postgres-vic-0", "postgres-vic-0.orders.svc"},
+			"ipAddresses": []any{"10.0.0.10"},
+			"usages":      []any{"digital signature", "key encipherment", "server auth", "client auth"},
 		},
 		"status": map[string]any{"conditions": []any{map[string]any{
-			"type": "Ready", "status": "True",
+			"type": "Ready", "status": "True", "observedGeneration": int64(3),
 		}}},
 	}}
+	tlsSecret := testTLSSecret(t, "orders", "postgres-vic-0-tls",
+		[]string{"postgres-vic-0", "postgres-vic-0.orders.svc"}, []net.IP{net.ParseIP("10.0.0.10")})
 	replicas := int32(2)
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres-vic", Generation: 3},
@@ -406,7 +424,7 @@ func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 			ReadyReplicas:      1,
 		},
 	}
-	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(certificate, statefulSet).Build()
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(certificate, tlsSecret, statefulSet).Build()
 	reconciler := Reconciler{Client: kube}
 	ready, message, err := reconciler.certificatesReady(context.Background(), []client.Object{certificate})
 	if err != nil {
@@ -415,6 +433,31 @@ func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 	if !ready {
 		t.Fatalf("certificate was not Ready: %s", message)
 	}
+	stale := certificate.DeepCopy()
+	stale.Object["status"].(map[string]any)["conditions"].([]any)[0].(map[string]any)["observedGeneration"] = int64(2)
+	if err := kube.Update(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+	ready, message, err = reconciler.certificatesReady(context.Background(), []client.Object{certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready || !strings.Contains(message, "generation 3") {
+		t.Fatalf("stale Certificate status was accepted: ready=%v message=%q", ready, message)
+	}
+	wrongSAN := stale.DeepCopy()
+	wrongSAN.Object["status"].(map[string]any)["conditions"].([]any)[0].(map[string]any)["observedGeneration"] = int64(3)
+	wrongSAN.Object["spec"].(map[string]any)["ipAddresses"] = []any{"10.0.0.11"}
+	if err := kube.Update(context.Background(), wrongSAN); err != nil {
+		t.Fatal(err)
+	}
+	ready, message, err = reconciler.certificatesReady(context.Background(), []client.Object{certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready || !strings.Contains(message, `required IP SAN "10.0.0.11" is absent`) {
+		t.Fatalf("wrong Certificate SAN was accepted: ready=%v message=%q", ready, message)
+	}
 	ready, message, err = reconciler.workloadsReady(context.Background(), []client.Object{statefulSet})
 	if err != nil {
 		t.Fatal(err)
@@ -422,6 +465,43 @@ func TestReadinessUsesObservedControllerStatus(t *testing.T) {
 	if ready || message == "" {
 		t.Fatalf("partially available StatefulSet was reported Ready: %q", message)
 	}
+}
+
+func testTLSSecret(t *testing.T, namespace, name string, dnsNames []string, ipAddresses []net.IP) *corev1.Secret {
+	t.Helper()
+	now := time.Now()
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test-ca"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: name},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+		DNSNames: dnsNames, IPAddresses: ipAddresses,
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caTemplate, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}, Data: map[string][]byte{
+		corev1.TLSCertKey: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+		"ca.crt":          pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+	}}
 }
 
 func TestDiscoverInventoryReportsStorageAndIssuers(t *testing.T) {
