@@ -325,6 +325,8 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 	for _, expected := range []string{
 		"enable_pool_hba = on", "pool_passwd = ''", "ssl = on", "ssl_key = '/tls/tls.key'",
 		"ssl_cert = '/tls/tls.crt'", "ssl_ca_cert = '/backend-ca/ca.crt'",
+		"backend_clustering_mode = 'streaming_replication'", "sr_check_period = 5",
+		"health_check_period = 5", "${POSTGRES_SUPERUSER_PASSWORD}",
 	} {
 		if !strings.Contains(config.Data["pgpool.conf"], expected) {
 			t.Errorf("Pgpool configuration is missing %q", expected)
@@ -335,9 +337,13 @@ func TestRendererSecuresPgpoolFrontendAndBackendTLS(t *testing.T) {
 	}
 	if len(deployment.Spec.Template.Spec.InitContainers) != 1 ||
 		!strings.Contains(deployment.Spec.Template.Spec.InitContainers[0].Command[2], "chmod 600 /tls/tls.key") ||
+		!strings.Contains(deployment.Spec.Template.Spec.InitContainers[0].Command[2],
+			"/postgres-auth/superuser-password") ||
 		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls-source") ||
 		!hasVolume(deployment.Spec.Template.Spec.Volumes, "tls") ||
 		!hasVolume(deployment.Spec.Template.Spec.Volumes, "backend-ca") ||
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "config-source") ||
+		!hasVolume(deployment.Spec.Template.Spec.Volumes, "postgres-auth") ||
 		!hasVolume(deployment.Spec.Template.Spec.Volumes, "runtime") {
 		t.Fatalf("Pgpool TLS preparation is incomplete: %#v", deployment.Spec.Template.Spec)
 	}

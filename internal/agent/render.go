@@ -1165,6 +1165,14 @@ func (r Renderer) pgpoolConfig(desired plan.SitePlan, labels map[string]string) 
 		},
 		Data: map[string]string{
 			"pgpool.conf": "listen_addresses = '*'\nport = 5432\n" +
+				"backend_clustering_mode = 'streaming_replication'\n" +
+				"sr_check_period = 5\nsr_check_user = '${POSTGRES_SUPERUSER_USERNAME}'\n" +
+				"sr_check_password = '${POSTGRES_SUPERUSER_PASSWORD}'\n" +
+				"sr_check_database = 'postgres'\nhealth_check_period = 5\n" +
+				"health_check_user = '${POSTGRES_SUPERUSER_USERNAME}'\n" +
+				"health_check_password = '${POSTGRES_SUPERUSER_PASSWORD}'\n" +
+				"health_check_database = 'postgres'\nhealth_check_max_retries = 3\n" +
+				"auto_failback = on\nfailover_on_backend_error = off\n" +
 				"enable_pool_hba = on\npool_passwd = ''\nssl = on\n" +
 				"ssl_key = '/tls/tls.key'\nssl_cert = '/tls/tls.crt'\n" +
 				"ssl_ca_cert = '/backend-ca/ca.crt'\n" + strings.Join(backends, ""),
@@ -1177,6 +1185,17 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 	workloadLabels := stableWorkloadLabels(labels)
 	workloadLabels["multisite-postgres.dev/component"] = "pgpool"
 	replicas := desired.Site.Components.PgpoolReplicas
+	annotations := map[string]string{
+		"multisite-postgres.dev/config-hash": configMapDataHash(r.pgpoolConfig(desired, labels).Data),
+		"multisite-postgres.dev/tls-hash": hashValues(
+			desired.RuntimeCertificateHashes["pgpool-"+desired.Site.Name+"-tls"],
+			desired.RuntimeCertificateHashes["postgres-"+desired.Site.Name+"-0-tls"],
+		),
+	}
+	if desired.RuntimeCredentialVersion > 0 {
+		annotations["multisite-postgres.dev/credential-version"] =
+			strconv.FormatInt(desired.RuntimeCredentialVersion, 10)
+	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: desired.Site.Namespace, Name: "pgpool-" + desired.Site.Name, Labels: copyMap(labels),
@@ -1184,13 +1203,7 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas, Selector: &metav1.LabelSelector{MatchLabels: workloadLabels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels, Annotations: map[string]string{
-					"multisite-postgres.dev/config-hash": configMapDataHash(r.pgpoolConfig(desired, labels).Data),
-					"multisite-postgres.dev/tls-hash": hashValues(
-						desired.RuntimeCertificateHashes["pgpool-"+desired.Site.Name+"-tls"],
-						desired.RuntimeCertificateHashes["postgres-"+desired.Site.Name+"-0-tls"],
-					),
-				}},
+				ObjectMeta: metav1.ObjectMeta{Labels: workloadLabels, Annotations: annotations},
 				Spec: corev1.PodSpec{
 					ServiceAccountName:           workloadServiceAccount,
 					AutomountServiceAccountToken: ptr(false),
@@ -1199,16 +1212,27 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 					},
 					Affinity: antiAffinity(workloadLabels),
 					InitContainers: []corev1.Container{{
-						Name: "prepare-tls", Image: r.Images.Pgpool,
+						Name: "prepare-runtime", Image: r.Images.Pgpool,
 						Command: []string{"/bin/sh", "-ec",
 							"cp /tls-source/tls.crt /tls/tls.crt; " +
 								"cp /tls-source/tls.key /tls/tls.key; " +
 								"cp /tls-source/ca.crt /tls/ca.crt; " +
-								"chmod 644 /tls/tls.crt /tls/ca.crt; chmod 600 /tls/tls.key"},
+								"chmod 644 /tls/tls.crt /tls/ca.crt; chmod 600 /tls/tls.key; " +
+								`perl -0777 -pe 'BEGIN { ` +
+								`open my $u, "<", "/postgres-auth/superuser-username" or die $!; ` +
+								`open my $p, "<", "/postgres-auth/superuser-password" or die $!; ` +
+								`local $/; $user = <$u>; $password = <$p>; chomp $user; chomp $password; } ` +
+								`s/\$\{POSTGRES_SUPERUSER_USERNAME\}/$user/g; ` +
+								`s/\$\{POSTGRES_SUPERUSER_PASSWORD\}/$password/g' ` +
+								`/config-source/pgpool.conf > /config/pgpool.conf; ` +
+								`cp /config-source/pool_hba.conf /config/pool_hba.conf; chmod 600 /config/pgpool.conf`},
 						SecurityContext: restrictedContainer(),
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "tls-source", MountPath: "/tls-source", ReadOnly: true},
 							{Name: "tls", MountPath: "/tls"},
+							{Name: "config-source", MountPath: "/config-source", ReadOnly: true},
+							{Name: "config", MountPath: "/config"},
+							{Name: "postgres-auth", MountPath: "/postgres-auth", ReadOnly: true},
 						},
 					}},
 					Containers: []corev1.Container{{
@@ -1230,10 +1254,14 @@ func (r Renderer) pgpoolDeployment(desired plan.SitePlan, labels map[string]stri
 						},
 					}},
 					Volumes: []corev1.Volume{
-						{Name: "config", VolumeSource: corev1.VolumeSource{
+						{Name: "config-source", VolumeSource: corev1.VolumeSource{
 							ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{
 								Name: "pgpool-" + desired.Site.Name,
 							}},
+						}},
+						{Name: "config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "postgres-auth", VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: "postgres-auth"},
 						}},
 						{Name: "tls-source", VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{SecretName: "pgpool-" + desired.Site.Name + "-tls"},
