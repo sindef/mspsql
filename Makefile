@@ -73,6 +73,21 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 test-e2e: manifests generate fmt vet ## Run hub and three-site conformance in isolated Kind clusters.
 	./test/kind/run.sh
 
+.PHONY: test-race
+test-race: ## Run all Go tests with the race detector.
+	go test -race ./...
+
+.PHONY: verify-generated
+verify-generated: manifests generate proto ## Fail when committed generated artifacts are stale.
+	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go gen/control/v1 \
+		config/crd/bases config/rbac/role.yaml config/webhook/manifests.yaml
+
+.PHONY: verify-manifests
+verify-manifests: kustomize ## Build every deployment, RBAC, sample, and test overlay.
+	@for file in $$(find config test/kind/hub -name kustomization.yaml | sort); do \
+		"$(KUSTOMIZE)" build "$${file%/*}" >/dev/null; \
+	done
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

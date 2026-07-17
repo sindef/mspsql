@@ -1,0 +1,61 @@
+name: Generated, Manifests, Race, and Images
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  generated-manifests:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      - name: Verify modules and generated artifacts
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          make verify-generated
+      - name: Build every manifest overlay
+        run: make verify-manifests
+      - name: Check formatting and whitespace
+        run: |
+          test -z "$(gofmt -l .)"
+          git diff --check
+
+  race:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      - name: Run race tests
+        run: make test-race
+
+  images:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Build all runtime images
+        run: |
+          docker build -t mspsql:test .
+          docker build -f Dockerfile.agent -t mspsql-agent:test .
+          docker build -f Dockerfile.gateway -t mspsql-gateway:test .
+          docker build -f Dockerfile.wireguard -t mspsql-wireguard:test .
+          docker build -f Dockerfile.tun-device-plugin -t mspsql-tun-device-plugin:test .
