@@ -143,4 +143,14 @@ func TestBackupCoordinatorUsesSynchronousStandby(t *testing.T) {
 			t.Fatalf("backup config is missing %q:\n%s", expected, config)
 		}
 	}
+	job := backupJob(desired, directive.Payload{
+		InstanceUID: "instance", OperationUID: "backup", Primary: "postgres-vic-0",
+		BackupSource: "postgres-qld-0", BackupType: "full",
+	}, "backup", config)
+	if len(job.Spec.Template.Spec.InitContainers) != 1 ||
+		!strings.Contains(job.Spec.Template.Spec.InitContainers[0].Command[2], "chmod 600 /tls/tls.key") ||
+		job.Spec.Template.Spec.InitContainers[0].VolumeMounts[0].Name != "tls-source" ||
+		job.Spec.Template.Spec.Containers[0].VolumeMounts[1].Name != "tls" {
+		t.Fatalf("backup Job does not prepare a private client key: %#v", job.Spec.Template.Spec)
+	}
 }

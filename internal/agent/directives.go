@@ -255,6 +255,16 @@ PY
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
+					InitContainers: []corev1.Container{{
+						Name:            "prepare-tls",
+						Image:           desired.Postgres.Image,
+						Command:         []string{"/bin/bash", "-ec", "cp /tls-source/ca.crt /tls/ca.crt; cp /tls-source/tls.crt /tls/tls.crt; cp /tls-source/tls.key /tls/tls.key; chmod 644 /tls/ca.crt /tls/tls.crt; chmod 600 /tls/tls.key"},
+						SecurityContext: restrictedContainer(),
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "tls-source", MountPath: "/tls-source", ReadOnly: true},
+							{Name: "tls", MountPath: "/tls"},
+						},
+					}},
 					Containers: []corev1.Container{{
 						Name: "pgbackrest", Image: desired.Postgres.Image,
 						Command:         []string{"/bin/bash", "-ec", command},
@@ -268,8 +278,11 @@ PY
 						{Name: "repository", VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{SecretName: "pgbackrest-repository"},
 						}},
-						{Name: "tls", VolumeSource: corev1.VolumeSource{
+						{Name: "tls-source", VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{SecretName: "pgbackrest-client-tls"},
+						}},
+						{Name: "tls", VolumeSource: corev1.VolumeSource{
+							EmptyDir: &corev1.EmptyDirVolumeSource{},
 						}},
 					},
 				},
