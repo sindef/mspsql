@@ -125,16 +125,26 @@ for site in vic nsw qld; do
   site_kubeconfig="$(mktemp)"
   kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}"
   ./test/kind/configure-vault.sh "${site_kubeconfig}" "${site}" \
-    "${temp_dir}/ca.crt" "${temp_dir}/ca.key" &
+    "${temp_dir}/ca.crt" "${temp_dir}/ca.key" \
+    >"${diagnostics_dir}/${site}-vault.log" 2>&1 &
   vault_pid=$!
   ./test/kind/configure-platform.sh "${site_kubeconfig}" \
     "${subnet_a}.${subnet_b}.100.${pool_offset}" \
     "${subnet_a}.${subnet_b}.100.$((pool_offset + 19))" \
     "${temp_dir}/ca.crt" "${temp_dir}/ca.key" \
-    "${temp_dir}/cert-manager.yaml" "${temp_dir}/metallb.yaml" &
+    "${temp_dir}/cert-manager.yaml" "${temp_dir}/metallb.yaml" \
+    >"${diagnostics_dir}/${site}-platform.log" 2>&1 &
   platform_pid=$!
-  wait "${vault_pid}"
-  wait "${platform_pid}"
+  vault_status=0
+  platform_status=0
+  wait "${vault_pid}" || vault_status=$?
+  wait "${platform_pid}" || platform_status=$?
+  if (( vault_status != 0 || platform_status != 0 )); then
+    echo "${site} provisioning failed: vault=${vault_status} platform=${platform_status}" >&2
+    tail -200 "${diagnostics_dir}/${site}-vault.log" >&2
+    tail -200 "${diagnostics_dir}/${site}-platform.log" >&2
+    exit 1
+  fi
   pool_offset=$((pool_offset + 20))
   rm -f "${site_kubeconfig}"
 done
