@@ -2,6 +2,9 @@
 # Ignore everything by default and re-include only needed files
 **
 
+# Docker must traverse ignored parent directories before later file rules can match.
+!**/
+
 # Re-include Go source files (but not *_test.go)
 !**/*.go
 **/*_test.go
@@ -9,3 +12,8 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Local tooling and repository metadata are never build inputs.
+bin/
+.git/
+cover.out

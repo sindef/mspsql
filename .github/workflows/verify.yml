@@ -53,6 +53,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Build all runtime images
+        env:
+          DOCKER_BUILDKIT: "0"
         run: |
           docker build -t mspsql:test .
           docker build -f Dockerfile.agent -t mspsql-agent:test .
