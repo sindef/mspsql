@@ -31,6 +31,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	controllermetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -39,6 +40,7 @@ import (
 	"github.com/sindef/mspsql/internal/control"
 	"github.com/sindef/mspsql/internal/controller"
 	"github.com/sindef/mspsql/internal/registration"
+	"github.com/sindef/mspsql/internal/telemetry"
 	webhookv1alpha1 "github.com/sindef/mspsql/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -203,6 +205,7 @@ func main() {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
 	}
+	controllermetrics.Registry.MustRegister(telemetry.NewHubCollector(mgr.GetClient()))
 
 	if err := (&controller.SiteRegistrationReconciler{
 		Client:                mgr.GetClient(),

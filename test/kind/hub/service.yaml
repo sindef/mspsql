@@ -7,6 +7,9 @@ spec:
   selector:
     control-plane: controller-manager
   ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
   - name: registration
     port: 8082
     targetPort: 8082

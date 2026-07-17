@@ -45,6 +45,8 @@ type AgentClient struct {
 	Directives   DirectiveExecutor
 	Inventory    func(context.Context) ([]byte, error)
 	Certificates CertificateRotator
+	Connection   func(bool)
+	Reconcile    func(string, time.Duration, agent.ApplyResult, error)
 	sendMu       sync.Mutex
 	activeMu     sync.Mutex
 	active       map[string]int64
@@ -91,6 +93,10 @@ func (c *AgentClient) Run(ctx context.Context) error {
 	}
 	if err := c.sendInventory(ctx, stream); err != nil {
 		return err
+	}
+	if c.Connection != nil {
+		c.Connection(true)
+		defer c.Connection(false)
 	}
 	if c.active == nil {
 		c.active = map[string]int64{}
@@ -286,7 +292,11 @@ func (c *AgentClient) applyPlan(ctx context.Context, stream controlv1.AgentContr
 	backoff := time.Second
 	resultReported := false
 	for {
+		started := time.Now()
 		result, applyErr := c.Reconciler.Apply(ctx, desired, previous, true)
+		if c.Reconcile != nil {
+			c.Reconcile(message.InstanceUid, time.Since(started), result, applyErr)
+		}
 		summaries := make(map[string]string, len(result.Addresses)+1)
 		for member, address := range result.Addresses {
 			summaries["address/"+member] = address

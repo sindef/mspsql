@@ -25,10 +25,13 @@ import (
 	"flag"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -52,6 +55,7 @@ import (
 	"github.com/sindef/mspsql/internal/control"
 	"github.com/sindef/mspsql/internal/plan"
 	"github.com/sindef/mspsql/internal/siteidentity"
+	"github.com/sindef/mspsql/internal/telemetry"
 	vaultclient "github.com/sindef/mspsql/internal/vault"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -64,7 +68,7 @@ func main() {
 	var target, namespace, registrationUID, hubDomain, publicKeyPath string
 	var certificatePath, privateKeyPath, caPath, activationPath string
 	var bootstrapPath string
-	var readinessFile string
+	var readinessFile, metricsAddress string
 	var etcdImage, pgpoolImage string
 	flag.StringVar(&target, "hub-address", "", "Hub gRPC address reachable through WireGuard.")
 	flag.StringVar(&namespace, "namespace", envOrDefault("POD_NAMESPACE", "mspsql-agent"), "Agent system namespace.")
@@ -84,6 +88,7 @@ func main() {
 		"Pgpool image.")
 	flag.StringVar(&readinessFile, "check-ready", "",
 		"Exit successfully when the given projected identity file is non-empty.")
+	flag.StringVar(&metricsAddress, "metrics-bind-address", ":8080", "Address for the Prometheus metrics endpoint.")
 	zapOptions := zap.Options{Development: false}
 	zapOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -116,6 +121,10 @@ func main() {
 	}
 	publicKey := readPublicKey(publicKeyPath)
 	tlsConfig := clientTLS(certificatePath, privateKeyPath, caPath)
+	agentMetrics := telemetry.NewAgentMetrics(registrationUID)
+	if tlsConfig.Certificates[0].Leaf != nil {
+		agentMetrics.SetCertificateExpiry(tlsConfig.Certificates[0].Leaf.NotAfter)
+	}
 	cache := &agent.Cache{
 		Client: kube, Namespace: namespace, PublicKey: publicKey, SiteUID: registrationUID,
 	}
@@ -143,6 +152,7 @@ func main() {
 		LockConfig: resourcelock.ResourceLockConfig{Identity: identity},
 	}
 	ctx := ctrl.SetupSignalHandler()
+	serveMetrics(ctx, metricsAddress, agentMetrics, log)
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock: lock, LeaseDuration: 60 * time.Second, RenewDeadline: 40 * time.Second,
 		RetryPeriod: 15 * time.Second, ReleaseOnCancel: true, Name: "mspsql-site-agent",
@@ -163,7 +173,7 @@ func main() {
 						Client: kube, Namespace: namespace, DeploymentName: "mspsql-agent",
 						MountPath: "/etc/mspsql/identity", RegistrationUID: registrationUID,
 					},
-					registrationUID, string(clusterUID))
+					registrationUID, string(clusterUID), agentMetrics)
 			},
 			OnStoppedLeading: func() {
 				_ = os.Remove(activationPath)
@@ -209,12 +219,12 @@ func vaultServiceAccountToken(kube client.Client) func(context.Context, string, 
 func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, cache *agent.Cache,
 	reconciler *agent.Reconciler, directiveExecutor *agent.DirectiveExecutor,
 	certificates control.CertificateRotator,
-	registrationUID, clusterUID string,
+	registrationUID, clusterUID string, agentMetrics *telemetry.AgentMetrics,
 ) {
 	log := crlog.FromContext(ctx).WithName("control")
 	backoff := time.Second
 	for ctx.Err() == nil {
-		reconcileCached(ctx, cache, reconciler, false)
+		reconcileCached(ctx, cache, reconciler, agentMetrics, false)
 		controlClient := &control.AgentClient{
 			Target: target,
 			DialOptions: []grpc.DialOption{
@@ -232,18 +242,21 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 			},
 			Cache: cache, Reconciler: reconciler, Directives: directiveExecutor,
 			Certificates: certificates,
+			Connection:   agentMetrics.SetConnected,
+			Reconcile:    agentMetrics.ObserveReconcile,
 			Inventory: func(inventoryCtx context.Context) ([]byte, error) {
 				return agent.DiscoverInventory(inventoryCtx, cache.Client)
 			},
 		}
 		connectionCtx, cancel := context.WithCancel(ctx)
-		go reconcilePeriodically(connectionCtx, cache, reconciler)
+		go reconcilePeriodically(connectionCtx, cache, reconciler, agentMetrics)
 		err := controlClient.Run(connectionCtx)
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			log.Error(err, "Control stream disconnected")
 		}
 		delay := backoff + time.Duration(rand.Int64N(int64(backoff/2+1)))
+		agentMetrics.SetBackoff(delay)
 		select {
 		case <-ctx.Done():
 			return
@@ -255,7 +268,9 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 	}
 }
 
-func reconcilePeriodically(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler) {
+func reconcilePeriodically(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler,
+	agentMetrics *telemetry.AgentMetrics,
+) {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -263,13 +278,13 @@ func reconcilePeriodically(ctx context.Context, cache *agent.Cache, reconciler *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reconcileCached(ctx, cache, reconciler, true)
+			reconcileCached(ctx, cache, reconciler, agentMetrics, true)
 		}
 	}
 }
 
 func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.Reconciler,
-	connected bool,
+	agentMetrics *telemetry.AgentMetrics, connected bool,
 ) {
 	log := crlog.FromContext(ctx).WithName("cache")
 	plans, err := cache.List(ctx)
@@ -278,11 +293,42 @@ func reconcileCached(ctx context.Context, cache *agent.Cache, reconciler *agent.
 		return
 	}
 	for _, desired := range plans {
-		if _, err := reconciler.Apply(ctx, desired, desired, connected); err != nil {
+		if age, err := cache.Age(ctx, desired.InstanceUID); err == nil {
+			agentMetrics.SetCacheAge(desired.InstanceUID, age)
+		}
+		started := time.Now()
+		result, err := reconciler.Apply(ctx, desired, desired, connected)
+		agentMetrics.ObserveReconcile(desired.InstanceUID, time.Since(started), result, err)
+		if err != nil {
 			log.Error(err, "Cached reconciliation failed", "instanceUID", desired.InstanceUID,
 				"revision", desired.Revision)
 		}
 	}
+}
+
+func serveMetrics(ctx context.Context, address string, agentMetrics *telemetry.AgentMetrics,
+	log logr.Logger,
+) {
+	if address == "" || address == "0" {
+		return
+	}
+	server := &http.Server{
+		Addr: address, Handler: promhttp.HandlerFor(agentMetrics.Registry(), promhttp.HandlerOpts{}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error(err, "Metrics server stopped")
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Error(err, "Metrics server shutdown failed")
+		}
+	}()
 }
 
 func readPublicKey(path string) ed25519.PublicKey {

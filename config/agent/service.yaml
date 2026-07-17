@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mspsql-agent-metrics
+  namespace: mspsql-agent
+  labels:
+    app.kubernetes.io/name: mspsql-agent
+spec:
+  selector:
+    app.kubernetes.io/name: mspsql-agent
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: metrics

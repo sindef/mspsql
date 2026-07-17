@@ -10,6 +10,8 @@ spec:
         args:
         - --leader-elect
         - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        - --metrics-secure=false
         - --control-address=:9444
         - --registration-public-url=http://HUB_NODE_IP:30082
         - --hub-control-address=10.254.0.1:9444
@@ -20,6 +22,7 @@ spec:
         env:
         - {name: ENABLE_WEBHOOKS, value: "false"}
         ports:
+        - {name: metrics, containerPort: 8080, protocol: TCP}
         - {name: grpc, containerPort: 9444, protocol: TCP}
         - {name: registration, containerPort: 8082, protocol: TCP}
         volumeMounts:
