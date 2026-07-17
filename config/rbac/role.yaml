@@ -18,6 +18,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - multisite-postgres.dev
   resources:
   - multisitepostgres

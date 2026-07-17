@@ -222,6 +222,7 @@ func main() {
 		Scheme:                mgr.GetScheme(),
 		SystemNamespace:       systemNamespace,
 		DefaultBackupSchedule: defaultBackupSchedule,
+		Recorder:              mgr.GetEventRecorderFor("multisitepostgres"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "multisitepostgres")
 		os.Exit(1)

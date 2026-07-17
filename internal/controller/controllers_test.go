@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -273,6 +274,34 @@ func TestMergeReconciledStatusPreservesAgentObservations(t *testing.T) {
 		meta.FindStatusCondition(current.Conditions, "BackupReady") == nil ||
 		meta.FindStatusCondition(current.Conditions, "Ready") == nil {
 		t.Fatalf("concurrent status fields were lost: %#v", current)
+	}
+}
+
+func TestStatusTransitionEmitsKubernetesEvent(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders", UID: "instance"},
+		Status: api.MultiSitePostgresStatus{Conditions: []metav1.Condition{{
+			Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllSitesReady",
+		}}},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(instance).WithObjects(instance).Build()
+	recorder := record.NewFakeRecorder(1)
+	reconciler := &MultiSitePostgresReconciler{Client: kube, Recorder: recorder}
+	desired := instance.DeepCopy()
+	setCondition(&desired.Status.Conditions, desired.Generation, "Ready",
+		metav1.ConditionFalse, "AgentDisconnected", "A data site is unavailable")
+	if err := reconciler.updateInstanceStatus(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "Warning AgentDisconnected Ready: A data site is unavailable") {
+			t.Fatalf("event = %q", event)
+		}
+	default:
+		t.Fatal("condition transition emitted no Kubernetes Event")
 	}
 }
 

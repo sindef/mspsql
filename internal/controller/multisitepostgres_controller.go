@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -54,6 +55,7 @@ type MultiSitePostgresReconciler struct {
 	SystemNamespace       string
 	DefaultBackupSchedule string
 	Now                   func() time.Time
+	Recorder              record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres,verbs=get;list;watch;create;update;patch;delete
@@ -61,6 +63,7 @@ type MultiSitePostgresReconciler struct {
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres/finalizers,verbs=update
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var instance multisitepostgresv1alpha1.MultiSitePostgres
@@ -677,14 +680,38 @@ func (r *MultiSitePostgresReconciler) updateInstanceStatus(ctx context.Context,
 	instance *multisitepostgresv1alpha1.MultiSitePostgres,
 ) error {
 	desired := instance.Status.DeepCopy()
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	var transitions []metav1.Condition
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current multisitepostgresv1alpha1.MultiSitePostgres
 		if err := r.Get(ctx, client.ObjectKeyFromObject(instance), &current); err != nil {
 			return err
 		}
+		transitions = conditionTransitions(current.Status.Conditions, desired.Conditions)
 		mergeReconciledStatus(&current.Status, desired)
 		return r.Status().Update(ctx, &current)
 	})
+	if err == nil && r.Recorder != nil {
+		for _, condition := range transitions {
+			eventType := corev1.EventTypeNormal
+			if condition.Status == metav1.ConditionFalse {
+				eventType = corev1.EventTypeWarning
+			}
+			r.Recorder.Eventf(instance, eventType, condition.Reason,
+				"%s: %s", condition.Type, condition.Message)
+		}
+	}
+	return err
+}
+
+func conditionTransitions(current, desired []metav1.Condition) []metav1.Condition {
+	var transitions []metav1.Condition
+	for _, condition := range desired {
+		previous := meta.FindStatusCondition(current, condition.Type)
+		if previous == nil || previous.Status != condition.Status || previous.Reason != condition.Reason {
+			transitions = append(transitions, condition)
+		}
+	}
+	return transitions
 }
 
 func mergeReconciledStatus(current, desired *multisitepostgresv1alpha1.MultiSitePostgresStatus) {
