@@ -446,6 +446,35 @@ func TestRollbackStopsPostgresAndSitePgpool(t *testing.T) {
 	}
 }
 
+func TestMajorUpgradeRetainsOldPGDATAPath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "orders", Name: "data-postgres-vic-0-0",
+	}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(claim).Build()
+	desired := plan.SitePlan{
+		Site: api.PostgresSiteSpec{Name: "vic", Namespace: "orders"},
+		MajorUpgrade: &plan.MajorUpgradePlan{
+			OperationUID: "upgrade", Primary: "postgres-vic-0", SourceMajor: 17,
+			RollbackRetention: time.Hour,
+		},
+	}
+	if err := (&Reconciler{Client: kube}).markOldDataRetention(
+		context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	var observed corev1.PersistentVolumeClaim
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(claim), &observed); err != nil {
+		t.Fatal(err)
+	}
+	if path := observed.Annotations["multisite-postgres.dev/old-data-path"]; path != "data/.mspsql-old-17" {
+		t.Fatalf("old data path = %q", path)
+	}
+}
+
 func TestFillMissingAddressesPreservesSerializedPlan(t *testing.T) {
 	planned := map[string]string{"etcd-vic-0": "10.0.0.1"}
 	observed := map[string]string{
@@ -1258,6 +1287,9 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 		}
 		if !strings.Contains(command, expected) {
 			t.Fatalf("TDE=%t upgrade command is missing %q:\n%s", enabled, expected, command)
+		}
+		if !strings.Contains(command, "cd /pgdata/data") {
+			t.Fatalf("upgrade does not operate on the managed PGDATA directory:\n%s", command)
 		}
 		if enabled && (!strings.Contains(command, "shared_preload_libraries=pg_tde") ||
 			!hasVolume(job.Spec.Template.Spec.Volumes, "pg-tde-vault")) {

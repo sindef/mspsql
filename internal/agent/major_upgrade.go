@@ -168,7 +168,7 @@ func (r *Reconciler) markOldDataRetention(ctx context.Context, desired plan.Site
 	claim.Annotations["multisite-postgres.dev/old-data-operation"] =
 		desired.MajorUpgrade.OperationUID
 	claim.Annotations["multisite-postgres.dev/old-data-path"] =
-		fmt.Sprintf(".mspsql-old-%d", desired.MajorUpgrade.SourceMajor)
+		fmt.Sprintf("data/.mspsql-old-%d", desired.MajorUpgrade.SourceMajor)
 	claim.Annotations["multisite-postgres.dev/old-data-expires-at"] =
 		time.Now().Add(desired.MajorUpgrade.RollbackRetention).UTC().Format(time.RFC3339)
 	return r.Client.Patch(ctx, &claim, client.MergeFrom(base))
@@ -431,7 +431,7 @@ func (r Renderer) MajorUpgradeJob(desired plan.SitePlan) *batchv1.Job {
 			` --new-options='-c shared_preload_libraries=pg_tde'`
 	}
 	script := fmt.Sprintf(`set -eu
-cd /pgdata
+cd /pgdata/data
 mkdir -p .mspsql-old-%d .mspsql-new-%d
 find . -mindepth 1 -maxdepth 1 ! -name '.mspsql-old-%d' ! -name '.mspsql-new-%d' \
   -exec mv -- {} .mspsql-old-%d/ \;
