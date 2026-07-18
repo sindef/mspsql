@@ -93,6 +93,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+docker rm -f mspsql-minio mspsql-registry >/dev/null 2>&1 || true
+
 docker pull "${vault_image}"
 docker pull "${minio_image}"
 docker pull "${registry_image}"

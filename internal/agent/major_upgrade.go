@@ -105,24 +105,8 @@ func (r *Reconciler) prepareMajorUpgrade(ctx context.Context, desired plan.SiteP
 		}
 	case plan.MajorUpgradePhaseReplicas:
 		result.Phase = "ResettingReplicas"
-		for _, job := range r.Renderer.MajorReplicaResetJobs(desired) {
-			if err := r.apply(ctx, job); err != nil {
-				return false, err
-			}
-			ready, message, err := r.workloadsReady(ctx, []client.Object{job})
-			if err != nil {
-				return false, err
-			}
-			if !ready {
-				reason := "ReplicaResetPending"
-				if strings.Contains(message, " failed:") {
-					reason = "ReplicaResetFailed"
-				}
-				setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
-					reason, message)
-				return false, nil
-			}
-		}
+		return r.reconcileMajorReplicaReset(ctx, desired, result,
+			"ReplicaResetPending", "ReplicaResetFailed")
 	case plan.MajorUpgradePhaseRollback:
 		result.Phase = "RollingBack"
 		ready, err := r.ensureRollbackWorkloadsStopped(ctx, desired, result)
@@ -144,6 +128,34 @@ func (r *Reconciler) prepareMajorUpgrade(ctx context.Context, desired plan.SiteP
 		if !ready {
 			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
 				"RollbackDCSResetPending", message)
+			return false, nil
+		}
+	case plan.MajorUpgradePhaseRollbackStart:
+		result.Phase = "ResettingRollbackReplicas"
+		return r.reconcileMajorReplicaReset(ctx, desired, result,
+			"RollbackReplicaResetPending", "RollbackReplicaResetFailed")
+	}
+	return true, nil
+}
+
+func (r *Reconciler) reconcileMajorReplicaReset(ctx context.Context, desired plan.SitePlan,
+	result *ApplyResult, pendingReason, failedReason string,
+) (bool, error) {
+	for _, job := range r.Renderer.MajorReplicaResetJobs(desired) {
+		if err := r.apply(ctx, job); err != nil {
+			return false, err
+		}
+		ready, message, err := r.workloadsReady(ctx, []client.Object{job})
+		if err != nil {
+			return false, err
+		}
+		if !ready {
+			reason := pendingReason
+			if strings.Contains(message, " failed:") {
+				reason = failedReason
+			}
+			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
+				reason, message)
 			return false, nil
 		}
 	}

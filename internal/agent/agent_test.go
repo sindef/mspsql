@@ -1416,18 +1416,32 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 }
 
 func TestMajorRollbackOnlyStartsSourcePrimary(t *testing.T) {
+	renderer := Renderer{}
 	desired := plan.SitePlan{
-		Site: api.PostgresSiteSpec{Name: "vic", Role: api.SiteRoleData},
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Role: api.SiteRoleData,
+			Components: api.SiteComponents{PostgresReplicas: 1},
+		},
 		MajorUpgrade: &plan.MajorUpgradePlan{
 			Phase: plan.MajorUpgradePhaseRollbackStart, Primary: "postgres-nsw-0",
+			UpgradeImage: "upgrade-tooling",
 		},
 	}
 	if restoreExpectsPostgres(desired) {
 		t.Fatal("non-primary rollback site expected PostgreSQL to run")
 	}
+	if jobs := renderer.MajorReplicaResetJobs(desired); len(jobs) != 1 {
+		t.Fatalf("non-primary rollback site reset jobs = %d, want 1", len(jobs))
+	}
 	desired.Site.Name = "nsw"
+	desired.Site.Components.PostgresReplicas = 2
 	if !restoreExpectsPostgres(desired) {
 		t.Fatal("source-primary rollback site did not expect PostgreSQL to run")
+	}
+	jobs := renderer.MajorReplicaResetJobs(desired)
+	if len(jobs) != 1 || !strings.Contains(jobs[0].Name, operationHash(
+		desired.MajorUpgrade.OperationUID+"/postgres-nsw-1")) {
+		t.Fatalf("source-primary rollback reset jobs = %#v", jobs)
 	}
 }
 
