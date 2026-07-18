@@ -1372,6 +1372,10 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 		if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 {
 			t.Fatalf("destructive upgrade backoffLimit = %v", job.Spec.BackoffLimit)
 		}
+		if !strings.Contains(command, "/dev/termination-log") ||
+			!strings.Contains(command, "exec 3>&2") {
+			t.Fatalf("upgrade command does not preserve stderr in the termination log:\n%s", command)
+		}
 		security := job.Spec.Template.Spec.SecurityContext
 		if security.FSGroupChangePolicy == nil ||
 			*security.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
@@ -1403,6 +1407,18 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	}
 	if policy := acceptanceJob.Spec.Template.Spec.Containers[0].TerminationMessagePolicy; policy != corev1.TerminationMessageFallbackToLogsOnError {
 		t.Fatalf("acceptance termination message policy = %q", policy)
+	}
+	rollbackAcceptanceJob := renderer.MajorRollbackAcceptanceJob(desired)
+	rollbackAcceptanceCommand := rollbackAcceptanceJob.Spec.Template.Spec.Containers[0].Command[2]
+	for _, unexpected := range []string{"DROP SCHEMA", "CREATE SCHEMA", "write_test"} {
+		if strings.Contains(rollbackAcceptanceCommand, unexpected) {
+			t.Fatalf("rollback acceptance command should be read-only, found %q:\n%s",
+				unexpected, rollbackAcceptanceCommand)
+		}
+	}
+	if !strings.Contains(rollbackAcceptanceCommand, "pg_is_in_recovery() IS NOT NULL") {
+		t.Fatalf("rollback acceptance command does not verify a readable source server:\n%s",
+			rollbackAcceptanceCommand)
 	}
 	dcsJob := renderer.MajorDCSResetJob(desired)
 	dcsSecurity := dcsJob.Spec.Template.Spec.Containers[0].SecurityContext

@@ -1120,6 +1120,35 @@ func TestFailedUpgradeIsTerminal(t *testing.T) {
 	}
 }
 
+func TestUpgradeInstanceWatchIncludesPreflightBlockedUpgrade(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+	}
+	blocked := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-pg18"},
+		Spec:       api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status:     api.PostgresUpgradeStatus{Phase: "Preflight"},
+	}
+	terminal := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-old"},
+		Spec:       api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status:     api.PostgresUpgradeStatus{Phase: "Failed"},
+	}
+	other := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "inventory-pg18"},
+		Spec:       api.PostgresUpgradeSpec{InstanceRef: "inventory"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(instance, blocked, terminal, other).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	requests := reconciler.upgradeRequestsForInstance(context.Background(), instance)
+	if len(requests) != 1 ||
+		requests[0].NamespacedName != (types.NamespacedName{Namespace: "platform", Name: "orders-pg18"}) {
+		t.Fatalf("upgrade requests = %#v", requests)
+	}
+}
+
 func TestMajorUpgradeRequestsFreshFullBackup(t *testing.T) {
 	scheme := testScheme(t)
 	upgrade := &api.PostgresUpgrade{

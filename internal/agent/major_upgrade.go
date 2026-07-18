@@ -578,17 +578,17 @@ pgbackrest --config=/tmp/pgbackrest.conf --stanza=%q --no-online stanza-upgrade
 func (r Renderer) MajorAcceptanceJob(desired plan.SitePlan) *batchv1.Job {
 	upgrade := desired.MajorUpgrade
 	return r.majorAcceptanceJob(desired, "major-acceptance-", upgrade.TargetImage,
-		upgrade.TargetMajor)
+		upgrade.TargetMajor, true)
 }
 
 func (r Renderer) MajorRollbackAcceptanceJob(desired plan.SitePlan) *batchv1.Job {
 	upgrade := desired.MajorUpgrade
 	return r.majorAcceptanceJob(desired, "major-rollback-acceptance-", desired.Postgres.Image,
-		upgrade.SourceMajor)
+		upgrade.SourceMajor, false)
 }
 
 func (r Renderer) majorAcceptanceJob(desired plan.SitePlan, prefix, image string,
-	expectedMajor int32,
+	expectedMajor int32, writeTest bool,
 ) *batchv1.Job {
 	upgrade := desired.MajorUpgrade
 	host := upgrade.Primary + "." + desired.Site.Namespace + ".svc"
@@ -608,7 +608,9 @@ for attempt in $(seq 1 90); do
 done
 test "$ready" = true
 test "$(psql -X -h %q -d postgres -Atqc 'SHOW server_version_num')" -ge %d0000
-psql -X -h %q -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+`, host, host, expectedMajor)
+	if writeTest {
+		script += fmt.Sprintf(`psql -X -h %q -d postgres -v ON_ERROR_STOP=1 <<'SQL'
 SET synchronous_commit = local;
 DROP SCHEMA IF EXISTS %s CASCADE;
 CREATE SCHEMA %s;
@@ -617,7 +619,11 @@ INSERT INTO %s.write_test VALUES (1);
 SELECT 1 / (count(*) = 1)::int FROM %s.write_test;
 DROP SCHEMA %s CASCADE;
 SQL
-`, host, host, expectedMajor, host, schemaName, schemaName, schemaName, schemaName, schemaName, schemaName)
+`, host, schemaName, schemaName, schemaName, schemaName, schemaName, schemaName)
+	} else {
+		script += fmt.Sprintf(`psql -X -h %q -d postgres -Atqc 'SELECT pg_is_in_recovery() IS NOT NULL' >/dev/null
+`, host)
+	}
 	return majorJob(desired, prefix+operationHash(upgrade.OperationUID),
 		image, script, []corev1.Volume{
 			{Name: "credentials", VolumeSource: corev1.VolumeSource{
@@ -715,7 +721,7 @@ func majorJob(desired plan.SitePlan, name, image, script string,
 						SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{{
-						Name: "upgrade", Image: image, Command: []string{"/bin/sh", "-ec", script},
+						Name: "upgrade", Image: image, Command: []string{"/bin/sh", "-ec", majorJobScript(script)},
 						SecurityContext: restrictedContainer(), VolumeMounts: mounts,
 						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 					}},
@@ -724,6 +730,18 @@ func majorJob(desired plan.SitePlan, name, image, script string,
 			},
 		},
 	}
+}
+
+func majorJobScript(script string) string {
+	if script == "" {
+		return script
+	}
+	return `set -eu
+mspsql_job_stderr="$(mktemp)"
+exec 3>&2
+trap 'status=$?; if [ -s "$mspsql_job_stderr" ]; then tail -c 2048 "$mspsql_job_stderr" > /dev/termination-log; cat "$mspsql_job_stderr" >&3; fi; rm -f "$mspsql_job_stderr"; exit "$status"' EXIT
+exec 2>"$mspsql_job_stderr"
+` + script
 }
 
 func (r *Reconciler) cleanupExpiredRollback(ctx context.Context, desired plan.SitePlan,

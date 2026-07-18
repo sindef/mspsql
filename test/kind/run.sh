@@ -939,10 +939,14 @@ esac
 primary_kubeconfig="${temp_dir}/mspsql-${primary_site}.kubeconfig"
 primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres \
   get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
-test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}-0" \
+rollback_rows="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${primary}-0" \
   -c postgres-patroni -- env PGPASSWORD="${primary_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
-  'SELECT count(*) FROM mspsql_e2e')" = "2"
+  'SELECT count(*) FROM mspsql_e2e')"
+if [[ "${rollback_rows}" != "2" ]]; then
+  echo "major-upgrade rollback row count = ${rollback_rows@Q}, want '2'" >&2
+  exit 1
+fi
 failure_events=0
 for site in vic nsw; do
   site_config="${temp_dir}/mspsql-${site}.kubeconfig"
@@ -951,7 +955,10 @@ for site in vic nsw; do
     '[.items[] | select((.note // "") | contains("injected pg_upgrade conversion failure"))] | length')"
   failure_events=$((failure_events + count))
 done
-test "${failure_events}" -ge 1
+if [[ "${failure_events}" -lt 1 ]]; then
+  echo "expected at least one injected pg_upgrade failure event, got ${failure_events}" >&2
+  exit 1
+fi
 
 benchmark_file="${diagnostics_dir}/major-upgrade-benchmark.json"
 jq -n --sort-keys \

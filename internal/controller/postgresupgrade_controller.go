@@ -815,15 +815,39 @@ func (r *PostgresUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&multisitepostgresv1alpha1.PostgresUpgrade{}).
 		Owns(&corev1.ConfigMap{}).
 		Watches(&multisitepostgresv1alpha1.MultiSitePostgres{}, handler.EnqueueRequestsFromMapFunc(
-			func(_ context.Context, object client.Object) []ctrl.Request {
-				name := object.GetAnnotations()[upgradeNameAnnotation]
-				if name == "" {
-					return nil
-				}
-				return []ctrl.Request{{NamespacedName: types.NamespacedName{
-					Namespace: object.GetNamespace(), Name: name,
-				}}}
-			})).
+			r.upgradeRequestsForInstance)).
 		Named("postgresupgrade").
 		Complete(r)
+}
+
+func (r *PostgresUpgradeReconciler) upgradeRequestsForInstance(ctx context.Context,
+	object client.Object,
+) []ctrl.Request {
+	requests := map[types.NamespacedName]struct{}{}
+	if name := object.GetAnnotations()[upgradeNameAnnotation]; name != "" {
+		requests[types.NamespacedName{Namespace: object.GetNamespace(), Name: name}] = struct{}{}
+	}
+	var upgrades multisitepostgresv1alpha1.PostgresUpgradeList
+	if err := r.List(ctx, &upgrades, client.InNamespace(object.GetNamespace())); err != nil {
+		return namedRequests(requests)
+	}
+	for _, upgrade := range upgrades.Items {
+		if upgrade.Spec.InstanceRef != object.GetName() ||
+			upgrade.Status.Phase == "Completed" || upgrade.Status.Phase == "Failed" {
+			continue
+		}
+		requests[types.NamespacedName{Namespace: upgrade.Namespace, Name: upgrade.Name}] = struct{}{}
+	}
+	return namedRequests(requests)
+}
+
+func namedRequests(names map[types.NamespacedName]struct{}) []ctrl.Request {
+	requests := make([]ctrl.Request, 0, len(names))
+	for name := range names {
+		requests = append(requests, ctrl.Request{NamespacedName: name})
+	}
+	slices.SortFunc(requests, func(a, b ctrl.Request) int {
+		return strings.Compare(a.String(), b.String())
+	})
+	return requests
 }
