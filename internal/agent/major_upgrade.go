@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,6 +41,17 @@ import (
 
 var volumeSnapshotListGVK = schema.GroupVersionKind{
 	Group: "snapshot.storage.k8s.io", Version: "v1", Kind: "VolumeSnapshotList",
+}
+
+var majorMaintenanceResources = corev1.ResourceRequirements{
+	Requests: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("128Mi"),
+	},
+	Limits: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("1"),
+		corev1.ResourceMemory: resource.MustParse("1Gi"),
+	},
 }
 
 func (r *Reconciler) prepareMajorUpgrade(ctx context.Context, desired plan.SitePlan,
@@ -722,7 +734,7 @@ func majorJob(desired plan.SitePlan, name, image, script string,
 					},
 					Containers: []corev1.Container{{
 						Name: "upgrade", Image: image, Command: []string{"/bin/sh", "-ec", majorJobScript(script)},
-						SecurityContext: restrictedContainer(), VolumeMounts: mounts,
+						SecurityContext: restrictedContainer(), Resources: majorMaintenanceResources, VolumeMounts: mounts,
 						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 					}},
 					Volumes: volumes,

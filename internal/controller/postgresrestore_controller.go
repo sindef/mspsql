@@ -69,10 +69,10 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: restore.Namespace, Name: restore.Spec.SourceInstanceRef,
 	}, &source); err != nil {
-		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "SourceUnavailable", err.Error())
+		return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "SourceUnavailable", err.Error()))
 	}
 	if err := r.preflight(ctx, &restore, &source); err != nil {
-		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "PreflightFailed", err.Error())
+		return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "PreflightFailed", err.Error()))
 	}
 
 	var target api.MultiSitePostgres
@@ -82,57 +82,57 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if apierrors.IsNotFound(err) {
 		target, err = r.newTarget(&restore, &source)
 		if err != nil {
-			return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "InvalidTarget", err.Error())
+			return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "InvalidTarget", err.Error()))
 		}
 		if err := r.Create(ctx, &target); err != nil {
 			return ctrl.Result{}, err
 		}
-		return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Provisioning",
-			"TargetCreated", "The isolated restore target has been created")
+		return restoreProgressOrError(r.setRestorePhase(ctx, &restore, "Provisioning",
+			"TargetCreated", "The isolated restore target has been created"))
 	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if target.Annotations[restoreUIDAnnotation] != string(restore.UID) ||
 		target.Annotations[restoreSourceUIDAnnotation] != string(source.UID) {
-		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "TargetExists",
-			"target instance exists and is not an empty placeholder owned by this restore")
+		return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "TargetExists",
+			"target instance exists and is not an empty placeholder owned by this restore"))
 	}
 
 	switch plan.RestorePhase(target.Annotations[restorePhaseAnnotation]) {
 	case plan.RestorePhaseSeed:
 		seedSite, seedMember, selectErr := selectRestoreSeed(target.Spec.Sites)
 		if selectErr != nil {
-			return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "InvalidTarget", selectErr.Error())
+			return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "InvalidTarget", selectErr.Error()))
 		}
 		if target.Status.Primary != seedMember ||
 			!conditionTrue(target.Status.Conditions, "TopologyReady") {
-			return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Restoring",
+			return restoreProgressOrError(r.setRestorePhase(ctx, &restore, "Restoring",
 				"SeedRecoveryInProgress",
-				fmt.Sprintf("Waiting for %s/%s to recover and promote", seedSite, seedMember))
+				fmt.Sprintf("Waiting for %s/%s to recover and promote", seedSite, seedMember)))
 		}
 		if err := r.setTargetPhase(ctx, &target, plan.RestorePhaseReplicas); err != nil {
 			return ctrl.Result{}, err
 		}
-		return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "SeedingReplicas",
-			"SeedPromoted", "Point-in-time recovery completed; replicas are now being cloned")
+		return restoreProgressOrError(r.setRestorePhase(ctx, &restore, "SeedingReplicas",
+			"SeedPromoted", "Point-in-time recovery completed; replicas are now being cloned"))
 	case plan.RestorePhaseReplicas:
 		if !conditionTrue(target.Status.Conditions, "TopologyReady") ||
 			int32(len(target.Status.SynchronousStandbys)) < target.Spec.Postgres.SynchronousStandbyCount {
-			return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "SeedingReplicas",
-				"ReplicationConverging", "Waiting for the required synchronous replicas")
+			return restoreProgressOrError(r.setRestorePhase(ctx, &restore, "SeedingReplicas",
+				"ReplicationConverging", "Waiting for the required synchronous replicas"))
 		}
 		if err := r.setTargetPhase(ctx, &target, plan.RestorePhaseVerify); err != nil {
 			return ctrl.Result{}, err
 		}
-		return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Verifying",
-			"ReplicationReady", "Synchronous replication is ready; acceptance checks are running")
+		return restoreProgressOrError(r.setRestorePhase(ctx, &restore, "Verifying",
+			"ReplicationReady", "Synchronous replication is ready; acceptance checks are running"))
 	case plan.RestorePhaseVerify:
 		if !conditionTrue(target.Status.Conditions, "Ready") ||
 			!conditionTrue(target.Status.Conditions, "TopologyReady") ||
 			source.Spec.TDE.Enabled && !conditionTrue(target.Status.Conditions, "TDEVerified") {
-			return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Verifying",
-				"AcceptancePending", "Waiting for target topology, Pgpool and TDE acceptance")
+			return restoreProgressOrError(r.setRestorePhase(ctx, &restore, "Verifying",
+				"AcceptancePending", "Waiting for target topology, Pgpool and TDE acceptance"))
 		}
 		if err := r.setTargetPhase(ctx, &target, "Completed"); err != nil {
 			return ctrl.Result{}, err
@@ -141,13 +141,20 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	case "Completed":
 		return ctrl.Result{}, r.completeRestore(ctx, &restore)
 	default:
-		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "InvalidTarget",
-			"target instance has an unknown restore phase")
+		return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "InvalidTarget",
+			"target instance has an unknown restore phase"))
 	}
 }
 
 func restoreProgressResult() ctrl.Result {
 	return ctrl.Result{RequeueAfter: restoreProgressRequeue}
+}
+
+func restoreProgressOrError(err error) (ctrl.Result, error) {
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return restoreProgressResult(), nil
 }
 
 func (r *PostgresRestoreReconciler) completeRestore(ctx context.Context,

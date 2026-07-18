@@ -8,6 +8,14 @@ kind() {
   "${kind_bin}" "$@"
 }
 
+kind_diag() {
+  timeout 120s "${kind_bin}" "$@"
+}
+
+kubectl_diag() {
+  timeout 25s kubectl --request-timeout=10s "$@"
+}
+
 clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
 kind_node_image="${KIND_NODE_IMAGE:-kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f}"
 image="${IMG:-mspsql:test}"
@@ -51,29 +59,29 @@ cleanup() {
   done
   if [[ "${status}" -ne 0 ]]; then
     for cluster in "${clusters[@]}"; do
-      kind export logs "${diagnostics_dir}/${cluster}" --name "${cluster}" || true
+      kind_diag export logs "${diagnostics_dir}/${cluster}" --name "${cluster}" || true
     done
     if [[ -n "${KUBECONFIG:-}" ]]; then
-      kubectl -n database-platform get multisitepostgres -o yaml || true
-      kubectl -n database-platform get postgresrestores -o yaml || true
-      kubectl -n database-platform get postgresupgrades -o yaml || true
-      kubectl -n mspsql-system logs deployment/mspsql-controller-manager \
+      kubectl_diag -n database-platform get multisitepostgres -o yaml || true
+      kubectl_diag -n database-platform get postgresrestores -o yaml || true
+      kubectl_diag -n database-platform get postgresupgrades -o yaml || true
+      kubectl_diag -n mspsql-system logs deployment/mspsql-controller-manager \
         --all-containers --tail=200 || true
-      kubectl -n mspsql-system get pods -o wide || true
-      kubectl -n mspsql-system logs -l app.kubernetes.io/name=mspsql-wireguard \
+      kubectl_diag -n mspsql-system get pods -o wide || true
+      kubectl_diag -n mspsql-system logs -l app.kubernetes.io/name=mspsql-wireguard \
         --all-containers --prefix --tail=200 || true
-      kubectl get events -A --sort-by=.lastTimestamp | tail -150 || true
+      kubectl_diag get events -A --sort-by=.lastTimestamp | tail -150 || true
     fi
     for site in vic nsw qld; do
       site_kubeconfig="$(mktemp)"
       if kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}" 2>/dev/null; then
-        kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent get pods -o wide || true
-        kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent logs deployment/mspsql-agent \
+        kubectl_diag --kubeconfig="${site_kubeconfig}" -n mspsql-agent get pods -o wide || true
+        kubectl_diag --kubeconfig="${site_kubeconfig}" -n mspsql-agent logs deployment/mspsql-agent \
           --all-containers --tail=200 || true
-        kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres get pods -o wide || true
-        kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres logs \
+        kubectl_diag --kubeconfig="${site_kubeconfig}" -n orders-postgres get pods -o wide || true
+        kubectl_diag --kubeconfig="${site_kubeconfig}" -n orders-postgres logs \
           -l multisite-postgres.dev/instance-uid --all-containers --prefix --tail=100 || true
-        kubectl --kubeconfig="${site_kubeconfig}" get events -A \
+        kubectl_diag --kubeconfig="${site_kubeconfig}" get events -A \
           --sort-by=.lastTimestamp | tail -100 || true
       fi
       rm -f "${site_kubeconfig}"
@@ -924,14 +932,24 @@ spec:
     postgresStorageClasses: [csi-hostpath]
     evidence: file://injected-failure@${failed_upgrade_digest}
 EOF
+failed_phase=""
+failed_reason=""
 for _ in $(seq 1 900); do
-  failed_phase="$(kubectl -n database-platform get postgresupgrade orders-pg18-failure \
-    -o jsonpath='{.status.phase}')"
-  failed_reason="$(kubectl -n database-platform get postgresupgrade orders-pg18-failure \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}')"
+  if failed_json="$(kubectl --request-timeout=15s -n database-platform get postgresupgrade orders-pg18-failure \
+    -o json 2>/dev/null)"; then
+    failed_phase="$(jq -r '.status.phase // ""' <<<"${failed_json}")"
+    failed_reason="$(jq -r '.status.conditions[]? | select(.type=="Ready") | .reason' \
+      <<<"${failed_json}" | tail -1)"
+  else
+    failed_phase=""
+    failed_reason=""
+  fi
   [[ "${failed_phase}" == "Failed" && "${failed_reason}" == "RolledBack" ]] && break
   sleep 2
 done
+if [[ "${failed_phase}" != "Failed" || "${failed_reason}" != "RolledBack" ]]; then
+  kubectl_diag -n database-platform get postgresupgrade orders-pg18-failure -o yaml || true
+fi
 test "${failed_phase}" = "Failed"
 test "${failed_reason}" = "RolledBack"
 test "$(kubectl -n database-platform get multisitepostgres orders \

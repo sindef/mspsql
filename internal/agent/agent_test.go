@@ -1431,6 +1431,33 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestMajorUpgradeJobsBoundMaintenanceResources(t *testing.T) {
+	desired := plan.SitePlan{
+		InstanceUID: "instance",
+		Site:        api.PostgresSiteSpec{Name: "vic", Namespace: "orders"},
+		MajorUpgrade: &plan.MajorUpgradePlan{
+			OperationUID: "operation", Primary: "postgres-vic-1", SourceMajor: 17,
+			TargetMajor: 18, UpgradeImage: "upgrade@sha256:abc",
+		},
+	}
+	jobs := []*batchv1.Job{
+		Renderer{}.MajorUpgradeJob(desired),
+		Renderer{}.MajorStanzaUpgradeJob(desired),
+		Renderer{}.MajorAcceptanceJob(desired),
+		Renderer{}.MajorRollbackAcceptanceJob(desired),
+		Renderer{}.MajorDCSResetJob(desired),
+	}
+	for _, job := range jobs {
+		resources := job.Spec.Template.Spec.Containers[0].Resources
+		if resources.Requests.Cpu().String() != "100m" ||
+			resources.Requests.Memory().String() != "128Mi" ||
+			resources.Limits.Cpu().String() != "1" ||
+			resources.Limits.Memory().String() != "1Gi" {
+			t.Fatalf("%s resources = %#v", job.Name, resources)
+		}
+	}
+}
+
 func TestMajorRollbackOnlyStartsSourcePrimary(t *testing.T) {
 	renderer := Renderer{}
 	desired := plan.SitePlan{
