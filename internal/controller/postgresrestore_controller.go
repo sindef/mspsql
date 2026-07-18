@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -39,6 +40,7 @@ const (
 	restoreNameAnnotation      = "multisite-postgres.dev/restore-name"
 	restoreSourceUIDAnnotation = "multisite-postgres.dev/restore-source-uid"
 	restorePhaseAnnotation     = "multisite-postgres.dev/restore-phase"
+	restoreProgressRequeue     = 10 * time.Second
 )
 
 // PostgresRestoreReconciler reconciles a PostgresRestore object.
@@ -67,10 +69,10 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: restore.Namespace, Name: restore.Spec.SourceInstanceRef,
 	}, &source); err != nil {
-		return ctrl.Result{}, r.restoreBlocked(ctx, &restore, "SourceUnavailable", err.Error())
+		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "SourceUnavailable", err.Error())
 	}
 	if err := r.preflight(ctx, &restore, &source); err != nil {
-		return ctrl.Result{}, r.restoreBlocked(ctx, &restore, "PreflightFailed", err.Error())
+		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "PreflightFailed", err.Error())
 	}
 
 	var target api.MultiSitePostgres
@@ -80,12 +82,12 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if apierrors.IsNotFound(err) {
 		target, err = r.newTarget(&restore, &source)
 		if err != nil {
-			return ctrl.Result{}, r.restoreBlocked(ctx, &restore, "InvalidTarget", err.Error())
+			return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "InvalidTarget", err.Error())
 		}
 		if err := r.Create(ctx, &target); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.setRestorePhase(ctx, &restore, "Provisioning",
+		return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Provisioning",
 			"TargetCreated", "The isolated restore target has been created")
 	}
 	if err != nil {
@@ -93,7 +95,7 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	if target.Annotations[restoreUIDAnnotation] != string(restore.UID) ||
 		target.Annotations[restoreSourceUIDAnnotation] != string(source.UID) {
-		return ctrl.Result{}, r.restoreBlocked(ctx, &restore, "TargetExists",
+		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "TargetExists",
 			"target instance exists and is not an empty placeholder owned by this restore")
 	}
 
@@ -101,35 +103,35 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	case plan.RestorePhaseSeed:
 		seedSite, seedMember, selectErr := selectRestoreSeed(target.Spec.Sites)
 		if selectErr != nil {
-			return ctrl.Result{}, r.restoreBlocked(ctx, &restore, "InvalidTarget", selectErr.Error())
+			return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "InvalidTarget", selectErr.Error())
 		}
 		if target.Status.Primary != seedMember ||
 			!conditionTrue(target.Status.Conditions, "TopologyReady") {
-			return ctrl.Result{}, r.setRestorePhase(ctx, &restore, "Restoring",
+			return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Restoring",
 				"SeedRecoveryInProgress",
 				fmt.Sprintf("Waiting for %s/%s to recover and promote", seedSite, seedMember))
 		}
 		if err := r.setTargetPhase(ctx, &target, plan.RestorePhaseReplicas); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.setRestorePhase(ctx, &restore, "SeedingReplicas",
+		return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "SeedingReplicas",
 			"SeedPromoted", "Point-in-time recovery completed; replicas are now being cloned")
 	case plan.RestorePhaseReplicas:
 		if !conditionTrue(target.Status.Conditions, "TopologyReady") ||
 			int32(len(target.Status.SynchronousStandbys)) < target.Spec.Postgres.SynchronousStandbyCount {
-			return ctrl.Result{}, r.setRestorePhase(ctx, &restore, "SeedingReplicas",
+			return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "SeedingReplicas",
 				"ReplicationConverging", "Waiting for the required synchronous replicas")
 		}
 		if err := r.setTargetPhase(ctx, &target, plan.RestorePhaseVerify); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.setRestorePhase(ctx, &restore, "Verifying",
+		return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Verifying",
 			"ReplicationReady", "Synchronous replication is ready; acceptance checks are running")
 	case plan.RestorePhaseVerify:
 		if !conditionTrue(target.Status.Conditions, "Ready") ||
 			!conditionTrue(target.Status.Conditions, "TopologyReady") ||
 			source.Spec.TDE.Enabled && !conditionTrue(target.Status.Conditions, "TDEVerified") {
-			return ctrl.Result{}, r.setRestorePhase(ctx, &restore, "Verifying",
+			return restoreProgressResult(), r.setRestorePhase(ctx, &restore, "Verifying",
 				"AcceptancePending", "Waiting for target topology, Pgpool and TDE acceptance")
 		}
 		if err := r.setTargetPhase(ctx, &target, "Completed"); err != nil {
@@ -139,9 +141,13 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	case "Completed":
 		return ctrl.Result{}, r.completeRestore(ctx, &restore)
 	default:
-		return ctrl.Result{}, r.restoreBlocked(ctx, &restore, "InvalidTarget",
+		return restoreProgressResult(), r.restoreBlocked(ctx, &restore, "InvalidTarget",
 			"target instance has an unknown restore phase")
 	}
+}
+
+func restoreProgressResult() ctrl.Result {
+	return ctrl.Result{RequeueAfter: restoreProgressRequeue}
 }
 
 func (r *PostgresRestoreReconciler) completeRestore(ctx context.Context,
@@ -252,18 +258,26 @@ func (r *PostgresRestoreReconciler) setTargetPhase(ctx context.Context,
 func (r *PostgresRestoreReconciler) setRestorePhase(ctx context.Context, restore *api.PostgresRestore,
 	phase, reason, message string,
 ) error {
+	before := restore.Status.DeepCopy()
 	restore.Status.ObservedGeneration = restore.Generation
 	restore.Status.Phase = phase
 	setCondition(&restore.Status.Conditions, restore.Generation, "Ready", metav1.ConditionFalse, reason, message)
+	if apiequality.Semantic.DeepEqual(before, &restore.Status) {
+		return nil
+	}
 	return r.Status().Update(ctx, restore)
 }
 
 func (r *PostgresRestoreReconciler) restoreBlocked(ctx context.Context,
 	restore *api.PostgresRestore, reason, message string,
 ) error {
+	before := restore.Status.DeepCopy()
 	restore.Status.ObservedGeneration = restore.Generation
 	restore.Status.Phase = "Preflight"
 	setCondition(&restore.Status.Conditions, restore.Generation, "Ready", metav1.ConditionFalse, reason, message)
+	if apiequality.Semantic.DeepEqual(before, &restore.Status) {
+		return nil
+	}
 	return r.Status().Update(ctx, restore)
 }
 

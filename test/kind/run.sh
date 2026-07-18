@@ -55,6 +55,8 @@ cleanup() {
     done
     if [[ -n "${KUBECONFIG:-}" ]]; then
       kubectl -n database-platform get multisitepostgres -o yaml || true
+      kubectl -n database-platform get postgresrestores -o yaml || true
+      kubectl -n database-platform get postgresupgrades -o yaml || true
       kubectl -n mspsql-system logs deployment/mspsql-controller-manager \
         --all-containers --tail=200 || true
       kubectl -n mspsql-system get pods -o wide || true

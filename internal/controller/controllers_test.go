@@ -855,8 +855,12 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 	request := ctrl.Request{NamespacedName: types.NamespacedName{
 		Namespace: restore.Namespace, Name: restore.Name,
 	}}
-	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.RequeueAfter != restoreProgressRequeue {
+		t.Fatalf("target creation requeue = %s", result.RequeueAfter)
 	}
 	var target api.MultiSitePostgres
 	if err := kube.Get(context.Background(), client.ObjectKey{
@@ -877,14 +881,61 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 	if err := kube.Status().Update(context.Background(), &target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+	result, err = reconciler.Reconcile(context.Background(), request)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.RequeueAfter != restoreProgressRequeue {
+		t.Fatalf("seed promotion requeue = %s", result.RequeueAfter)
 	}
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(&target), &target); err != nil {
 		t.Fatal(err)
 	}
 	if target.Annotations[restorePhaseAnnotation] != string(plan.RestorePhaseReplicas) {
 		t.Fatalf("restore phase = %q", target.Annotations[restorePhaseAnnotation])
+	}
+	target.Status.Conditions = []metav1.Condition{
+		{Type: "TopologyReady", Status: metav1.ConditionTrue},
+	}
+	target.Status.SynchronousStandbys = []string{"postgres-qld-0"}
+	if err := kube.Status().Update(context.Background(), &target); err != nil {
+		t.Fatal(err)
+	}
+	result, err = reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != restoreProgressRequeue {
+		t.Fatalf("replica seed requeue = %s", result.RequeueAfter)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(&target), &target); err != nil {
+		t.Fatal(err)
+	}
+	if target.Annotations[restorePhaseAnnotation] != string(plan.RestorePhaseVerify) {
+		t.Fatalf("restore phase = %q", target.Annotations[restorePhaseAnnotation])
+	}
+	target.Status.Conditions = []metav1.Condition{
+		{Type: "Ready", Status: metav1.ConditionTrue},
+		{Type: "TopologyReady", Status: metav1.ConditionTrue},
+	}
+	if err := kube.Status().Update(context.Background(), &target); err != nil {
+		t.Fatal(err)
+	}
+	result, err = reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("completed restore requeue = %s", result.RequeueAfter)
+	}
+	var completed api.PostgresRestore
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(restore), &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status.Phase != "Completed" ||
+		completed.Status.RecoveredTo == nil ||
+		!completed.Status.RecoveredTo.Equal(&restore.Spec.TargetTime) {
+		t.Fatalf("restore status = %#v", completed.Status)
 	}
 }
 
