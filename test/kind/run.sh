@@ -237,6 +237,11 @@ docker build -f Dockerfile.upgrade -t "${upgrade_image}" .
 docker build -f test/kind/Dockerfile.upgrade-failure -t "${failed_upgrade_image}" .
 previous_source="${temp_dir}/previous"
 mkdir -p "${previous_source}"
+if ! git cat-file -e "${previous_revision}^{tree}"; then
+  echo "previous compatible revision ${previous_revision} is unavailable" >&2
+  echo "fetch full Git history before running operator upgrade conformance" >&2
+  exit 1
+fi
 git archive "${previous_revision}" | tar -x -C "${previous_source}"
 docker build -t "${previous_image}" "${previous_source}"
 docker build -f "${previous_source}/Dockerfile.agent" -t "${previous_agent_image}" \
