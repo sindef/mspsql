@@ -890,8 +890,8 @@ func (r *Reconciler) jobFailureDetail(ctx context.Context, job *batchv1.Job) (st
 		client.MatchingLabels{"job-name": job.Name}); err != nil {
 		return "", err
 	}
-	for i := len(pods.Items) - 1; i >= 0; i-- {
-		for _, status := range pods.Items[i].Status.ContainerStatuses {
+	for _, pod := range slices.Backward(pods.Items) {
+		for _, status := range pod.Status.ContainerStatuses {
 			if status.State.Terminated == nil {
 				continue
 			}
