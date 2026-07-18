@@ -1065,6 +1065,61 @@ func TestMajorUpgradeTransitionsToOutageAndRollback(t *testing.T) {
 	}
 }
 
+func TestFailedUpgradeIsTerminal(t *testing.T) {
+	scheme := testScheme(t)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance"), Generation: 1,
+			Annotations: map[string]string{upgradeUIDAnnotation: "upgrade"},
+		},
+		Status: api.MultiSitePostgresStatus{
+			Conditions: []metav1.Condition{
+				{Type: "Ready", Status: metav1.ConditionTrue},
+				{Type: "BackupReady", Status: metav1.ConditionTrue},
+			},
+			LastBackupTime: &metav1.Time{Time: time.Date(2026, 7, 16, 4, 0, 0, 0, time.UTC)},
+		},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{
+			InstanceRef: "orders", TargetMajorVersion: 18, TargetImage: "postgres:18",
+		},
+		Status: api.PostgresUpgradeStatus{
+			Phase: "Failed",
+			Conditions: []metav1.Condition{{
+				Type: "Ready", Status: metav1.ConditionFalse, Reason: "RolledBack",
+			}},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}, &api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-pg18"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var currentUpgrade api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade); err != nil {
+		t.Fatal(err)
+	}
+	if currentUpgrade.Status.Phase != "Failed" ||
+		statusCondition(currentUpgrade.Status.Conditions, "Ready").Reason != "RolledBack" {
+		t.Fatalf("failed upgrade was reconciled again: %#v", currentUpgrade.Status)
+	}
+	var currentInstance api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &currentInstance); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := currentInstance.Annotations[upgradeUIDAnnotation]; found {
+		t.Fatalf("failed upgrade annotation was not cleared: %#v", currentInstance.Annotations)
+	}
+}
+
 func TestMajorUpgradeRequestsFreshFullBackup(t *testing.T) {
 	scheme := testScheme(t)
 	upgrade := &api.PostgresUpgrade{

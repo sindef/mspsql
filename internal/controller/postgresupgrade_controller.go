@@ -79,13 +79,8 @@ func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}, &instance); err != nil {
 		return ctrl.Result{}, r.upgradeBlocked(ctx, &upgrade, "InstanceUnavailable", err.Error())
 	}
-	if upgrade.Status.Phase == "Completed" {
-		if instance.Annotations[upgradeUIDAnnotation] == string(upgrade.UID) {
-			base := instance.DeepCopy()
-			clearUpgradeAnnotations(&instance)
-			return ctrl.Result{}, r.Patch(ctx, &instance, client.MergeFrom(base))
-		}
-		return ctrl.Result{}, nil
+	if handled, err := r.reconcileTerminalUpgrade(ctx, &upgrade, &instance); handled {
+		return ctrl.Result{}, err
 	}
 	now := time.Now
 	if r.Now != nil {
@@ -149,6 +144,21 @@ func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	} else {
 		return r.reconcileMinorUpgrade(ctx, &upgrade, &instance, now())
 	}
+}
+
+func (r *PostgresUpgradeReconciler) reconcileTerminalUpgrade(ctx context.Context,
+	upgrade *multisitepostgresv1alpha1.PostgresUpgrade,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) (bool, error) {
+	if upgrade.Status.Phase != "Completed" && upgrade.Status.Phase != "Failed" {
+		return false, nil
+	}
+	if instance.Annotations[upgradeUIDAnnotation] == string(upgrade.UID) {
+		base := instance.DeepCopy()
+		clearUpgradeAnnotations(instance)
+		return true, r.Patch(ctx, instance, client.MergeFrom(base))
+	}
+	return true, nil
 }
 
 func (r *PostgresUpgradeReconciler) ensureFreshUpgradeBackup(ctx context.Context,
