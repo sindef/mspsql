@@ -92,15 +92,15 @@ verify-manifests: kustomize ## Build every deployment, RBAC, sample, and test ov
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
-	"$(GOLANGCI_LINT)" run
+	GOCACHE="$(GO_BUILD_CACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE_DIR)" "$(GOLANGCI_LINT)" run
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
-	"$(GOLANGCI_LINT)" run --fix
+	GOCACHE="$(GO_BUILD_CACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE_DIR)" "$(GOLANGCI_LINT)" run --fix
 
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
-	"$(GOLANGCI_LINT)" config verify
+	GOCACHE="$(GO_BUILD_CACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE_DIR)" "$(GOLANGCI_LINT)" config verify
 
 ##@ Build
 
@@ -201,6 +201,9 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GO_BUILD_CACHE ?= /tmp/mspsql-go-cache
+GOLANGCI_LINT_CACHE_DIR ?= /tmp/mspsql-golangci-cache
+export GOCACHE ?= $(GO_BUILD_CACHE)
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
