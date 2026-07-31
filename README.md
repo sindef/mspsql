@@ -212,11 +212,3 @@ until its `MultiSitePostgres` backup specification is configured.
   cert-manager, or users.
 - Secret values are neither included in plans nor returned to the hub.
 
-## Production gates
-
-The repository contains executable control-plane and multi-cluster tests.
-Platform-dependent acceptance remains mandatory before rollout: userspace
-WireGuard and UDP failover, cross-site etcd trust-chain rotation, MetalLB
-address migration under failure, Vault/KMS integration, pgBackRest recovery,
-and representative `pg_upgrade`/`pg_tde_upgrade` outage benchmarks. These
-cannot be certified by a generic KIND environment.
