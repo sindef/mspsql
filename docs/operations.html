@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mspsql operations</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="install.html">Install</a>
+    <a href="api.html">API</a>
+    <a href="examples.html">Examples</a>
+    <a href="operations.html">Operations</a>
+    <a href="design.html">Design</a>
+  </nav>
+
+  <h1>Operations</h1>
+
+  <h2>Check Health</h2>
+  <pre><code>kubectl get siteregistration
+kubectl -n database-platform get multisitepostgres,postgresdatabase,postgresuser,postgresrestore,postgresupgrade
+kubectl -n database-platform describe multisitepostgres orders</code></pre>
+
+  <h2>Backups</h2>
+  <ul>
+    <li>WAL archiving is continuous when backup is configured.</li>
+    <li>Full, differential, and incremental schedules are cron strings.</li>
+    <li>Repository credentials and cipher passphrases come from Vault.</li>
+    <li>Repository prefix must be unique per instance.</li>
+  </ul>
+
+  <h2>Restore</h2>
+  <ul>
+    <li>Restore creates a new instance.</li>
+    <li>The source instance is not modified.</li>
+    <li>Recovery must pass acceptance before Pgpool is exposed.</li>
+  </ul>
+
+  <h2>Upgrades</h2>
+  <ul>
+    <li>Only one upgrade or restore may target an instance at a time.</li>
+    <li>Minor upgrades roll replicas first and use Patroni switchover.</li>
+    <li>Major upgrades require backup, rollback storage, benchmark evidence, and a pinned upgrade image.</li>
+    <li>Automatic rollback is only safe before Pgpool write service is restored.</li>
+  </ul>
+
+  <h2>Deletion</h2>
+  <ul>
+    <li><code>Retain</code> removes active workloads and LoadBalancers but keeps namespaces, PVCs, and backups.</li>
+    <li><code>Delete</code> deletes target namespaces and PVCs after backup checks.</li>
+    <li>Unreachable sites block finalization unless an administrator explicitly force-orphans.</li>
+  </ul>
+
+  <h2>Do Not</h2>
+  <ul>
+    <li>Do not edit managed child resources to perform planned changes. Change the CR.</li>
+    <li>Do not reuse backup prefixes or TDE key paths across independent instances.</li>
+    <li>Do not put Secret values in CRs, plan payloads, Git, or tickets.</li>
+    <li>Do not assume pod Ready means PostgreSQL is writable. Use conditions and acceptance checks.</li>
+  </ul>
+</main>
+</body>
+</html>

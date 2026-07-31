@@ -1,0 +1,21 @@
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: PostgresUpgrade
+metadata:
+  name: orders-pg18
+  namespace: database-platform
+spec:
+  instanceRef: orders
+  targetImage: percona/percona-distribution-postgresql:18.0-1
+  targetMajorVersion: 18
+  upgradeImage: ghcr.io/sindef/mspsql-postgres-upgrade:__MSPSQL_VERSION__
+  serviceRestorationTarget: 15m
+  rollbackRetention: 168h
+  benchmark:
+    testedAt: "2026-07-31T00:00:00Z"
+    estimatedWriteOutage: 8m
+    upgradeImage: ghcr.io/sindef/mspsql-postgres-upgrade:__MSPSQL_VERSION__
+    sourceMajorVersion: 17
+    targetMajorVersion: 18
+    tdeEnabled: false
+    postgresStorageClasses: [premium-rwo]
+    evidence: ci://platform/mspsql-pg18-benchmark/2026-07-31

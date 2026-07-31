@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mspsql design notes</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="install.html">Install</a>
+    <a href="api.html">API</a>
+    <a href="examples.html">Examples</a>
+    <a href="operations.html">Operations</a>
+    <a href="design.html">Design</a>
+  </nav>
+
+  <h1>Design Notes</h1>
+
+  <h2>Control Plane</h2>
+  <ul>
+    <li>The hub runs in one management cluster.</li>
+    <li>The hub never connects to target Kubernetes APIs.</li>
+    <li>Site agents connect outbound to the hub over WireGuard and mTLS gRPC.</li>
+    <li>Plans are signed and cached locally by site and instance.</li>
+  </ul>
+
+  <h2>Failure Model</h2>
+  <ul>
+    <li>Patroni and etcd own PostgreSQL leadership.</li>
+    <li>Hub loss pauses globally coordinated changes.</li>
+    <li>Disconnected agents may repair safe cached drift only.</li>
+    <li>LoadBalancer address changes, membership changes, rollouts, restore, deletion, and upgrades require hub connectivity.</li>
+  </ul>
+
+  <h2>Namespace Ownership</h2>
+  <p>Agents enforce namespace ownership with labels. Existing unlabeled namespaces are not adopted.</p>
+  <pre><code>multisite-postgres.dev/enabled: "true"
+multisite-postgres.dev/hub-domain: hub.example.com
+multisite-postgres.dev/site-registration-uid: &lt;site-uid&gt;
+multisite-postgres.dev/instance-uid: &lt;instance-uid&gt;</code></pre>
+
+  <h2>Security Boundaries</h2>
+  <ul>
+    <li>Hub can issue desired changes but cannot read workload Secret values.</li>
+    <li>Agent has broad rights for managed resource types in its cluster.</li>
+    <li>Trust anchors are separate for registration, plan signing, hub-agent mTLS, WireGuard, workload TLS, Vault, and pgBackRest.</li>
+    <li>Kubernetes Secret encryption at rest is required.</li>
+  </ul>
+
+  <h2>Production Caveats</h2>
+  <ul>
+    <li>Qualify StorageClasses, snapshot/clone behavior, and PostgreSQL upgrade duration before production.</li>
+    <li>Validate WireGuard UDP LoadBalancer failover and ExternalDNS behavior on the target platform.</li>
+    <li>Validate Vault policies and cert-manager issuer chains per site.</li>
+    <li>Run restore and major-upgrade drills against representative data sizes.</li>
+  </ul>
+</main>
+</body>
+</html>

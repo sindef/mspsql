@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mspsql examples</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="install.html">Install</a>
+    <a href="api.html">API</a>
+    <a href="examples.html">Examples</a>
+    <a href="operations.html">Operations</a>
+    <a href="design.html">Design</a>
+  </nav>
+
+  <h1>Examples</h1>
+  <p>These are templates. Replace site names, StorageClasses, issuers, Vault paths, domains, and object storage settings.</p>
+
+  <ul>
+    <li><a href="examples/site-registration.yaml">SiteRegistration</a></li>
+    <li><a href="examples/multisite-postgres.yaml">MultiSitePostgres</a></li>
+    <li><a href="examples/tenant.yaml">PostgresDatabase and PostgresUser</a></li>
+    <li><a href="examples/restore.yaml">PostgresRestore</a></li>
+    <li><a href="examples/upgrade.yaml">PostgresUpgrade</a></li>
+    <li><a href="examples/released-images.env">Released image references</a></li>
+  </ul>
+
+  <h2>Apply Order</h2>
+  <ol>
+    <li>Platform installs cert-manager, MetalLB, Vault policy, object storage, and StorageClasses.</li>
+    <li>Hub operator is installed.</li>
+    <li>SiteRegistration resources are created in the hub.</li>
+    <li>Registration bundles are applied to target clusters.</li>
+    <li>MultiSitePostgres is created after sites are connected.</li>
+    <li>Tenant database/user CRs are created after the instance is ready.</li>
+  </ol>
+</main>
+</body>
+</html>

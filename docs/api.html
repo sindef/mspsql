@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mspsql API</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav>
+    <a href="index.html">Overview</a>
+    <a href="install.html">Install</a>
+    <a href="api.html">API</a>
+    <a href="examples.html">Examples</a>
+    <a href="operations.html">Operations</a>
+    <a href="design.html">Design</a>
+  </nav>
+
+  <h1>API</h1>
+  <p>API group: <code>multisite-postgres.dev/v1alpha1</code>.</p>
+
+  <h2>SiteRegistration</h2>
+  <p>Cluster-scoped target-cluster identity and platform policy.</p>
+  <table>
+    <tr><th>Field</th><th>Use</th></tr>
+    <tr><td><code>spec.permittedStorageClasses</code></td><td>Allowed StorageClasses for etcd, PostgreSQL, and restore workspace PVCs.</td></tr>
+    <tr><td><code>spec.storageRollbackPolicies</code></td><td>Required for major upgrades; declares snapshot or PVC clone rollback support.</td></tr>
+    <tr><td><code>spec.permittedIssuers</code></td><td>Allowed cert-manager Issuer or ClusterIssuer references.</td></tr>
+    <tr><td><code>spec.metallbAddressPools</code></td><td>Allowed LoadBalancer address pools.</td></tr>
+    <tr><td><code>spec.revoked</code></td><td>Irreversible control-plane revocation. Workloads are not deleted.</td></tr>
+  </table>
+
+  <h2>MultiSitePostgres</h2>
+  <p>Desired topology for one PostgreSQL installation.</p>
+  <table>
+    <tr><th>Field</th><th>Use</th></tr>
+    <tr><td><code>spec.deletionPolicy</code></td><td><code>Retain</code> by default. <code>Delete</code> deletes namespaces/PVCs after backup checks.</td></tr>
+    <tr><td><code>spec.postgres</code></td><td>PostgreSQL major version, image, parameters, and synchronous standby count.</td></tr>
+    <tr><td><code>spec.credentials</code></td><td>Vault references for PostgreSQL and Pgpool credentials. Values never pass through hub CRs.</td></tr>
+    <tr><td><code>spec.sites</code></td><td>Data and witness sites, storage, LoadBalancer pool, Vault auth, and certificate issuers.</td></tr>
+    <tr><td><code>spec.backup</code></td><td>S3 pgBackRest repository, schedules, and retention.</td></tr>
+    <tr><td><code>spec.tde</code></td><td>Optional pg_tde Vault provider identity.</td></tr>
+  </table>
+
+  <h2>PostgresDatabase</h2>
+  <p>Non-destructive database, schema, role, grant, and quota reconciliation.</p>
+  <p>Deleting a declaration with <code>deletionPolicy: Retain</code> does not drop databases, schemas, or roles.</p>
+
+  <h2>PostgresUser</h2>
+  <p>Login role, memberships, Vault-backed password, and role quotas.</p>
+  <p>Password values stay site-local and must not appear in manifests, logs, or arguments.</p>
+
+  <h2>PostgresRestore</h2>
+  <p>Point-in-time restore into a new target instance. In-place restore is forbidden.</p>
+
+  <h2>PostgresUpgrade</h2>
+  <p>Durable minor or major upgrade operation.</p>
+  <p>Major upgrades require a pinned <code>upgradeImage</code>, rollback policy, and benchmark evidence.</p>
+
+  <h2>Conditions</h2>
+  <p>Readiness is condition-based. Use <code>kubectl wait</code> on <code>Ready</code> and inspect failed conditions before touching child resources.</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,31 @@
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: PostgresRestore
+metadata:
+  name: orders-pitr
+  namespace: database-platform
+spec:
+  sourceInstanceRef: orders
+  targetInstanceRef: orders-recovered
+  targetTime: "2026-07-31T12:00:00Z"
+  restoreTopology:
+    sites:
+      - name: vic
+        siteRegistrationRef: production-vic
+        namespace: orders-recovered
+        role: Data
+        primaryPreference: 100
+        components: {etcdReplicas: 3, postgresReplicas: 1, pgpoolReplicas: 1}
+        storage:
+          etcd: {storageClassName: premium-rwo, size: 20Gi}
+          postgres: {storageClassName: premium-rwo, size: 500Gi}
+          restoreWorkspace: {storageClassName: premium-rwo, size: 500Gi}
+        loadBalancer: {addressPool: database-services}
+        vaultAuth:
+          address: https://vault.example.internal:8200
+          authMount: kubernetes-vic
+          authRole: orders-postgres-vic
+        certificates:
+          etcdIssuerRef: {name: etcd-vault, kind: ClusterIssuer}
+          postgresIssuerRef: {name: postgres-vault, kind: ClusterIssuer}
+          pgpoolIssuerRef: {name: client-vault, kind: ClusterIssuer}
+          backupIssuerRef: {name: backup-vault, kind: ClusterIssuer}
