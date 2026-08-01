@@ -22,3 +22,53 @@ spec:
     backup:
       - {name: backup-vault, kind: ClusterIssuer, group: cert-manager.io}
   metallbAddressPools: [database-services]
+---
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: SiteRegistration
+metadata:
+  name: production-nsw
+spec:
+  displayName: Production NSW
+  permittedStorageClasses:
+    etcd: [premium-rwo]
+    postgres: [premium-rwo]
+    restoreWorkspace: [premium-rwo]
+  storageRollbackPolicies:
+    - storageClassName: premium-rwo
+      strategy: VolumeSnapshot
+      volumeSnapshotClassName: premium-rwo-retain
+  permittedIssuers:
+    etcd:
+      - {name: etcd-vault, kind: ClusterIssuer, group: cert-manager.io}
+    postgres:
+      - {name: postgres-vault, kind: ClusterIssuer, group: cert-manager.io}
+    pgpool:
+      - {name: client-vault, kind: ClusterIssuer, group: cert-manager.io}
+    backup:
+      - {name: backup-vault, kind: ClusterIssuer, group: cert-manager.io}
+  metallbAddressPools: [database-services]
+---
+apiVersion: multisite-postgres.dev/v1alpha1
+kind: SiteRegistration
+metadata:
+  name: production-qld
+spec:
+  displayName: Production QLD
+  permittedStorageClasses:
+    etcd: [premium-rwo]
+    postgres: [premium-rwo]
+    restoreWorkspace: [premium-rwo]
+  storageRollbackPolicies:
+    - storageClassName: premium-rwo
+      strategy: VolumeSnapshot
+      volumeSnapshotClassName: premium-rwo-retain
+  permittedIssuers:
+    etcd:
+      - {name: etcd-vault, kind: ClusterIssuer, group: cert-manager.io}
+    postgres:
+      - {name: postgres-vault, kind: ClusterIssuer, group: cert-manager.io}
+    pgpool:
+      - {name: client-vault, kind: ClusterIssuer, group: cert-manager.io}
+    backup:
+      - {name: backup-vault, kind: ClusterIssuer, group: cert-manager.io}
+  metallbAddressPools: [database-services]

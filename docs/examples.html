@@ -11,33 +11,42 @@
   <nav>
     <a href="index.html">Overview</a>
     <a href="install.html">Install</a>
-    <a href="api.html">API</a>
+    <a href="api.html">CRDs</a>
     <a href="examples.html">Examples</a>
     <a href="operations.html">Operations</a>
     <a href="design.html">Design</a>
   </nav>
 
   <h1>Examples</h1>
-  <p>These are templates. Replace site names, StorageClasses, issuers, Vault paths, domains, and object storage settings.</p>
+  <p>These manifests are starting points. Replace site names, contexts, StorageClasses, issuers, Vault paths, domains, object storage, and PostgreSQL images.</p>
 
-  <ul>
-    <li><a href="examples/site-registration.yaml">SiteRegistration</a></li>
-    <li><a href="examples/multisite-postgres.yaml">MultiSitePostgres</a></li>
-    <li><a href="examples/tenant.yaml">PostgresDatabase and PostgresUser</a></li>
-    <li><a href="examples/restore.yaml">PostgresRestore</a></li>
-    <li><a href="examples/upgrade.yaml">PostgresUpgrade</a></li>
-    <li><a href="examples/released-images.env">Released image references</a></li>
-  </ul>
+  <table>
+    <tr><th>Manifest</th><th>Apply to</th><th>Purpose</th></tr>
+    <tr><td><a href="examples/site-registration.yaml">site-registration.yaml</a></td><td>Hub cluster</td><td>Registers <code>production-vic</code>, <code>production-nsw</code>, and <code>production-qld</code>.</td></tr>
+    <tr><td><a href="examples/multisite-postgres.yaml">multisite-postgres.yaml</a></td><td>Hub cluster</td><td>Creates the <code>orders</code> PostgreSQL instance across registered sites.</td></tr>
+    <tr><td><a href="examples/tenant.yaml">tenant.yaml</a></td><td>Hub cluster</td><td>Creates one database declaration and one login role.</td></tr>
+    <tr><td><a href="examples/restore.yaml">restore.yaml</a></td><td>Hub cluster</td><td>Restores <code>orders</code> to a new <code>orders-recovered</code> instance.</td></tr>
+    <tr><td><a href="examples/upgrade.yaml">upgrade.yaml</a></td><td>Hub cluster</td><td>Runs a PostgreSQL 17 to 18 major upgrade using the released upgrade image.</td></tr>
+    <tr><td><a href="examples/released-images.env">released-images.env</a></td><td>Shell</td><td>Image references for release automation.</td></tr>
+  </table>
 
   <h2>Apply Order</h2>
   <ol>
-    <li>Platform installs cert-manager, MetalLB, Vault policy, object storage, and StorageClasses.</li>
-    <li>Hub operator is installed.</li>
-    <li>SiteRegistration resources are created in the hub.</li>
-    <li>Registration bundles are applied to target clusters.</li>
-    <li>MultiSitePostgres is created after sites are connected.</li>
-    <li>Tenant database/user CRs are created after the instance is ready.</li>
+    <li>Install platform dependencies on every cluster.</li>
+    <li>Apply CRDs, TUN plugin, and hub controller manifests to the hub cluster.</li>
+    <li>Apply <code>SiteRegistration</code> resources to the hub cluster.</li>
+    <li>Apply each generated registration bundle to the matching target cluster.</li>
+    <li>Wait for every site to report <code>Connected</code>.</li>
+    <li>Apply <code>MultiSitePostgres</code> to the hub cluster.</li>
+    <li>Apply tenant, restore, or upgrade CRs only after the instance is ready.</li>
   </ol>
+
+  <h2>Validate Before Apply</h2>
+  <pre><code>kubectl --context "${HUB_CTX}" apply --dry-run=server -f docs/examples/site-registration.yaml
+kubectl --context "${HUB_CTX}" -n database-platform apply --dry-run=server -f docs/examples/multisite-postgres.yaml
+kubectl --context "${HUB_CTX}" -n database-platform apply --dry-run=server -f docs/examples/tenant.yaml</code></pre>
+
+  <p class="note">Do not apply workload CRs to target clusters. Site clusters receive only registration bundles and generated local resources from their site agent.</p>
 </main>
 </body>
 </html>

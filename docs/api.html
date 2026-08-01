@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>mspsql API</title>
+  <title>mspsql CRD reference</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,55 +11,133 @@
   <nav>
     <a href="index.html">Overview</a>
     <a href="install.html">Install</a>
-    <a href="api.html">API</a>
+    <a href="api.html">CRDs</a>
     <a href="examples.html">Examples</a>
     <a href="operations.html">Operations</a>
     <a href="design.html">Design</a>
   </nav>
 
-  <h1>API</h1>
-  <p>API group: <code>multisite-postgres.dev/v1alpha1</code>.</p>
+  <h1>CRD Reference</h1>
+  <p>API group: <code>multisite-postgres.dev/v1alpha1</code>. Hub-scoped workload CRs are namespaced unless noted.</p>
 
   <h2>SiteRegistration</h2>
-  <p>Cluster-scoped target-cluster identity and platform policy.</p>
+  <p><strong>Scope:</strong> cluster. <strong>Short name:</strong> <code>site</code>. Declares one target cluster and its allowed platform policy.</p>
   <table>
-    <tr><th>Field</th><th>Use</th></tr>
-    <tr><td><code>spec.permittedStorageClasses</code></td><td>Allowed StorageClasses for etcd, PostgreSQL, and restore workspace PVCs.</td></tr>
-    <tr><td><code>spec.storageRollbackPolicies</code></td><td>Required for major upgrades; declares snapshot or PVC clone rollback support.</td></tr>
-    <tr><td><code>spec.permittedIssuers</code></td><td>Allowed cert-manager Issuer or ClusterIssuer references.</td></tr>
-    <tr><td><code>spec.metallbAddressPools</code></td><td>Allowed LoadBalancer address pools.</td></tr>
-    <tr><td><code>spec.revoked</code></td><td>Irreversible control-plane revocation. Workloads are not deleted.</td></tr>
+    <tr><th>Spec field</th><th>Required</th><th>Description</th></tr>
+    <tr><td><code>displayName</code></td><td>No</td><td>Human-readable site label.</td></tr>
+    <tr><td><code>revoked</code></td><td>No</td><td>Stops trust for the site. Does not delete target workloads.</td></tr>
+    <tr><td><code>permittedStorageClasses.etcd[]</code></td><td>Yes</td><td>StorageClasses allowed for etcd PVCs.</td></tr>
+    <tr><td><code>permittedStorageClasses.postgres[]</code></td><td>Yes</td><td>StorageClasses allowed for PostgreSQL PVCs.</td></tr>
+    <tr><td><code>permittedStorageClasses.restoreWorkspace[]</code></td><td>No</td><td>StorageClasses allowed for restore workspace PVCs.</td></tr>
+    <tr><td><code>storageRollbackPolicies[]</code></td><td>No</td><td>Major-upgrade rollback method per StorageClass. Strategy is <code>VolumeSnapshot</code> or <code>PVCClone</code>.</td></tr>
+    <tr><td><code>permittedIssuers</code></td><td>Yes</td><td>Allowed cert-manager issuers for etcd, PostgreSQL, Pgpool, and backup certificates.</td></tr>
+    <tr><td><code>metallbAddressPools[]</code></td><td>No</td><td>Allowed MetalLB address pools for LoadBalancer Services.</td></tr>
+  </table>
+  <table>
+    <tr><th>Status field</th><th>Description</th></tr>
+    <tr><td><code>phase</code></td><td>Registration state. Wait for <code>Connected</code> before using the site.</td></tr>
+    <tr><td><code>registrationURL</code></td><td>Temporary URL for the target-cluster registration bundle.</td></tr>
+    <tr><td><code>agentVersion</code></td><td>Connected site-agent version.</td></tr>
+    <tr><td><code>discoveredStorageClasses</code></td><td>Storage inventory reported by the site.</td></tr>
+    <tr><td><code>conditions</code></td><td>Detailed readiness, policy, and trust failures.</td></tr>
   </table>
 
   <h2>MultiSitePostgres</h2>
-  <p>Desired topology for one PostgreSQL installation.</p>
+  <p>Declares one PostgreSQL deployment across registered sites.</p>
   <table>
-    <tr><th>Field</th><th>Use</th></tr>
-    <tr><td><code>spec.deletionPolicy</code></td><td><code>Retain</code> by default. <code>Delete</code> deletes namespaces/PVCs after backup checks.</td></tr>
-    <tr><td><code>spec.postgres</code></td><td>PostgreSQL major version, image, parameters, and synchronous standby count.</td></tr>
-    <tr><td><code>spec.credentials</code></td><td>Vault references for PostgreSQL and Pgpool credentials. Values never pass through hub CRs.</td></tr>
-    <tr><td><code>spec.sites</code></td><td>Data and witness sites, storage, LoadBalancer pool, Vault auth, and certificate issuers.</td></tr>
-    <tr><td><code>spec.backup</code></td><td>S3 pgBackRest repository, schedules, and retention.</td></tr>
-    <tr><td><code>spec.tde</code></td><td>Optional pg_tde Vault provider identity.</td></tr>
+    <tr><th>Spec field</th><th>Required</th><th>Description</th></tr>
+    <tr><td><code>deletionPolicy</code></td><td>No</td><td><code>Retain</code> default. <code>Delete</code> allows destructive cleanup.</td></tr>
+    <tr><td><code>postgres.majorVersion</code></td><td>Yes</td><td>PostgreSQL major version. Minimum <code>14</code>.</td></tr>
+    <tr><td><code>postgres.image</code></td><td>Yes</td><td>Runtime PostgreSQL image. Pin by version or digest.</td></tr>
+    <tr><td><code>postgres.synchronousStandbyCount</code></td><td>Yes</td><td>Required synchronous standby count. Minimum <code>0</code>.</td></tr>
+    <tr><td><code>postgres.parameters</code></td><td>No</td><td>PostgreSQL parameters managed through Patroni.</td></tr>
+    <tr><td><code>sites[]</code></td><td>Yes</td><td>Site topology. Each item maps to one <code>SiteRegistration</code>.</td></tr>
+    <tr><td><code>sites[].role</code></td><td>Yes</td><td><code>Data</code> or <code>Witness</code>.</td></tr>
+    <tr><td><code>sites[].components</code></td><td>Yes</td><td>Replica counts for etcd, PostgreSQL, and Pgpool.</td></tr>
+    <tr><td><code>sites[].storage</code></td><td>No</td><td>PVC class and size for etcd, PostgreSQL, and restore workspace.</td></tr>
+    <tr><td><code>sites[].loadBalancer.addressPool</code></td><td>No</td><td>MetalLB pool name. Must be allowed by the site.</td></tr>
+    <tr><td><code>sites[].vaultAuth</code></td><td>No</td><td>Vault address, Kubernetes auth mount, role, and optional CA bundle.</td></tr>
+    <tr><td><code>sites[].certificates</code></td><td>Yes</td><td>cert-manager issuers for local TLS material.</td></tr>
+    <tr><td><code>credentials.postgresVaultRef</code></td><td>Yes</td><td>Vault secret reference for PostgreSQL superuser credentials.</td></tr>
+    <tr><td><code>credentials.pgpoolVaultRef</code></td><td>No</td><td>Vault secret reference for Pgpool credentials.</td></tr>
+    <tr><td><code>backup</code></td><td>No</td><td>S3 pgBackRest repository, schedules, and retention.</td></tr>
+    <tr><td><code>tde</code></td><td>No</td><td>pg_tde Vault provider settings.</td></tr>
+  </table>
+  <table>
+    <tr><th>Status field</th><th>Description</th></tr>
+    <tr><td><code>phase</code></td><td>High-level reconcile phase.</td></tr>
+    <tr><td><code>activeRevision</code></td><td>Signed desired-state revision currently active.</td></tr>
+    <tr><td><code>primary</code></td><td>Observed Patroni primary member.</td></tr>
+    <tr><td><code>sites[]</code></td><td>Per-site revision, phase, addresses, topology, and conditions.</td></tr>
+    <tr><td><code>lastBackupTime</code></td><td>Latest observed backup completion time.</td></tr>
+    <tr><td><code>conditions</code></td><td>Use this before inspecting generated objects.</td></tr>
   </table>
 
   <h2>PostgresDatabase</h2>
-  <p>Non-destructive database, schema, role, grant, and quota reconciliation.</p>
-  <p>Deleting a declaration with <code>deletionPolicy: Retain</code> does not drop databases, schemas, or roles.</p>
+  <p>Non-destructive tenant database declaration.</p>
+  <table>
+    <tr><th>Spec field</th><th>Required</th><th>Description</th></tr>
+    <tr><td><code>instanceRef</code></td><td>Yes</td><td>Name of the owning <code>MultiSitePostgres</code>.</td></tr>
+    <tr><td><code>databaseName</code></td><td>Yes</td><td>Database to reconcile.</td></tr>
+    <tr><td><code>deletionPolicy</code></td><td>No</td><td><code>Retain</code> default. <code>Delete</code> permits dropping managed database objects.</td></tr>
+    <tr><td><code>schemas[]</code></td><td>No</td><td>Schemas to create.</td></tr>
+    <tr><td><code>roles[]</code></td><td>No</td><td>Database roles. Profile is <code>Owner</code>, <code>ReadWrite</code>, or <code>ReadOnly</code>.</td></tr>
+    <tr><td><code>quotas</code></td><td>No</td><td>Connection, timeout, temp-file, and storage alert limits.</td></tr>
+  </table>
 
   <h2>PostgresUser</h2>
-  <p>Login role, memberships, Vault-backed password, and role quotas.</p>
-  <p>Password values stay site-local and must not appear in manifests, logs, or arguments.</p>
+  <p>Login role declaration with Vault-backed password.</p>
+  <table>
+    <tr><th>Spec field</th><th>Required</th><th>Description</th></tr>
+    <tr><td><code>instanceRef</code></td><td>Yes</td><td>Name of the owning <code>MultiSitePostgres</code>.</td></tr>
+    <tr><td><code>roleName</code></td><td>Yes</td><td>PostgreSQL login role.</td></tr>
+    <tr><td><code>passwordVaultRef</code></td><td>Yes</td><td>Vault mount, path, and optional key containing the password.</td></tr>
+    <tr><td><code>memberOf[]</code></td><td>No</td><td>Database role memberships by <code>databaseRef</code> and role name.</td></tr>
+    <tr><td><code>deletionPolicy</code></td><td>No</td><td><code>Retain</code> default.</td></tr>
+    <tr><td><code>quotas</code></td><td>No</td><td>Role-level limits.</td></tr>
+  </table>
 
   <h2>PostgresRestore</h2>
-  <p>Point-in-time restore into a new target instance. In-place restore is forbidden.</p>
+  <p>Point-in-time restore into a new target instance. In-place restore is not supported.</p>
+  <table>
+    <tr><th>Spec field</th><th>Required</th><th>Description</th></tr>
+    <tr><td><code>sourceInstanceRef</code></td><td>Yes</td><td>Existing source instance with backups.</td></tr>
+    <tr><td><code>targetInstanceRef</code></td><td>Yes</td><td>New instance name to create from backup.</td></tr>
+    <tr><td><code>targetTime</code></td><td>Yes</td><td>RFC3339 recovery target time.</td></tr>
+    <tr><td><code>backupSet</code></td><td>No</td><td>Specific backup set. Leave empty for automatic selection.</td></tr>
+    <tr><td><code>restoreTopology.sites[]</code></td><td>No</td><td>Override target topology. Same shape as <code>MultiSitePostgres.spec.sites</code>.</td></tr>
+    <tr><td><code>targetBackup</code></td><td>No</td><td>Backup policy for the restored instance.</td></tr>
+  </table>
 
   <h2>PostgresUpgrade</h2>
-  <p>Durable minor or major upgrade operation.</p>
-  <p>Major upgrades require a pinned <code>upgradeImage</code>, rollback policy, and benchmark evidence.</p>
+  <p>Durable upgrade operation for one instance. Only one restore or upgrade operation should run per instance.</p>
+  <table>
+    <tr><th>Spec field</th><th>Required</th><th>Description</th></tr>
+    <tr><td><code>instanceRef</code></td><td>Yes</td><td>Instance to upgrade.</td></tr>
+    <tr><td><code>targetImage</code></td><td>Yes</td><td>PostgreSQL runtime image after upgrade.</td></tr>
+    <tr><td><code>targetMajorVersion</code></td><td>Yes</td><td>Target PostgreSQL major version. Minimum <code>14</code>.</td></tr>
+    <tr><td><code>upgradeImage</code></td><td>No</td><td>Required for major upgrades. Use <code>ghcr.io/sindef/mspsql-postgres-upgrade:__MSPSQL_VERSION__</code>.</td></tr>
+    <tr><td><code>serviceRestorationTarget</code></td><td>Yes</td><td>Maximum expected write outage duration.</td></tr>
+    <tr><td><code>rollbackRetention</code></td><td>No</td><td>How long rollback artifacts are retained.</td></tr>
+    <tr><td><code>benchmark</code></td><td>No</td><td>Required operational evidence for major upgrades.</td></tr>
+  </table>
 
-  <h2>Conditions</h2>
-  <p>Readiness is condition-based. Use <code>kubectl wait</code> on <code>Ready</code> and inspect failed conditions before touching child resources.</p>
+  <h2>Shared Types</h2>
+  <table>
+    <tr><th>Type</th><th>Fields</th></tr>
+    <tr><td><code>VaultSecretReference</code></td><td><code>mount</code>, <code>path</code>, optional <code>key</code>.</td></tr>
+    <tr><td><code>IssuerReference</code></td><td><code>name</code>, optional <code>kind</code> default <code>ClusterIssuer</code>, optional <code>group</code> default <code>cert-manager.io</code>.</td></tr>
+    <tr><td><code>StorageRequest</code></td><td><code>storageClassName</code>, <code>size</code>.</td></tr>
+    <tr><td><code>RoleQuotas</code></td><td><code>connectionLimit</code>, <code>statementTimeout</code>, <code>lockTimeout</code>, <code>idleInTransactionSessionTimeout</code>, <code>tempFileLimit</code>.</td></tr>
+  </table>
+
+  <h2>Rules</h2>
+  <ul>
+    <li>Apply CRs to the hub cluster, not directly to site clusters.</li>
+    <li>Wait on conditions, not only resource existence.</li>
+    <li>Use <code>Retain</code> unless destructive cleanup is intentional and reviewed.</li>
+    <li>Pin images. Do not use mutable tags for production manifests.</li>
+  </ul>
 </main>
 </body>
 </html>

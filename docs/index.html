@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>mspsql documentation</title>
+  <title>mspsql docs</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,45 +11,45 @@
   <nav>
     <a href="index.html">Overview</a>
     <a href="install.html">Install</a>
-    <a href="api.html">API</a>
+    <a href="api.html">CRDs</a>
     <a href="examples.html">Examples</a>
     <a href="operations.html">Operations</a>
     <a href="design.html">Design</a>
   </nav>
 
   <h1>mspsql</h1>
-  <p><strong>Current release:</strong> __MSPSQL_VERSION__</p>
-  <p>mspsql is a hub-and-agent Kubernetes operator for Patroni-managed PostgreSQL across isolated clusters.</p>
+  <p><strong>Version:</strong> __MSPSQL_VERSION__</p>
+  <p>mspsql is a Kubernetes operator for Patroni PostgreSQL across multiple isolated clusters.</p>
 
-  <h2>What It Does</h2>
-  <ul>
-    <li>Runs hub controllers in a management cluster.</li>
-    <li>Registers target clusters as <code>SiteRegistration</code> resources.</li>
-    <li>Deploys local site agents that perform all target-cluster Kubernetes writes.</li>
-    <li>Uses signed desired-state plans over WireGuard plus mTLS gRPC.</li>
-    <li>Manages etcd, PostgreSQL, Patroni, Pgpool, pgBackRest, TLS, backup, restore, and upgrades.</li>
-  </ul>
-
-  <h2>Published Images</h2>
+  <h2>Architecture</h2>
   <table>
-    <tr><th>Component</th><th>Image</th></tr>
-    <tr><td>Hub manager</td><td><code>ghcr.io/sindef/mspsql:__MSPSQL_VERSION__</code></td></tr>
-    <tr><td>Site agent</td><td><code>ghcr.io/sindef/mspsql-agent:__MSPSQL_VERSION__</code></td></tr>
-    <tr><td>Hub gateway lease gate</td><td><code>ghcr.io/sindef/mspsql-gateway:__MSPSQL_VERSION__</code></td></tr>
-    <tr><td>WireGuard sidecar</td><td><code>ghcr.io/sindef/mspsql-wireguard:__MSPSQL_VERSION__</code></td></tr>
-    <tr><td>TUN device plugin</td><td><code>ghcr.io/sindef/mspsql-tun-device-plugin:__MSPSQL_VERSION__</code></td></tr>
-    <tr><td>PostgreSQL 17-to-18 upgrade image</td><td><code>ghcr.io/sindef/mspsql-postgres-upgrade:__MSPSQL_VERSION__</code></td></tr>
+    <tr><th>Part</th><th>Runs on</th><th>Purpose</th></tr>
+    <tr><td>Hub controller</td><td>Management cluster</td><td>Owns CRDs, plans desired state, serves registration bundles.</td></tr>
+    <tr><td>Site agent</td><td>Each database cluster</td><td>Applies signed plans locally. The hub does not write into target clusters.</td></tr>
+    <tr><td>WireGuard gateway</td><td>Hub and sites</td><td>Private control-plane transport for agent registration and plan delivery.</td></tr>
+    <tr><td>TUN device plugin</td><td>Clusters using WireGuard pods</td><td>Provides <code>/dev/net/tun</code> to gateway and agent workloads.</td></tr>
   </table>
 
-  <h2>First Read</h2>
+  <h2>Images</h2>
+  <table>
+    <tr><th>Component</th><th>Image</th></tr>
+    <tr><td>Hub controller</td><td><code>ghcr.io/sindef/mspsql:__MSPSQL_VERSION__</code></td></tr>
+    <tr><td>Site agent</td><td><code>ghcr.io/sindef/mspsql-agent:__MSPSQL_VERSION__</code></td></tr>
+    <tr><td>Gateway lease gate</td><td><code>ghcr.io/sindef/mspsql-gateway:__MSPSQL_VERSION__</code></td></tr>
+    <tr><td>WireGuard sidecar</td><td><code>ghcr.io/sindef/mspsql-wireguard:__MSPSQL_VERSION__</code></td></tr>
+    <tr><td>TUN device plugin</td><td><code>ghcr.io/sindef/mspsql-tun-device-plugin:__MSPSQL_VERSION__</code></td></tr>
+    <tr><td>PostgreSQL major upgrade</td><td><code>ghcr.io/sindef/mspsql-postgres-upgrade:__MSPSQL_VERSION__</code></td></tr>
+  </table>
+
+  <h2>Read First</h2>
   <ol>
-    <li>Read <a href="design.html">Design</a> before production use.</li>
-    <li>Install prerequisites from <a href="install.html">Install</a>.</li>
-    <li>Create <code>SiteRegistration</code> objects and apply each generated registration bundle to its target cluster.</li>
-    <li>Create a <code>MultiSitePostgres</code> instance only after all required sites are <code>Connected</code>.</li>
+    <li>Install prerequisites and manifests with <a href="install.html">Install</a>.</li>
+    <li>Review CRDs before writing manifests: <a href="api.html">CRD Reference</a>.</li>
+    <li>Start from <a href="examples.html">Examples</a>; change names, StorageClasses, issuers, Vault paths, and images.</li>
+    <li>Use <a href="operations.html">Operations</a> for status, backup, restore, upgrades, and failure checks.</li>
   </ol>
 
-  <p class="note">This operator intentionally does not proxy database traffic. Data-plane routing, DNS, storage, Vault, cert-manager, MetalLB, and PostgreSQL SLOs remain platform responsibilities.</p>
+  <p class="note">mspsql manages PostgreSQL control-plane resources. Network design, Vault policy, cert-manager issuers, object storage, StorageClasses, DNS, and database SLOs remain platform responsibilities.</p>
 </main>
 </body>
 </html>

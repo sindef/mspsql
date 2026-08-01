@@ -11,7 +11,7 @@
   <nav>
     <a href="index.html">Overview</a>
     <a href="install.html">Install</a>
-    <a href="api.html">API</a>
+    <a href="api.html">CRDs</a>
     <a href="examples.html">Examples</a>
     <a href="operations.html">Operations</a>
     <a href="design.html">Design</a>
@@ -19,47 +19,59 @@
 
   <h1>Operations</h1>
 
-  <h2>Check Health</h2>
-  <pre><code>kubectl get siteregistration
-kubectl -n database-platform get multisitepostgres,postgresdatabase,postgresuser,postgresrestore,postgresupgrade
-kubectl -n database-platform describe multisitepostgres orders</code></pre>
+  <h2>Health</h2>
+  <pre><code>kubectl --context "${HUB_CTX}" get siteregistration
+kubectl --context "${HUB_CTX}" -n database-platform get multisitepostgres,postgresdatabase,postgresuser,postgresrestore,postgresupgrade
+kubectl --context "${HUB_CTX}" -n database-platform describe multisitepostgres orders
+kubectl --context "${HUB_CTX}" -n mspsql-system logs deploy/mspsql-controller-manager</code></pre>
+
+  <h2>Site Agent</h2>
+  <pre><code>kubectl --context "${VIC_CTX}" -n mspsql-agent get pods
+kubectl --context "${VIC_CTX}" -n mspsql-agent logs deploy/mspsql-agent -c site-agent
+kubectl --context "${VIC_CTX}" -n mspsql-agent get events.events.k8s.io --sort-by=.metadata.creationTimestamp</code></pre>
 
   <h2>Backups</h2>
   <ul>
-    <li>WAL archiving is continuous when backup is configured.</li>
-    <li>Full, differential, and incremental schedules are cron strings.</li>
-    <li>Repository credentials and cipher passphrases come from Vault.</li>
-    <li>Repository prefix must be unique per instance.</li>
+    <li>Backups require <code>MultiSitePostgres.spec.backup</code>.</li>
+    <li>Repository credentials are read from Vault at each site.</li>
+    <li>Use a unique repository <code>prefix</code> per instance.</li>
+    <li>Check <code>status.lastBackupTime</code>, <code>status.recoveryWindowStart</code>, and backup schedule status.</li>
   </ul>
 
   <h2>Restore</h2>
+  <pre><code>kubectl --context "${HUB_CTX}" -n database-platform apply -f docs/examples/restore.yaml
+kubectl --context "${HUB_CTX}" -n database-platform get postgresrestore orders-pitr
+kubectl --context "${HUB_CTX}" -n database-platform describe postgresrestore orders-pitr</code></pre>
   <ul>
-    <li>Restore creates a new instance.</li>
+    <li>Restore always creates a new target instance.</li>
     <li>The source instance is not modified.</li>
-    <li>Recovery must pass acceptance before Pgpool is exposed.</li>
+    <li>Expose applications only after the restored instance reports Ready.</li>
   </ul>
 
-  <h2>Upgrades</h2>
+  <h2>Upgrade</h2>
+  <pre><code>kubectl --context "${HUB_CTX}" -n database-platform apply --dry-run=server -f docs/examples/upgrade.yaml
+kubectl --context "${HUB_CTX}" -n database-platform apply -f docs/examples/upgrade.yaml
+kubectl --context "${HUB_CTX}" -n database-platform describe postgresupgrade orders-pg18</code></pre>
   <ul>
-    <li>Only one upgrade or restore may target an instance at a time.</li>
-    <li>Minor upgrades roll replicas first and use Patroni switchover.</li>
-    <li>Major upgrades require backup, rollback storage, benchmark evidence, and a pinned upgrade image.</li>
-    <li>Automatic rollback is only safe before Pgpool write service is restored.</li>
+    <li>Minor upgrades roll members and use Patroni switchover.</li>
+    <li>Major upgrades require backup, rollback storage policy, benchmark evidence, and a pinned upgrade image.</li>
+    <li>Rollback is automatic only while the write service has not been restored.</li>
+    <li>Do not start another restore or upgrade for the same instance.</li>
   </ul>
 
   <h2>Deletion</h2>
   <ul>
-    <li><code>Retain</code> removes active workloads and LoadBalancers but keeps namespaces, PVCs, and backups.</li>
-    <li><code>Delete</code> deletes target namespaces and PVCs after backup checks.</li>
-    <li>Unreachable sites block finalization unless an administrator explicitly force-orphans.</li>
+    <li><code>Retain</code> keeps PVCs, namespaces, and backups.</li>
+    <li><code>Delete</code> permits namespace and PVC deletion after backup checks.</li>
+    <li>Disconnected sites can block finalization. Investigate before forcing orphaned resources.</li>
   </ul>
 
   <h2>Do Not</h2>
   <ul>
-    <li>Do not edit managed child resources to perform planned changes. Change the CR.</li>
+    <li>Do not edit generated StatefulSets, Services, Secrets, ConfigMaps, Jobs, or PVCs.</li>
+    <li>Do not put database passwords in CRs or Git.</li>
     <li>Do not reuse backup prefixes or TDE key paths across independent instances.</li>
-    <li>Do not put Secret values in CRs, plan payloads, Git, or tickets.</li>
-    <li>Do not assume pod Ready means PostgreSQL is writable. Use conditions and acceptance checks.</li>
+    <li>Do not treat pod readiness as database readiness. Use CR conditions.</li>
   </ul>
 </main>
 </body>
