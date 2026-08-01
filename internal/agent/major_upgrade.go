@@ -82,8 +82,7 @@ func (r *Reconciler) prepareMajorUpgrade(ctx context.Context, desired plan.SiteP
 				reason := "PrimaryConversionPending"
 				if strings.Contains(message, " failed:") {
 					reason = "PrimaryConversionFailed"
-					appendLocalEvent(result, corev1.EventTypeWarning, reason,
-						"MajorUpgradeFailed", message)
+					appendMajorUpgradeFailureEvent(result, reason, message)
 				}
 				setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
 					reason, message)
@@ -112,8 +111,7 @@ func (r *Reconciler) prepareMajorUpgrade(ctx context.Context, desired plan.SiteP
 			reason := "BackupStanzaUpgradePending"
 			if strings.Contains(message, " failed:") {
 				reason = "BackupStanzaUpgradeFailed"
-				appendLocalEvent(result, corev1.EventTypeWarning, reason,
-					"MajorUpgradeFailed", message)
+				appendMajorUpgradeFailureEvent(result, reason, message)
 			}
 			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
 				reason, message)
@@ -145,8 +143,7 @@ func (r *Reconciler) prepareMajorUpgrade(ctx context.Context, desired plan.SiteP
 			reason := "RollbackDCSResetPending"
 			if strings.Contains(message, " failed:") {
 				reason = "RollbackDCSResetFailed"
-				appendLocalEvent(result, corev1.EventTypeWarning, reason,
-					"MajorUpgradeFailed", message)
+				appendMajorUpgradeFailureEvent(result, reason, message)
 			}
 			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
 				reason, message)
@@ -175,8 +172,7 @@ func (r *Reconciler) reconcileMajorReplicaReset(ctx context.Context, desired pla
 			reason := pendingReason
 			if strings.Contains(message, " failed:") {
 				reason = failedReason
-				appendLocalEvent(result, corev1.EventTypeWarning, reason,
-					"MajorUpgradeFailed", message)
+				appendMajorUpgradeFailureEvent(result, reason, message)
 			}
 			setLocalCondition(&result.Conditions, "MajorUpgradeBlocked", metav1.ConditionTrue,
 				reason, message)
@@ -186,9 +182,9 @@ func (r *Reconciler) reconcileMajorReplicaReset(ctx context.Context, desired pla
 	return true, nil
 }
 
-func appendLocalEvent(result *ApplyResult, eventType, reason, action, note string) {
+func appendMajorUpgradeFailureEvent(result *ApplyResult, reason, note string) {
 	result.Events = append(result.Events, LocalEvent{
-		Type: eventType, Reason: reason, Action: action, Note: note,
+		Type: corev1.EventTypeWarning, Reason: reason, Action: "MajorUpgradeFailed", Note: note,
 	})
 }
 
