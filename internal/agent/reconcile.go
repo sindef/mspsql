@@ -55,6 +55,14 @@ type ApplyResult struct {
 	Primary             string
 	SynchronousStandbys []string
 	Conditions          []metav1.Condition
+	Events              []LocalEvent
+}
+
+type LocalEvent struct {
+	Type   string
+	Reason string
+	Action string
+	Note   string
 }
 
 type Reconciler struct {

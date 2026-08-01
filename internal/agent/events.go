@@ -52,6 +52,16 @@ func (r *EventReporter) Observe(instanceUID string, result ApplyResult, reconcil
 	regarding := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Namespace: r.Namespace, Name: cacheName(instanceUID),
 	}}
+	for _, event := range result.Events {
+		signature := event.Type + "/" + event.Reason + "/" + event.Action + "/" + event.Note
+		key := "event/" + event.Reason + "/" + event.Action
+		if current[key] == signature {
+			continue
+		}
+		current[key] = signature
+		r.Recorder.Eventf(regarding, nil, event.Type, event.Reason, event.Action,
+			"%s", boundedEventNote("%s", event.Note))
+	}
 	for _, condition := range result.Conditions {
 		signature := string(condition.Status) + "/" + condition.Reason
 		key := "condition/" + condition.Type

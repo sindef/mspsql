@@ -22,6 +22,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 )
@@ -59,6 +60,30 @@ func TestEventReporterEmitsOnlyTransitions(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("events missing %q: %s", expected, joined)
 		}
+	}
+}
+
+func TestEventReporterEmitsLocalEventsOnce(t *testing.T) {
+	recorder := events.NewFakeRecorder(8)
+	reporter := &EventReporter{Recorder: recorder, Namespace: "mspsql-agent"}
+	result := ApplyResult{Phase: "UpgradingPrimary", Events: []LocalEvent{{
+		Type: corev1.EventTypeWarning, Reason: "PrimaryConversionFailed",
+		Action: "MajorUpgradeFailed",
+		Note:   "Job major-upgrade failed: injected pg_upgrade conversion failure",
+	}}}
+	reporter.Observe("instance", result, nil)
+	reporter.Observe("instance", result, nil)
+
+	var recorded []string
+	for len(recorder.Events) > 0 {
+		recorded = append(recorded, <-recorder.Events)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("events = %#v", recorded)
+	}
+	if !strings.Contains(recorded[0],
+		"Warning PrimaryConversionFailed Job major-upgrade failed: injected pg_upgrade conversion failure") {
+		t.Fatalf("event missing failure detail: %s", recorded[0])
 	}
 }
 
