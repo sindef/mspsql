@@ -10,6 +10,16 @@ site-initiated WireGuard tunnel, verify signed desired-state plans, and perform
 all target-cluster API operations locally. The hub never receives target
 Kubernetes credentials or workload Secret values.
 
+## Documentation
+
+<https://sindef.github.io/mspsql/>
+
+- [Install](docs/install.html): apply CRDs, hub, site agents, and workload CRs.
+- [CRDs](docs/api.html): API fields, status, validation, and lifecycle rules.
+- [Examples](docs/examples.html): site registration and workload manifests.
+- [Operations](docs/operations.html): health checks, backup, restore, upgrades,
+  and deletion.
+
 ## Components
 
 - `manager`: leader-elected hub controllers, admission webhooks, plan signing,
@@ -211,4 +221,3 @@ until its `MultiSitePostgres` backup specification is configured.
 - Server-side apply does not force fields owned by Kubernetes, MetalLB,
   cert-manager, or users.
 - Secret values are neither included in plans nor returned to the hub.
-
