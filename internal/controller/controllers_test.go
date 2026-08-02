@@ -2220,6 +2220,50 @@ func TestUserTerminalDeletionReleasesFinalizer(t *testing.T) {
 	}
 }
 
+func TestInstanceDeletionBlocksWhileChildDeclarationsExist(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC))
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", Generation: 4, UID: types.UID("orders-uid"),
+			Finalizers: []string{instanceFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Spec: api.MultiSitePostgresSpec{
+			DeletionPolicy: api.DeletionPolicyDelete,
+			Sites: []api.PostgresSiteSpec{{
+				Name: "vic", SiteRegistrationRef: "vic", Namespace: "orders",
+			}},
+		},
+	}
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-api"},
+		Spec: api.PostgresDatabaseSpec{
+			InstanceRef: "orders", DatabaseName: "orders",
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}).
+		WithObjects(instance, database).Build()
+	reconciler := MultiSitePostgresReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var current api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	blocked := statusCondition(current.Status.Conditions, "DeletionBlocked")
+	if blocked == nil || blocked.Reason != "ChildDeclarationsPresent" ||
+		!strings.Contains(blocked.Message, "PostgresDatabase/orders-api") {
+		t.Fatalf("parent deletion condition = %#v", blocked)
+	}
+	if !controllerutil.ContainsFinalizer(&current, instanceFinalizer) {
+		t.Fatalf("parent finalized before child deletion: %#v", current.Finalizers)
+	}
+}
+
 func TestUpgradeInstanceWatchIncludesPreflightBlockedUpgrade(t *testing.T) {
 	scheme := testScheme(t)
 	instance := &api.MultiSitePostgres{

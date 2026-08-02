@@ -626,6 +626,18 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 		controllerutil.RemoveFinalizer(instance, instanceFinalizer)
 		return ctrl.Result{}, r.Update(ctx, instance)
 	}
+	children, err := r.referencingDeclarations(ctx, instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(children) > 0 {
+		instance.Status.Phase = "Deleting"
+		setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
+			metav1.ConditionTrue, "ChildDeclarationsPresent",
+			"Delete or force-orphan child declarations before deleting the parent: "+
+				strings.Join(children, ", "))
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, instance)
+	}
 	if instance.Status.PlanFingerprint != "deleting" {
 		if instance.Spec.DeletionPolicy == multisitepostgresv1alpha1.DeletionPolicyDelete &&
 			!conditionTrue(instance.Status.Conditions, "BackupReady") {
@@ -661,6 +673,39 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 	}
 	controllerutil.RemoveFinalizer(instance, instanceFinalizer)
 	return ctrl.Result{}, r.Update(ctx, instance)
+}
+
+func (r *MultiSitePostgresReconciler) referencingDeclarations(ctx context.Context,
+	instance *multisitepostgresv1alpha1.MultiSitePostgres,
+) ([]string, error) {
+	var children []string
+	var databases multisitepostgresv1alpha1.PostgresDatabaseList
+	if err := r.List(ctx, &databases, client.InNamespace(instance.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range databases.Items {
+		database := &databases.Items[i]
+		if database.Spec.InstanceRef == instance.Name && !childForceOrphaned(database) {
+			children = append(children, "PostgresDatabase/"+database.Name)
+		}
+	}
+	var users multisitepostgresv1alpha1.PostgresUserList
+	if err := r.List(ctx, &users, client.InNamespace(instance.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range users.Items {
+		user := &users.Items[i]
+		if user.Spec.InstanceRef == instance.Name && !childForceOrphaned(user) {
+			children = append(children, "PostgresUser/"+user.Name)
+		}
+	}
+	slices.Sort(children)
+	return children, nil
+}
+
+func childForceOrphaned(object client.Object) bool {
+	return !object.GetDeletionTimestamp().IsZero() &&
+		object.GetAnnotations()[forceOrphanAnnotation] == "true"
 }
 
 func (r *MultiSitePostgresReconciler) issueDeletionPlans(ctx context.Context,
