@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -226,6 +228,71 @@ func TestRegistrationBindingAtomicallyClaimsClusterUID(t *testing.T) {
 	}
 	if loser.Status.ClusterUID != "" {
 		t.Fatalf("loser was bound: %#v", loser.Status)
+	}
+}
+
+func TestClusterUIDClaimConcurrentBindsSelectOneOwner(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	winner := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "winner", UID: types.UID("winner-uid"),
+	}}
+	loser := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "loser", UID: types.UID("loser-uid"),
+	}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(winner, loser).Build()
+	server := HTTPServer{Client: kube, SystemNamespace: "system"}
+	var successes atomic.Int32
+	var conflicts atomic.Int32
+	var mu sync.Mutex
+	successOwners := map[string]struct{}{}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		site := winner
+		if i%2 == 1 {
+			site = loser
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := server.acquireClusterUIDClaim(context.Background(), "cluster-uid", site)
+			switch {
+			case err == nil:
+				successes.Add(1)
+				mu.Lock()
+				successOwners[string(site.UID)] = struct{}{}
+				mu.Unlock()
+			case apierrors.IsAlreadyExists(err):
+				conflicts.Add(1)
+			default:
+				t.Errorf("claim result for %s: %v", site.Name, err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if successes.Load() == 0 || conflicts.Load() == 0 {
+		t.Fatalf("concurrent claim did not exercise success/conflict paths: successes=%d conflicts=%d",
+			successes.Load(), conflicts.Load())
+	}
+	if len(successOwners) != 1 {
+		t.Fatalf("multiple registrations reported claim success: %#v", successOwners)
+	}
+	var claim corev1.ConfigMap
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: "system", Name: clusterUIDClaimName("cluster-uid"),
+	}, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := successOwners[claim.Data["ownerUID"]]; !found {
+		t.Fatalf("claim owner = %#v", claim.Data)
 	}
 }
 
