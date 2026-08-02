@@ -1157,11 +1157,12 @@ func credentialVersionForMember(desired plan.SitePlan, member string) string {
 func postgresMemberImage(desired plan.SitePlan, member string) string {
 	if desired.MajorUpgrade != nil {
 		switch desired.MajorUpgrade.Phase {
-		case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRestoreWrites:
+		case plan.MajorUpgradePhaseStartPrimary:
 			if member == desired.MajorUpgrade.Primary {
 				return desired.MajorUpgrade.TargetImage
 			}
-		case plan.MajorUpgradePhaseReplicas, plan.MajorUpgradePhaseFinalize:
+		case plan.MajorUpgradePhaseReplicas, plan.MajorUpgradePhaseRestoreWrites,
+			plan.MajorUpgradePhaseFinalize:
 			return desired.MajorUpgrade.TargetImage
 		}
 	}
