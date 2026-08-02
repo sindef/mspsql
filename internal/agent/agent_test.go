@@ -214,6 +214,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 	}
 	for _, object := range objects {
 		assertPatroniEtcdHosts(t, object)
+		assertRenderedContainersDenyPrivilegeEscalation(t, object)
 		statefulSet, ok := object.(*appsv1.StatefulSet)
 		if !ok {
 			continue
@@ -248,6 +249,32 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		command := statefulSet.Spec.Template.Spec.Containers[0].Command[2]
 		if !strings.Contains(command, "10.0.0.10") {
 			t.Fatalf("member command does not advertise its LoadBalancer address: %s", command)
+		}
+	}
+}
+
+func assertRenderedContainersDenyPrivilegeEscalation(t *testing.T, object client.Object) {
+	t.Helper()
+	var podSpec *corev1.PodSpec
+	switch typed := object.(type) {
+	case *appsv1.StatefulSet:
+		podSpec = &typed.Spec.Template.Spec
+	case *appsv1.Deployment:
+		podSpec = &typed.Spec.Template.Spec
+	case *batchv1.Job:
+		podSpec = &typed.Spec.Template.Spec
+	case *batchv1.CronJob:
+		podSpec = &typed.Spec.JobTemplate.Spec.Template.Spec
+	default:
+		return
+	}
+	for _, container := range append(slices.Clone(podSpec.InitContainers), podSpec.Containers...) {
+		if container.SecurityContext == nil ||
+			container.SecurityContext.AllowPrivilegeEscalation == nil ||
+			*container.SecurityContext.AllowPrivilegeEscalation ||
+			container.SecurityContext.Privileged != nil && *container.SecurityContext.Privileged {
+			t.Fatalf("%T %s container %s permits privileged execution: %#v",
+				object, object.GetName(), container.Name, container.SecurityContext)
 		}
 	}
 }
