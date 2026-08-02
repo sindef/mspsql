@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -248,6 +249,55 @@ func TestUpdateInstanceSiteSkipsUnchangedStatusWrite(t *testing.T) {
 	}
 	if statusUpdates != 0 {
 		t.Fatalf("unchanged site report wrote status %d times", statusUpdates)
+	}
+}
+
+func BenchmarkUpdateInstanceSiteSkipsUnchangedStatusWriteAtFleetScale(b *testing.B) {
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		b.Fatal(err)
+	}
+	objects := make([]client.Object, 0, 1000)
+	targetUID := types.UID("instance-999")
+	for i := range 1000 {
+		instance := &api.MultiSitePostgres{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "platform", Name: fmt.Sprintf("orders-%04d", i),
+				UID: types.UID(fmt.Sprintf("instance-%03d", i)),
+			},
+			Status: api.MultiSitePostgresStatus{ActiveRevision: 7},
+		}
+		instance.Status.Sites = make([]api.SiteRevisionStatus, 0, 100)
+		for site := range 100 {
+			instance.Status.Sites = append(instance.Status.Sites, api.SiteRevisionStatus{
+				Name: fmt.Sprintf("site-%03d", site), DesiredRevision: 7,
+				AppliedRevision: 7, Phase: "Ready",
+			})
+		}
+		objects = append(objects, instance)
+	}
+	statusUpdates := 0
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}).
+		WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, underlying client.Client, subresource string,
+			object client.Object, options ...client.SubResourceUpdateOption,
+		) error {
+			statusUpdates++
+			return underlying.Status().Update(ctx, object, options...)
+		},
+	}).Build()
+	server := &Server{Client: kube}
+	b.ResetTimer()
+	for range b.N {
+		if err := server.updateInstanceSite(context.Background(), string(targetUID), "site-099",
+			func(_ *api.SiteRevisionStatus) {}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	if statusUpdates != 0 {
+		b.Fatalf("unchanged fleet benchmark wrote status %d times", statusUpdates)
 	}
 }
 
