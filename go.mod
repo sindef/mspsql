@@ -1,6 +1,6 @@
 module github.com/sindef/mspsql
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/onsi/ginkgo/v2 v2.27.4

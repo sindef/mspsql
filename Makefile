@@ -4,6 +4,7 @@ UPGRADE_IMG ?= mspsql-postgres-upgrade:17-to-18
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 BUF_VERSION ?= v1.71.0
+GOVULNCHECK_VERSION ?= v1.6.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -93,6 +94,10 @@ verify-manifests: kustomize ## Build every deployment, RBAC, sample, and test ov
 .PHONY: verify-image-policy
 verify-image-policy: ## Verify image bases and release workflow supply-chain controls.
 	./hack/verify-image-policy.sh
+
+.PHONY: govulncheck
+govulncheck: ## Scan Go source and dependencies for reachable vulnerabilities.
+	GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
