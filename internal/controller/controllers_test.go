@@ -1447,6 +1447,103 @@ func TestRestoreDeletionDeletesOwnedTarget(t *testing.T) {
 	}
 }
 
+func TestRestoreDeletionHandlesEveryPhase(t *testing.T) {
+	for _, phase := range []plan.RestorePhase{
+		plan.RestorePhaseSeed,
+		plan.RestorePhaseReplicas,
+		plan.RestorePhaseVerify,
+	} {
+		t.Run(string(phase), func(t *testing.T) {
+			scheme := testScheme(t)
+			deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 1, 30, 0, 0, time.UTC))
+			restore := &api.PostgresRestore{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "platform", Name: "orders-restore", UID: types.UID("restore-uid"),
+					Finalizers:        []string{operationFinalizer},
+					DeletionTimestamp: &deletingAt,
+				},
+				Spec: api.PostgresRestoreSpec{
+					SourceInstanceRef: "orders", TargetInstanceRef: "orders-recovered",
+				},
+				Status: api.PostgresRestoreStatus{Phase: string(phase)},
+			}
+			target := &api.MultiSitePostgres{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "platform", Name: "orders-recovered",
+					Annotations: map[string]string{
+						restoreUIDAnnotation:       string(restore.UID),
+						restoreNameAnnotation:      restore.Name,
+						restoreSourceUIDAnnotation: "source-uid",
+						restorePhaseAnnotation:     string(phase),
+					},
+				},
+			}
+			kube := fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(&api.PostgresRestore{}).
+				WithObjects(restore, target).Build()
+			reconciler := PostgresRestoreReconciler{Client: kube, Scheme: scheme}
+			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Namespace: "platform", Name: restore.Name},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var currentTarget api.MultiSitePostgres
+			err := kube.Get(context.Background(), client.ObjectKeyFromObject(target), &currentTarget)
+			if !apierrors.IsNotFound(err) {
+				t.Fatalf("target for phase %s still exists or unexpected error: %v", phase, err)
+			}
+		})
+	}
+}
+
+func TestRestoreDeletionForceAbandonClearsOperationAnnotations(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 1, 45, 0, 0, time.UTC))
+	restore := &api.PostgresRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-restore", UID: types.UID("restore-uid"),
+			Finalizers:        []string{operationFinalizer},
+			DeletionTimestamp: &deletingAt,
+			Annotations:       map[string]string{forceAbandonAnnotation: "true"},
+		},
+		Spec: api.PostgresRestoreSpec{
+			SourceInstanceRef: "orders", TargetInstanceRef: "orders-recovered",
+		},
+		Status: api.PostgresRestoreStatus{Phase: "Restoring"},
+	}
+	target := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-recovered",
+			Annotations: map[string]string{
+				restoreUIDAnnotation:       string(restore.UID),
+				restoreNameAnnotation:      restore.Name,
+				restoreSourceUIDAnnotation: "source-uid",
+				restorePhaseAnnotation:     string(plan.RestorePhaseReplicas),
+			},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresRestore{}).
+		WithObjects(restore, target).Build()
+	reconciler := PostgresRestoreReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: restore.Name},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var currentTarget api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(target), &currentTarget); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		restoreUIDAnnotation, restoreNameAnnotation, restoreSourceUIDAnnotation, restorePhaseAnnotation,
+	} {
+		if _, found := currentTarget.Annotations[key]; found {
+			t.Fatalf("force-abandoned target retained %s: %#v", key, currentTarget.Annotations)
+		}
+	}
+}
+
 func TestMajorUpgradeDeletionBeforeWritesRollsBack(t *testing.T) {
 	scheme := testScheme(t)
 	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 2, 0, 0, 0, time.UTC))
@@ -1540,6 +1637,199 @@ func TestMajorUpgradeDeletionAfterWritesBlocks(t *testing.T) {
 	if ready == nil || ready.Reason != "ForwardRepairRequired" ||
 		!controllerutil.ContainsFinalizer(&current, operationFinalizer) {
 		t.Fatalf("upgrade deletion state = status %#v finalizers %#v", current.Status, current.Finalizers)
+	}
+}
+
+func TestMajorUpgradeDeletionPhaseMatrix(t *testing.T) {
+	tests := []struct {
+		name        string
+		phase       plan.MajorUpgradePhase
+		statusPhase string
+		wantPhase   plan.MajorUpgradePhase
+		wantReason  string
+		wantFinal   bool
+	}{
+		{
+			name: "preflight clears", phase: plan.MajorUpgradePhasePreflight,
+			statusPhase: "Preflight", wantPhase: "", wantFinal: false,
+		},
+		{
+			name: "drain rolls back", phase: plan.MajorUpgradePhaseDrain,
+			statusPhase: "DrainingWrites", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "DeletionRequested", wantFinal: true,
+		},
+		{
+			name: "stop rolls back", phase: plan.MajorUpgradePhaseStop,
+			statusPhase: "Stopping", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "DeletionRequested", wantFinal: true,
+		},
+		{
+			name: "snapshot rolls back", phase: plan.MajorUpgradePhaseSnapshot,
+			statusPhase: "CapturingRollback", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "DeletionRequested", wantFinal: true,
+		},
+		{
+			name: "upgrade primary rolls back", phase: plan.MajorUpgradePhaseUpgradePrimary,
+			statusPhase: "UpgradingPrimary", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "DeletionRequested", wantFinal: true,
+		},
+		{
+			name: "stanza upgrade rolls back", phase: plan.MajorUpgradePhaseStanzaUpgrade,
+			statusPhase: "UpgradingBackupStanza", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "DeletionRequested", wantFinal: true,
+		},
+		{
+			name: "start primary rolls back", phase: plan.MajorUpgradePhaseStartPrimary,
+			statusPhase: "RestoringService", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "DeletionRequested", wantFinal: true,
+		},
+		{
+			name: "rollback waits", phase: plan.MajorUpgradePhaseRollback,
+			statusPhase: "RollingBack", wantPhase: plan.MajorUpgradePhaseRollback,
+			wantReason: "CancellationInProgress", wantFinal: true,
+		},
+		{
+			name: "rollback start waits", phase: plan.MajorUpgradePhaseRollbackStart,
+			statusPhase: "VerifyingRollback", wantPhase: plan.MajorUpgradePhaseRollbackStart,
+			wantReason: "CancellationInProgress", wantFinal: true,
+		},
+		{
+			name: "rollback restore writes waits", phase: plan.MajorUpgradePhaseRollbackRestoreWrites,
+			statusPhase: "RestoringWrites", wantPhase: plan.MajorUpgradePhaseRollbackRestoreWrites,
+			wantReason: "CancellationInProgress", wantFinal: true,
+		},
+		{
+			name: "replicas blocks", phase: plan.MajorUpgradePhaseReplicas,
+			statusPhase: "ReseedingReplicas", wantPhase: plan.MajorUpgradePhaseReplicas,
+			wantReason: "ForwardRepairRequired", wantFinal: true,
+		},
+		{
+			name: "restore writes blocks", phase: plan.MajorUpgradePhaseRestoreWrites,
+			statusPhase: "RestoringWrites", wantPhase: plan.MajorUpgradePhaseRestoreWrites,
+			wantReason: "ForwardRepairRequired", wantFinal: true,
+		},
+		{
+			name: "finalize blocks", phase: plan.MajorUpgradePhaseFinalize,
+			statusPhase: "Finalizing", wantPhase: plan.MajorUpgradePhaseFinalize,
+			wantReason: "ForwardRepairRequired", wantFinal: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := testScheme(t)
+			deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 3, 30, 0, 0, time.UTC))
+			annotations := map[string]string{
+				upgradeUIDAnnotation:      "upgrade",
+				upgradeNameAnnotation:     "orders-pg18",
+				upgradePhaseAnnotation:    string(test.phase),
+				upgradeRevisionAnnotation: "10",
+			}
+			instance := &api.MultiSitePostgres{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "platform", Name: "orders", Annotations: annotations,
+				},
+			}
+			upgrade := &api.PostgresUpgrade{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"),
+					Generation: 1, Finalizers: []string{operationFinalizer},
+					DeletionTimestamp: &deletingAt,
+				},
+				Spec:   api.PostgresUpgradeSpec{InstanceRef: "orders"},
+				Status: api.PostgresUpgradeStatus{Phase: test.statusPhase},
+			}
+			kube := fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(&api.PostgresUpgrade{}).
+				WithObjects(instance, upgrade).Build()
+			reconciler := PostgresUpgradeReconciler{
+				Client: kube, Scheme: scheme, Now: func() time.Time { return deletingAt.Time },
+			}
+			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-pg18"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var currentInstance api.MultiSitePostgres
+			if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &currentInstance); err != nil {
+				t.Fatal(err)
+			}
+			if test.wantPhase == "" {
+				if _, found := currentInstance.Annotations[upgradePhaseAnnotation]; found {
+					t.Fatalf("preflight delete retained upgrade annotations: %#v", currentInstance.Annotations)
+				}
+			} else if currentInstance.Annotations[upgradePhaseAnnotation] != string(test.wantPhase) {
+				t.Fatalf("phase = %q, want %q", currentInstance.Annotations[upgradePhaseAnnotation],
+					test.wantPhase)
+			}
+			var currentUpgrade api.PostgresUpgrade
+			err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade)
+			if !test.wantFinal && apierrors.IsNotFound(err) {
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantReason != "" {
+				ready := statusCondition(currentUpgrade.Status.Conditions, "Ready")
+				if ready == nil || ready.Reason != test.wantReason {
+					t.Fatalf("Ready condition = %#v", ready)
+				}
+			}
+			if test.wantFinal && !controllerutil.ContainsFinalizer(&currentUpgrade, operationFinalizer) {
+				t.Fatalf("finalizer removed too early: %#v", currentUpgrade.Finalizers)
+			}
+		})
+	}
+}
+
+func TestMajorUpgradeDeletionForceAbandonClearsAnnotations(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 3, 45, 0, 0, time.UTC))
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders",
+			Annotations: map[string]string{
+				upgradeUIDAnnotation:         "upgrade",
+				upgradeNameAnnotation:        "orders-pg18",
+				upgradePhaseAnnotation:       string(plan.MajorUpgradePhaseFinalize),
+				upgradeMemberAnnotation:      "postgres-vic-1",
+				upgradeRevisionAnnotation:    "10",
+				upgradeSourceMajorAnnotation: "17",
+			},
+		},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"),
+			Generation: 1, Finalizers: []string{operationFinalizer},
+			DeletionTimestamp: &deletingAt,
+			Annotations:       map[string]string{forceAbandonAnnotation: "true"},
+		},
+		Spec:   api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status: api.PostgresUpgradeStatus{Phase: "Finalizing"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return deletingAt.Time },
+	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-pg18"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var current api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		upgradeUIDAnnotation, upgradeNameAnnotation, upgradePhaseAnnotation,
+		upgradeMemberAnnotation, upgradeRevisionAnnotation, upgradeSourceMajorAnnotation,
+	} {
+		if _, found := current.Annotations[key]; found {
+			t.Fatalf("force-abandoned upgrade retained %s: %#v", key, current.Annotations)
+		}
 	}
 }
 
