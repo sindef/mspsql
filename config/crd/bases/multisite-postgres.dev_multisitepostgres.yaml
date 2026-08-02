@@ -501,6 +501,11 @@ spec:
               recoveryWindowStart:
                 format: date-time
                 type: string
+              restoreDrillBackupSet:
+                type: string
+              restoreDrillLastVerifiedAt:
+                format: date-time
+                type: string
               sites:
                 items:
                   properties:

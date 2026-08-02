@@ -247,6 +247,12 @@ func (r *PostgresRestoreReconciler) preflight(ctx context.Context, restore *api.
 		source.Status.RecoveryWindowStart == nil {
 		return fmt.Errorf("source must be Ready with a verified recovery window")
 	}
+	if source.Status.RestoreDrillLastVerifiedAt == nil {
+		return fmt.Errorf("source recovery window has no disposable restore verification")
+	}
+	if source.Status.RestoreDrillLastVerifiedAt.Before(source.Status.RecoveryWindowStart) {
+		return fmt.Errorf("source disposable restore verification predates the recovery window")
+	}
 	if restore.Spec.TargetTime.Before(source.Status.RecoveryWindowStart) {
 		return fmt.Errorf("target time precedes the verified recovery window")
 	}

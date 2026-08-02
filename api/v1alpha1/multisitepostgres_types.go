@@ -46,15 +46,17 @@ type MultiSitePostgresSpec struct {
 }
 
 type MultiSitePostgresStatus struct {
-	ObservedGeneration  int64                `json:"observedGeneration,omitempty"`
-	ActiveRevision      int64                `json:"activeRevision,omitempty"`
-	PlanFingerprint     string               `json:"planFingerprint,omitempty"`
-	Phase               string               `json:"phase,omitempty"`
-	Primary             string               `json:"primary,omitempty"`
-	SynchronousStandbys []string             `json:"synchronousStandbys,omitempty"`
-	Sites               []SiteRevisionStatus `json:"sites,omitempty"`
-	LastBackupTime      *metav1.Time         `json:"lastBackupTime,omitempty"`
-	RecoveryWindowStart *metav1.Time         `json:"recoveryWindowStart,omitempty"`
+	ObservedGeneration         int64                `json:"observedGeneration,omitempty"`
+	ActiveRevision             int64                `json:"activeRevision,omitempty"`
+	PlanFingerprint            string               `json:"planFingerprint,omitempty"`
+	Phase                      string               `json:"phase,omitempty"`
+	Primary                    string               `json:"primary,omitempty"`
+	SynchronousStandbys        []string             `json:"synchronousStandbys,omitempty"`
+	Sites                      []SiteRevisionStatus `json:"sites,omitempty"`
+	LastBackupTime             *metav1.Time         `json:"lastBackupTime,omitempty"`
+	RecoveryWindowStart        *metav1.Time         `json:"recoveryWindowStart,omitempty"`
+	RestoreDrillLastVerifiedAt *metav1.Time         `json:"restoreDrillLastVerifiedAt,omitempty"`
+	RestoreDrillBackupSet      string               `json:"restoreDrillBackupSet,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	BackupSchedules []BackupScheduleStatus `json:"backupSchedules,omitempty"`

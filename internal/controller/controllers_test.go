@@ -974,7 +974,8 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 			}},
 		},
 		Status: api.MultiSitePostgresStatus{
-			RecoveryWindowStart: &window,
+			RecoveryWindowStart:        &window,
+			RestoreDrillLastVerifiedAt: &metav1.Time{Time: now.Add(-time.Hour)},
 			Conditions: []metav1.Condition{
 				{Type: "Ready", Status: metav1.ConditionTrue},
 				{Type: "RecoveryWindowAvailable", Status: metav1.ConditionTrue},
@@ -1264,6 +1265,47 @@ func TestMajorUpgradeTransitionsToOutageAndRollback(t *testing.T) {
 	}
 	if current.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseRollback) {
 		t.Fatalf("failure phase = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+}
+
+func TestRestorePreflightRequiresDisposableRestoreEvidence(t *testing.T) {
+	scheme := testScheme(t)
+	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	now := time.Date(2026, 8, 2, 11, 0, 0, 0, time.UTC)
+	window := metav1.NewTime(now.Add(-24 * time.Hour))
+	source := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+		Spec: api.MultiSitePostgresSpec{
+			Backup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
+				Type: "S3", Bucket: "backups", Prefix: "orders",
+			}},
+		},
+		Status: api.MultiSitePostgresStatus{
+			RecoveryWindowStart: &window,
+			Conditions: []metav1.Condition{
+				{Type: "Ready", Status: metav1.ConditionTrue},
+				{Type: "RecoveryWindowAvailable", Status: metav1.ConditionTrue},
+			},
+		},
+	}
+	restore := &api.PostgresRestore{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-restore"},
+		Spec: api.PostgresRestoreSpec{
+			SourceInstanceRef: "orders", TargetInstanceRef: "orders-recovered",
+			TargetTime: metav1.NewTime(now.Add(-time.Hour)),
+		},
+	}
+	reconciler := PostgresRestoreReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+	}
+	err := reconciler.preflight(context.Background(), restore, source)
+	if err == nil || !strings.Contains(err.Error(), "disposable restore verification") {
+		t.Fatalf("preflight error = %v", err)
+	}
+	drill := metav1.NewTime(now.Add(-time.Hour))
+	source.Status.RestoreDrillLastVerifiedAt = &drill
+	if err := reconciler.preflight(context.Background(), restore, source); err != nil {
+		t.Fatalf("preflight with drill evidence failed: %v", err)
 	}
 }
 

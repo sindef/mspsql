@@ -371,6 +371,10 @@ func (in *MultiSitePostgresStatus) DeepCopyInto(out *MultiSitePostgresStatus) {
 		in, out := &in.RecoveryWindowStart, &out.RecoveryWindowStart
 		*out = (*in).DeepCopy()
 	}
+	if in.RestoreDrillLastVerifiedAt != nil {
+		in, out := &in.RestoreDrillLastVerifiedAt, &out.RestoreDrillLastVerifiedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.BackupSchedules != nil {
 		in, out := &in.BackupSchedules, &out.BackupSchedules
 		*out = make([]BackupScheduleStatus, len(*in))

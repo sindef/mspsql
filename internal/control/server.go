@@ -784,15 +784,11 @@ func (s *Server) recordInstanceDirectiveResult(ctx context.Context, configMap *c
 				metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
 		}
 		if succeeded {
-			updateBackupTimes(&object.Status.LastBackupTime, &object.Status.RecoveryWindowStart, result.Conditions)
+			updateBackupEvidence(&object.Status, result.Conditions)
 			setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
 				metav1.ConditionTrue, "BackupVerified",
 				"pgBackRest completed a backup and verified archived WAL metadata")
-			if object.Status.RecoveryWindowStart != nil {
-				setInstanceCondition(&object.Status.Conditions, object.Generation,
-					"RecoveryWindowAvailable", metav1.ConditionTrue, "ContinuousWALVerified",
-					"pgBackRest metadata contains a restorable backup and archived WAL range")
-			}
+			setRecoveryWindowCondition(&object)
 		} else {
 			setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
 				metav1.ConditionFalse, "BackupFailed", "The scheduled pgBackRest operation failed")
@@ -930,23 +926,43 @@ func (s *Server) recordUpgradeBackupResult(ctx context.Context, configMap *corev
 		}, &instance); err != nil {
 			return err
 		}
-		updateBackupTimes(&instance.Status.LastBackupTime, &instance.Status.RecoveryWindowStart,
-			result.Conditions)
+		updateBackupEvidence(&instance.Status, result.Conditions)
 		setInstanceCondition(&instance.Status.Conditions, instance.Generation,
 			"BackupReady", metav1.ConditionTrue, "BackupVerified",
 			"pgBackRest completed a backup and verified archived WAL metadata")
+		setRecoveryWindowCondition(&instance)
 		return s.Client.Status().Update(ctx, &instance)
 	})
 }
 
-func updateBackupTimes(lastBackup, recoveryWindow **metav1.Time, conditions []*controlv1.Condition) {
+func setRecoveryWindowCondition(instance *api.MultiSitePostgres) {
+	if instance.Status.RecoveryWindowStart == nil {
+		return
+	}
+	if instance.Status.RestoreDrillLastVerifiedAt != nil {
+		setInstanceCondition(&instance.Status.Conditions, instance.Generation,
+			"RecoveryWindowAvailable", metav1.ConditionTrue, "DisposableRestoreVerified",
+			"Archived WAL continuity and a recent disposable restore drill prove the recovery window")
+		return
+	}
+	setInstanceCondition(&instance.Status.Conditions, instance.Generation,
+		"RecoveryWindowAvailable", metav1.ConditionFalse, "RestoreDrillRequired",
+		"Archived WAL continuity is present but a disposable restore drill has not verified recoverability")
+}
+
+func updateBackupEvidence(status *api.MultiSitePostgresStatus, conditions []*controlv1.Condition) {
 	for _, condition := range conditions {
 		var target **metav1.Time
 		switch condition.Type {
 		case "BackupCompletedAt":
-			target = lastBackup
+			target = &status.LastBackupTime
 		case "RecoveryWindowStart":
-			target = recoveryWindow
+			target = &status.RecoveryWindowStart
+		case "DisposableRestoreVerifiedAt":
+			target = &status.RestoreDrillLastVerifiedAt
+		case "RestoreDrillBackupSet":
+			status.RestoreDrillBackupSet = condition.Message
+			continue
 		default:
 			continue
 		}
