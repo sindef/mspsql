@@ -38,6 +38,7 @@ func TestHubCollectorPublishesObservedState(t *testing.T) {
 	heartbeat := metav1.NewTime(now.Add(-30 * time.Second))
 	backup := metav1.NewTime(now.Add(-time.Hour))
 	recovery := metav1.NewTime(now.Add(-24 * time.Hour))
+	deadline := metav1.NewTime(now.Add(2 * time.Hour))
 	threshold := resource.MustParse("10Gi")
 	scheme := runtime.NewScheme()
 	if err := api.AddToScheme(scheme); err != nil {
@@ -68,6 +69,14 @@ func TestHubCollectorPublishesObservedState(t *testing.T) {
 			}},
 			Status: api.PostgresDatabaseStatus{ObservedSize: resource.MustParse("2Gi")},
 		},
+		&api.PostgresUpgrade{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders-pg18"},
+			Spec:       api.PostgresUpgradeSpec{InstanceRef: "orders"},
+			Status: api.PostgresUpgradeStatus{Operation: &api.OperationProgressStatus{
+				Phase: "PostUpgradeBackup", Attempt: 3, DeadlineAt: &deadline,
+				ManualInterventionRequired: true,
+			}},
+		},
 	).Build()
 	collector := NewHubCollector(kube)
 	collector.now = func() time.Time { return now }
@@ -85,6 +94,13 @@ func TestHubCollectorPublishesObservedState(t *testing.T) {
 		map[string]string{"namespace": "platform", "instance": "orders"})
 	assertMetric(t, families, "mspsql_database_size_bytes", 2*1024*1024*1024,
 		map[string]string{"namespace": "platform", "database": "orders-api", "instance": "orders"})
+	operationLabels := map[string]string{
+		"namespace": "platform", "operation": "orders-pg18", "instance": "orders",
+		"kind": "upgrade", "phase": "PostUpgradeBackup",
+	}
+	assertMetric(t, families, "mspsql_operation_attempt", 3, operationLabels)
+	assertMetric(t, families, "mspsql_operation_deadline_seconds", 7200, operationLabels)
+	assertMetric(t, families, "mspsql_operation_manual_intervention_required", 1, operationLabels)
 }
 
 func TestAgentMetricsPublishFailuresAndObservedHealth(t *testing.T) {

@@ -74,6 +74,14 @@ func NewHubCollector(kube client.Reader) *HubCollector {
 				"Current upgrade phase (value is always one).", []string{"namespace", "upgrade", "instance", "phase"}, nil),
 			"upgrade_outage": prometheus.NewDesc("mspsql_upgrade_write_outage_seconds",
 				"Observed or current write-service outage duration.", []string{"namespace", "upgrade", "instance"}, nil),
+			"operation_attempt": prometheus.NewDesc("mspsql_operation_attempt",
+				"Current durable lifecycle operation attempt.", []string{"namespace", "operation", "instance", "kind", "phase"}, nil),
+			"operation_deadline": prometheus.NewDesc("mspsql_operation_deadline_seconds",
+				"Seconds until the durable lifecycle operation deadline; negative values are overdue.",
+				[]string{"namespace", "operation", "instance", "kind", "phase"}, nil),
+			"operation_manual": prometheus.NewDesc("mspsql_operation_manual_intervention_required",
+				"Whether the durable lifecycle operation requires manual intervention.",
+				[]string{"namespace", "operation", "instance", "kind", "phase"}, nil),
 		},
 	}
 }
@@ -99,6 +107,9 @@ func (c *HubCollector) Collect(output chan<- prometheus.Metric) {
 	}
 	if err := c.collectUpgrades(ctx, now, output); err != nil {
 		output <- prometheus.NewInvalidMetric(c.desc["upgrade_phase"], err)
+	}
+	if err := c.collectOperations(ctx, now, output); err != nil {
+		output <- prometheus.NewInvalidMetric(c.desc["operation_attempt"], err)
 	}
 }
 
@@ -205,6 +216,48 @@ func (c *HubCollector) collectUpgrades(ctx context.Context, now time.Time,
 		}
 	}
 	return nil
+}
+
+func (c *HubCollector) collectOperations(ctx context.Context, now time.Time,
+	output chan<- prometheus.Metric,
+) error {
+	var restores api.PostgresRestoreList
+	if err := c.client.List(ctx, &restores); err != nil {
+		return err
+	}
+	for i := range restores.Items {
+		restore := &restores.Items[i]
+		c.collectOperation(output, now, restore.Namespace, restore.Name,
+			restore.Spec.TargetInstanceRef, "restore", restore.Status.Operation)
+	}
+	var upgrades api.PostgresUpgradeList
+	if err := c.client.List(ctx, &upgrades); err != nil {
+		return err
+	}
+	for i := range upgrades.Items {
+		upgrade := &upgrades.Items[i]
+		c.collectOperation(output, now, upgrade.Namespace, upgrade.Name,
+			upgrade.Spec.InstanceRef, "upgrade", upgrade.Status.Operation)
+	}
+	return nil
+}
+
+func (c *HubCollector) collectOperation(output chan<- prometheus.Metric, now time.Time,
+	namespace, name, instance, kind string, operation *api.OperationProgressStatus,
+) {
+	if operation == nil {
+		return
+	}
+	phase := operation.Phase
+	if phase == "" {
+		phase = "Pending"
+	}
+	labels := []string{namespace, name, instance, kind, phase}
+	output <- gauge(c.desc["operation_attempt"], float64(operation.Attempt), labels...)
+	output <- gauge(c.desc["operation_manual"], boolFloat(operation.ManualInterventionRequired), labels...)
+	if operation.DeadlineAt != nil {
+		output <- gauge(c.desc["operation_deadline"], operation.DeadlineAt.Sub(now).Seconds(), labels...)
+	}
 }
 
 func gauge(description *prometheus.Desc, value float64, labels ...string) prometheus.Metric {

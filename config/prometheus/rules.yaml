@@ -1,0 +1,63 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: mspsql
+    app.kubernetes.io/managed-by: kustomize
+  name: mspsql-alerts
+  namespace: system
+spec:
+  groups:
+  - name: mspsql.control-plane
+    rules:
+    - alert: MspsqlSiteHeartbeatStale
+      expr: mspsql_agent_connected == 0 or mspsql_agent_heartbeat_age_seconds > 150
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: mspsql site agent heartbeat is stale
+        description: Site {{ $labels.site }} has not reported a fresh authenticated heartbeat.
+    - alert: MspsqlPlanLagging
+      expr: mspsql_plan_revision_lag > 0
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: mspsql signed plan is not applied
+        description: Instance {{ $labels.namespace }}/{{ $labels.instance }} is lagging at site {{ $labels.site }}.
+    - alert: MspsqlSynchronousWritesUnavailable
+      expr: mspsql_synchronous_write_available == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: mspsql synchronous write safety is unavailable
+        description: Instance {{ $labels.namespace }}/{{ $labels.instance }} does not have the configured synchronous standby set.
+  - name: mspsql.operations
+    rules:
+    - alert: MspsqlBackupWindowMissing
+      expr: absent(mspsql_recovery_window_seconds) or mspsql_backup_age_seconds > 90000
+      for: 15m
+      labels:
+        severity: critical
+      annotations:
+        summary: mspsql backup recovery evidence is stale
+        description: Backup or recovery-window evidence is missing or older than the default daily backup SLO.
+    - alert: MspsqlOperationDeadlineOverdue
+      expr: mspsql_operation_deadline_seconds < 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: mspsql lifecycle operation deadline is overdue
+        description: Operation {{ $labels.namespace }}/{{ $labels.operation }} ({{ $labels.kind }}/{{ $labels.phase }}) is past its deadline.
+    - alert: MspsqlOperationNeedsManualRepair
+      expr: mspsql_operation_manual_intervention_required == 1
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: mspsql lifecycle operation requires manual repair
+        description: Operation {{ $labels.namespace }}/{{ $labels.operation }} requires operator intervention before it can complete.
