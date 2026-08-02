@@ -22,8 +22,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base32"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -326,15 +328,19 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 		http.Error(response, "registration is bound to another cluster", http.StatusConflict)
 		return
 	}
-	if duplicate, err := s.clusterUIDClaimed(request.Context(), binding.ClusterUID, site.Name); err != nil {
-		http.Error(response, "could not validate cluster identity", http.StatusInternalServerError)
-		return
-	} else if duplicate {
+	claimCreated, err := s.acquireClusterUIDClaim(request.Context(), binding.ClusterUID, site)
+	if apierrors.IsAlreadyExists(err) {
 		http.Error(response, "cluster UID is already registered", http.StatusConflict)
+		return
+	} else if err != nil {
+		http.Error(response, "could not validate cluster identity", http.StatusInternalServerError)
 		return
 	}
 	certificatePEM, caPEM, err := s.SignCSR(request.Context(), site, []byte(binding.CSRPEM))
 	if err != nil {
+		if claimCreated {
+			_ = s.releaseClusterUIDClaim(request.Context(), binding.ClusterUID, site)
+		}
 		http.Error(response, "CSR validation or signing failed", http.StatusBadRequest)
 		return
 	}
@@ -344,6 +350,9 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 			s.SystemNamespace, s.WireGuardNetworkCIDR, s.WireGuardEndpoint, site,
 			binding.WireGuardPublicKey)
 		if err != nil {
+			if claimCreated {
+				_ = s.releaseClusterUIDClaim(request.Context(), binding.ClusterUID, site)
+			}
 			http.Error(response, "could not authorize WireGuard peer", http.StatusInternalServerError)
 			return
 		}
@@ -413,6 +422,56 @@ func (s *HTTPServer) SignCSR(ctx context.Context, site *api.SiteRegistration,
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), caPEM, nil
 }
 
+func (s *HTTPServer) acquireClusterUIDClaim(ctx context.Context, clusterUID string,
+	site *api.SiteRegistration,
+) (bool, error) {
+	key := types.NamespacedName{Namespace: s.SystemNamespace, Name: clusterUIDClaimName(clusterUID)}
+	claim := corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: key.Namespace,
+			Name:      key.Name,
+			Labels: map[string]string{
+				"multisite-postgres.dev/cluster-uid-claim": "true",
+			},
+		},
+		Immutable: ptr(true),
+		Data: map[string]string{
+			"clusterUIDHash": clusterUIDHash(clusterUID),
+			"ownerName":      site.Name,
+			"ownerUID":       string(site.UID),
+		},
+	}
+	if err := s.Client.Create(ctx, &claim); err == nil {
+		return true, nil
+	} else if !apierrors.IsAlreadyExists(err) {
+		return false, err
+	}
+	var existing corev1.ConfigMap
+	if err := s.Client.Get(ctx, key, &existing); err != nil {
+		return false, err
+	}
+	if existing.Data["ownerUID"] == string(site.UID) &&
+		existing.Data["ownerName"] == site.Name &&
+		existing.Data["clusterUIDHash"] == clusterUIDHash(clusterUID) {
+		return false, nil
+	}
+	return false, apierrors.NewAlreadyExists(corev1.Resource("configmaps"), key.Name)
+}
+
+func (s *HTTPServer) releaseClusterUIDClaim(ctx context.Context, clusterUID string,
+	site *api.SiteRegistration,
+) error {
+	key := types.NamespacedName{Namespace: s.SystemNamespace, Name: clusterUIDClaimName(clusterUID)}
+	var claim corev1.ConfigMap
+	if err := s.Client.Get(ctx, key, &claim); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if claim.Data["ownerUID"] != string(site.UID) {
+		return nil
+	}
+	return s.Client.Delete(ctx, &claim)
+}
+
 func (s *HTTPServer) ensureCA(ctx context.Context) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
 	var secret corev1.Secret
 	key := types.NamespacedName{Namespace: s.SystemNamespace, Name: registrationCASecret}
@@ -478,6 +537,21 @@ func (s *HTTPServer) clusterUIDClaimed(ctx context.Context, clusterUID, except s
 		}
 	}
 	return false, nil
+}
+
+func clusterUIDClaimName(clusterUID string) string {
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).
+		EncodeToString([]byte(clusterUIDHash(clusterUID)))
+	return "cluster-uid-" + strings.ToLower(encoded[:40])
+}
+
+func clusterUIDHash(clusterUID string) string {
+	sum := sha256.Sum256([]byte(clusterUID))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func ptr[T any](value T) *T {
+	return &value
 }
 
 func parseCapabilityPath(path string) (string, string, bool) {

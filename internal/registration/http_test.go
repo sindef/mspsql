@@ -133,6 +133,17 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	if updated.Status.ClusterUID != "cluster-uid" {
 		t.Fatalf("cluster UID = %q", updated.Status.ClusterUID)
 	}
+	var claim corev1.ConfigMap
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: "system", Name: clusterUIDClaimName("cluster-uid"),
+	}, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Data["ownerUID"] != string(site.UID) ||
+		claim.Data["clusterUIDHash"] == "" ||
+		strings.Contains(claim.Data["clusterUIDHash"], "cluster-uid") {
+		t.Fatalf("cluster UID claim = %#v", claim.Data)
+	}
 	var consumed corev1.Secret
 	if err := kube.Get(context.Background(), types.NamespacedName{
 		Namespace: "system", Name: tokenSecret.Name,
@@ -148,6 +159,99 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	if len(peer.OwnerReferences) != 1 || peer.OwnerReferences[0].UID != site.UID {
 		t.Fatalf("peer owner references = %#v", peer.OwnerReferences)
 	}
+}
+
+func TestRegistrationBindingAtomicallyClaimsClusterUID(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	vic := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "vic", UID: types.UID("vic-uid"),
+	}}
+	qld := &api.SiteRegistration{ObjectMeta: metav1.ObjectMeta{
+		Name: "qld", UID: types.UID("qld-uid"),
+	}}
+	vicToken := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "registration-vic-uid"},
+		Data: map[string][]byte{
+			"sha256": []byte("unused"), "expiresAt": []byte(time.Now().Add(time.Hour).Format(time.RFC3339Nano)),
+		},
+	}
+	qldToken := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "registration-qld-uid"},
+		Data: map[string][]byte{
+			"sha256": []byte("unused"), "expiresAt": []byte(time.Now().Add(time.Hour).Format(time.RFC3339Nano)),
+		},
+	}
+	signingKey := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "mspsql-plan-signing-key"},
+		Data:       map[string][]byte{"publicKey": []byte("public-key")},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.SiteRegistration{}).
+		WithObjects(vic, qld, vicToken, qldToken, signingKey).Build()
+	server := HTTPServer{
+		Client: kube, SystemNamespace: "system", Now: func() time.Time {
+			return time.Date(2026, 8, 2, 6, 0, 0, 0, time.UTC)
+		},
+	}
+	vicResponse := httptest.NewRecorder()
+	server.bind(vicResponse, httptest.NewRequest(http.MethodPost, "/bind",
+		bytes.NewReader(validBindBody(t, "cluster-uid"))), vic, vicToken)
+	if vicResponse.Code != http.StatusOK {
+		t.Fatalf("winner bind response: code=%d body=%s", vicResponse.Code, vicResponse.Body.String())
+	}
+	qldResponse := httptest.NewRecorder()
+	server.bind(qldResponse, httptest.NewRequest(http.MethodPost, "/bind",
+		bytes.NewReader(validBindBody(t, "cluster-uid"))), qld, qldToken)
+	if qldResponse.Code != http.StatusConflict {
+		t.Fatalf("loser bind response: code=%d body=%s", qldResponse.Code, qldResponse.Body.String())
+	}
+	var claim corev1.ConfigMap
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: "system", Name: clusterUIDClaimName("cluster-uid"),
+	}, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Data["ownerUID"] != "vic-uid" {
+		t.Fatalf("claim owner = %#v", claim.Data)
+	}
+	var loser api.SiteRegistration
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: "qld"}, &loser); err != nil {
+		t.Fatal(err)
+	}
+	if loser.Status.ClusterUID != "" {
+		t.Fatalf("loser was bound: %#v", loser.Status)
+	}
+}
+
+func validBindBody(t *testing.T, clusterUID string) []byte {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "bootstrap"},
+	}, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(BindRequest{
+		ClusterUID: clusterUID,
+		CSRPEM: string(pem.EncodeToMemory(&pem.Block{
+			Type: "CERTIFICATE REQUEST", Bytes: csrDER,
+		})),
+		WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestRevokedRegistrationTokenIsRejected(t *testing.T) {
