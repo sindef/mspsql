@@ -219,6 +219,58 @@ func TestPlanResultDoesNotSetAggregateReady(t *testing.T) {
 	}
 }
 
+func TestInterleavedPlanResultsDoNotPromoteAggregateReady(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance-uid"), Generation: 9,
+		},
+		Status: api.MultiSitePostgresStatus{
+			Phase:          "Reconciling",
+			ActiveRevision: 5,
+			Conditions: []metav1.Condition{{
+				Type: "Ready", Status: metav1.ConditionFalse, Reason: "TopologyPending",
+			}},
+			Sites: []api.SiteRevisionStatus{
+				{Name: "vic", DesiredRevision: 5, AppliedRevision: 4, Phase: "Applying"},
+				{Name: "qld", DesiredRevision: 5, AppliedRevision: 4, Phase: "Applying"},
+			},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(instance).
+		WithObjects(instance).
+		Build()
+	replicaA := &Server{Client: kube}
+	replicaB := &Server{Client: kube}
+	report := func(server *Server, site string) {
+		t.Helper()
+		if err := server.recordResult(context.Background(), site, &controlv1.PlanResult{
+			InstanceUid:     string(instance.UID),
+			AppliedRevision: 5,
+			Conditions: []*controlv1.Condition{{
+				Type: "Ready", Status: string(metav1.ConditionTrue), Reason: "SiteReady",
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var observed api.MultiSitePostgres
+		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &observed); err != nil {
+			t.Fatal(err)
+		}
+		ready := meta.FindStatusCondition(observed.Status.Conditions, "Ready")
+		if observed.Status.Phase != "Reconciling" || ready == nil ||
+			ready.Status != metav1.ConditionFalse || ready.Reason != "TopologyPending" {
+			t.Fatalf("aggregate status after %s result = %#v", site, observed.Status)
+		}
+	}
+	report(replicaA, "vic")
+	report(replicaB, "qld")
+}
+
 func TestUpdateInstanceSiteSkipsUnchangedStatusWrite(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := api.AddToScheme(scheme); err != nil {
