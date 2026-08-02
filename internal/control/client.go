@@ -37,20 +37,21 @@ import (
 )
 
 type AgentClient struct {
-	Target       string
-	DialOptions  []grpc.DialOption
-	Hello        *controlv1.AgentHello
-	Cache        *agent.Cache
-	Reconciler   *agent.Reconciler
-	Directives   DirectiveExecutor
-	Inventory    func(context.Context) ([]byte, error)
-	Certificates CertificateRotator
-	Connection   func(bool)
-	Reconcile    func(string, time.Duration, agent.ApplyResult, error)
-	sendMu       sync.Mutex
-	activeMu     sync.Mutex
-	active       map[string]int64
-	heartbeatNow func() time.Time
+	Target         string
+	DialOptions    []grpc.DialOption
+	Hello          *controlv1.AgentHello
+	Cache          *agent.Cache
+	Reconciler     *agent.Reconciler
+	Directives     DirectiveExecutor
+	DirectiveState DirectiveStateStore
+	Inventory      func(context.Context) ([]byte, error)
+	Certificates   CertificateRotator
+	Connection     func(bool)
+	Reconcile      func(string, time.Duration, agent.ApplyResult, error)
+	sendMu         sync.Mutex
+	activeMu       sync.Mutex
+	active         map[string]int64
+	heartbeatNow   func() time.Time
 }
 
 type CertificateRotator interface {
@@ -275,6 +276,19 @@ func (c *AgentClient) applyDirective(ctx context.Context, stream controlv1.Agent
 	if c.Directives == nil {
 		return errors.New("site agent has no directive executor")
 	}
+	if c.DirectiveState != nil {
+		state, found, err := c.DirectiveState.Load(ctx, message.OperationUid)
+		if err != nil {
+			return err
+		}
+		if found && state.InstanceUID == message.InstanceUid &&
+			(state.Phase == directiveStateSucceeded || state.Phase == directiveStateFailed) {
+			return c.sendDirectiveResult(stream, message, state.Conditions)
+		}
+		if err := c.DirectiveState.MarkRunning(ctx, message.OperationUid, message.InstanceUid); err != nil {
+			return err
+		}
+	}
 	if err := c.send(stream, &controlv1.AgentMessage{
 		Message: &controlv1.AgentMessage_Progress{Progress: &controlv1.PlanProgress{
 			OperationUid: message.OperationUid, InstanceUid: message.InstanceUid, Phase: "Running",
@@ -289,6 +303,17 @@ func (c *AgentClient) applyDirective(ctx context.Context, stream controlv1.Agent
 			Reason: "ExecutionFailed", Message: executeErr.Error(), LastTransitionTime: metav1.Now(),
 		})
 	}
+	if c.DirectiveState != nil {
+		if err := c.DirectiveState.MarkTerminal(ctx, message.OperationUid, message.InstanceUid, conditions); err != nil {
+			return err
+		}
+	}
+	return c.sendDirectiveResult(stream, message, conditions)
+}
+
+func (c *AgentClient) sendDirectiveResult(stream controlv1.AgentControl_ConnectClient,
+	message *controlv1.OperationDirective, conditions []metav1.Condition,
+) error {
 	protoConditions := make([]*controlv1.Condition, 0, len(conditions))
 	for _, condition := range conditions {
 		protoConditions = append(protoConditions, &controlv1.Condition{

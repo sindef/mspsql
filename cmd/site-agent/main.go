@@ -261,6 +261,9 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 				},
 			},
 			Cache: cache, Reconciler: reconciler, Directives: directiveExecutor,
+			DirectiveState: &control.ConfigMapDirectiveStateStore{
+				Client: cache.Client, Namespace: cache.Namespace,
+			},
 			Certificates: certificates,
 			Connection:   agentMetrics.SetConnected,
 			Reconcile:    agentMetrics.ObserveReconcile,
