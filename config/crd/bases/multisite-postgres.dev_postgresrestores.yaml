@@ -390,6 +390,34 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              operation:
+                properties:
+                  attempt:
+                    format: int32
+                    type: integer
+                  deadlineAt:
+                    format: date-time
+                    type: string
+                  lastErrorMessage:
+                    type: string
+                  lastErrorReason:
+                    type: string
+                  manualInterventionRequired:
+                    type: boolean
+                  nextRetryAt:
+                    format: date-time
+                    type: string
+                  operationUID:
+                    type: string
+                  phase:
+                    type: string
+                  site:
+                    type: string
+                  terminal:
+                    type: boolean
+                  worker:
+                    type: string
+                type: object
               phase:
                 type: string
               recoveredTo:

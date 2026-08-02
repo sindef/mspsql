@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"maps"
 	"slices"
 	"strconv"
@@ -52,6 +53,9 @@ const (
 	upgradeSourceMajorAnnotation = "multisite-postgres.dev/upgrade-source-major"
 
 	maxPostUpgradeBackupAttempts = int32(5)
+	postUpgradeBackupRetryBase   = time.Minute
+	postUpgradeBackupRetryMax    = 30 * time.Minute
+	postUpgradeBackupDeadline    = 24 * time.Hour
 )
 
 // PostgresUpgradeReconciler reconciles a PostgresUpgrade object
@@ -430,9 +434,9 @@ func (r *PostgresUpgradeReconciler) reconcileMajorUpgrade(ctx context.Context,
 		return ctrl.Result{}, r.setUpgradePhase(ctx, upgrade, "Finalizing",
 			"ReplicasReady", "Running final acceptance with the stable target specification", now)
 	case plan.MajorUpgradePhaseFinalize:
-		backupReady, err := r.ensurePostUpgradeBackup(ctx, upgrade, now)
+		backupReady, result, err := r.ensurePostUpgradeBackup(ctx, upgrade, now)
 		if err != nil || !backupReady {
-			return ctrl.Result{}, err
+			return result, err
 		}
 		if err := r.completeUpgrade(ctx, upgrade, now); err != nil {
 			return ctrl.Result{}, err
@@ -470,14 +474,28 @@ func (r *PostgresUpgradeReconciler) reconcileMajorUpgrade(ctx context.Context,
 
 func (r *PostgresUpgradeReconciler) ensurePostUpgradeBackup(ctx context.Context,
 	upgrade *multisitepostgresv1alpha1.PostgresUpgrade, now time.Time,
-) (bool, error) {
+) (bool, ctrl.Result, error) {
+	operationUID := fmt.Sprintf("%s-post-upgrade-backup-%d",
+		upgrade.UID, upgrade.Status.PostUpgradeBackupAttempt)
+	ensureUpgradeOperationProgress(upgrade, operationUID, now)
 	condition := statusCondition(upgrade.Status.Conditions, "PostUpgradeBackupReady")
 	if condition != nil && condition.Status == metav1.ConditionTrue {
-		return true, nil
+		upgrade.Status.Operation.Terminal = true
+		upgrade.Status.Operation.ManualInterventionRequired = false
+		upgrade.Status.Operation.LastErrorReason = ""
+		upgrade.Status.Operation.LastErrorMessage = ""
+		upgrade.Status.Operation.NextRetryAt = nil
+		return true, ctrl.Result{}, nil
 	}
 	if condition != nil && condition.Status == metav1.ConditionFalse &&
 		condition.Reason == "BackupFailed" {
+		upgrade.Status.Operation.Attempt = upgrade.Status.PostUpgradeBackupAttempt
+		upgrade.Status.Operation.LastErrorReason = condition.Reason
+		upgrade.Status.Operation.LastErrorMessage = condition.Message
 		if upgrade.Status.PostUpgradeBackupAttempt >= maxPostUpgradeBackupAttempts {
+			upgrade.Status.Operation.Terminal = true
+			upgrade.Status.Operation.ManualInterventionRequired = true
+			upgrade.Status.Operation.NextRetryAt = nil
 			setCondition(&upgrade.Status.Conditions, upgrade.Generation, "PostUpgradeBackupReady",
 				metav1.ConditionFalse, "ManualInterventionRequired",
 				"Post-upgrade backup retry limit reached; fix repository access and request operator repair")
@@ -485,29 +503,49 @@ func (r *PostgresUpgradeReconciler) ensurePostUpgradeBackup(ctx context.Context,
 				metav1.ConditionFalse, "ManualInterventionRequired",
 				"Major upgrade is blocked until the required post-upgrade backup is repaired")
 			upgrade.Status.Phase = "Finalizing"
-			return false, r.Status().Update(ctx, upgrade)
+			return false, ctrl.Result{}, r.Status().Update(ctx, upgrade)
 		}
 		upgrade.Status.PostUpgradeBackupAttempt++
 		upgrade.Status.PostUpgradeBackupRequestedAt = nil
+		operationUID = fmt.Sprintf("%s-post-upgrade-backup-%d",
+			upgrade.UID, upgrade.Status.PostUpgradeBackupAttempt)
+		upgrade.Status.Operation.OperationUID = operationUID
+		upgrade.Status.Operation.Attempt = upgrade.Status.PostUpgradeBackupAttempt
+		next := metav1.NewTime(now.Add(postUpgradeBackupRetryDelay(upgrade.UID,
+			upgrade.Status.PostUpgradeBackupAttempt)))
+		upgrade.Status.Operation.NextRetryAt = &next
+		upgrade.Status.Operation.Terminal = false
+		upgrade.Status.Operation.ManualInterventionRequired = false
 		setCondition(&upgrade.Status.Conditions, upgrade.Generation, "PostUpgradeBackupReady",
 			metav1.ConditionFalse, "BackupRetryRequested",
 			"Retrying the required post-upgrade full backup")
-		return false, r.Status().Update(ctx, upgrade)
+		return false, ctrl.Result{RequeueAfter: next.Sub(now)}, r.Status().Update(ctx, upgrade)
+	}
+	if condition != nil && condition.Status == metav1.ConditionFalse &&
+		condition.Reason == "BackupRetryRequested" &&
+		upgrade.Status.Operation != nil &&
+		upgrade.Status.Operation.NextRetryAt != nil &&
+		now.Before(upgrade.Status.Operation.NextRetryAt.Time) {
+		return false, ctrl.Result{RequeueAfter: upgrade.Status.Operation.NextRetryAt.Sub(now)}, nil
 	}
 	if upgrade.Status.PostUpgradeBackupRequestedAt == nil {
 		requestedAt := metav1.NewTime(now)
 		upgrade.Status.PostUpgradeBackupRequestedAt = &requestedAt
+		upgrade.Status.Operation.OperationUID = operationUID
+		upgrade.Status.Operation.Phase = "PostUpgradeBackup"
+		upgrade.Status.Operation.Attempt = upgrade.Status.PostUpgradeBackupAttempt
+		upgrade.Status.Operation.NextRetryAt = nil
 		setCondition(&upgrade.Status.Conditions, upgrade.Generation, "PostUpgradeBackupReady",
 			metav1.ConditionFalse, "BackupRequested",
 			"Waiting for the post-upgrade full backup and archived WAL verification")
-		return false, r.Status().Update(ctx, upgrade)
+		return false, ctrl.Result{}, r.Status().Update(ctx, upgrade)
 	}
 	name := fmt.Sprintf("mspsql-post-upgrade-backup-%s-%d",
 		upgrade.UID, upgrade.Status.PostUpgradeBackupAttempt)
 	var directive corev1.ConfigMap
 	err := r.Get(ctx, client.ObjectKey{Namespace: upgrade.Namespace, Name: name}, &directive)
 	if client.IgnoreNotFound(err) != nil {
-		return false, err
+		return false, ctrl.Result{}, err
 	}
 	if err != nil {
 		spec, marshalErr := json.Marshal(map[string]string{
@@ -515,7 +553,7 @@ func (r *PostgresUpgradeReconciler) ensurePostUpgradeBackup(ctx context.Context,
 			"scheduledAt": upgrade.Status.PostUpgradeBackupRequestedAt.UTC().Format(time.RFC3339),
 		})
 		if marshalErr != nil {
-			return false, marshalErr
+			return false, ctrl.Result{}, marshalErr
 		}
 		directive = corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
@@ -527,21 +565,60 @@ func (r *PostgresUpgradeReconciler) ensurePostUpgradeBackup(ctx context.Context,
 			},
 			Data: map[string]string{
 				"type": "Backup", "instanceRef": upgrade.Spec.InstanceRef, "deleting": "false",
-				"operationUID": fmt.Sprintf("%s-post-upgrade-backup-%d",
-					upgrade.UID, upgrade.Status.PostUpgradeBackupAttempt),
+				"operationUID":       operationUID,
 				"upgradeBackupPhase": "post-upgrade",
 				"spec.json":          string(spec),
 			},
 		}
 		if err := controllerutil.SetControllerReference(upgrade, &directive, r.Scheme); err != nil {
-			return false, err
+			return false, ctrl.Result{}, err
 		}
 		if err := r.Create(ctx, &directive); err != nil {
-			return false, err
+			return false, ctrl.Result{}, err
 		}
 	}
-	return false, r.setUpgradePhase(ctx, upgrade, "Finalizing",
+	return false, ctrl.Result{}, r.setUpgradePhase(ctx, upgrade, "Finalizing",
 		"PostUpgradeBackupProgressing", "Waiting for the post-upgrade full backup", now)
+}
+
+func ensureUpgradeOperationProgress(upgrade *multisitepostgresv1alpha1.PostgresUpgrade,
+	operationUID string, now time.Time,
+) {
+	if upgrade.Status.Operation == nil {
+		deadline := metav1.NewTime(now.Add(postUpgradeBackupDeadline))
+		upgrade.Status.Operation = &multisitepostgresv1alpha1.OperationProgressStatus{
+			OperationUID: operationUID,
+			Phase:        "PostUpgradeBackup",
+			DeadlineAt:   &deadline,
+		}
+	}
+	if upgrade.Status.Operation.DeadlineAt == nil {
+		deadline := metav1.NewTime(now.Add(postUpgradeBackupDeadline))
+		upgrade.Status.Operation.DeadlineAt = &deadline
+	}
+}
+
+func postUpgradeBackupRetryDelay(operation types.UID, attempt int32) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := postUpgradeBackupRetryBase
+	for i := int32(1); i < attempt; i++ {
+		delay *= 2
+		if delay >= postUpgradeBackupRetryMax {
+			delay = postUpgradeBackupRetryMax
+			break
+		}
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(operation))
+	_, _ = hash.Write([]byte{byte(attempt)})
+	jitter := time.Duration(hash.Sum32()%uint32(postUpgradeBackupRetryBase/time.Second)) * time.Second
+	delay += jitter
+	if delay > postUpgradeBackupRetryMax {
+		return postUpgradeBackupRetryMax
+	}
+	return delay
 }
 
 func majorUpgradeFailed(instance *multisitepostgresv1alpha1.MultiSitePostgres) bool {

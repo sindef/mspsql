@@ -35,10 +35,11 @@ type PostgresRestoreSpec struct {
 }
 
 type PostgresRestoreStatus struct {
-	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
-	Phase              string       `json:"phase,omitempty"`
-	SelectedBackupSet  string       `json:"selectedBackupSet,omitempty"`
-	RecoveredTo        *metav1.Time `json:"recoveredTo,omitempty"`
+	ObservedGeneration int64                    `json:"observedGeneration,omitempty"`
+	Phase              string                   `json:"phase,omitempty"`
+	SelectedBackupSet  string                   `json:"selectedBackupSet,omitempty"`
+	RecoveredTo        *metav1.Time             `json:"recoveredTo,omitempty"`
+	Operation          *OperationProgressStatus `json:"operation,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

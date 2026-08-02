@@ -44,15 +44,16 @@ type MajorUpgradeBenchmark struct {
 }
 
 type PostgresUpgradeStatus struct {
-	ObservedGeneration           int64        `json:"observedGeneration,omitempty"`
-	Phase                        string       `json:"phase,omitempty"`
-	StartedAt                    *metav1.Time `json:"startedAt,omitempty"`
-	PreflightBackupRequestedAt   *metav1.Time `json:"preflightBackupRequestedAt,omitempty"`
-	PostUpgradeBackupRequestedAt *metav1.Time `json:"postUpgradeBackupRequestedAt,omitempty"`
-	PostUpgradeBackupAttempt     int32        `json:"postUpgradeBackupAttempt,omitempty"`
-	WriteOutageStartedAt         *metav1.Time `json:"writeOutageStartedAt,omitempty"`
-	WriteServiceRestoredAt       *metav1.Time `json:"writeServiceRestoredAt,omitempty"`
-	UpgradedMembers              []string     `json:"upgradedMembers,omitempty"`
+	ObservedGeneration           int64                    `json:"observedGeneration,omitempty"`
+	Phase                        string                   `json:"phase,omitempty"`
+	StartedAt                    *metav1.Time             `json:"startedAt,omitempty"`
+	PreflightBackupRequestedAt   *metav1.Time             `json:"preflightBackupRequestedAt,omitempty"`
+	PostUpgradeBackupRequestedAt *metav1.Time             `json:"postUpgradeBackupRequestedAt,omitempty"`
+	PostUpgradeBackupAttempt     int32                    `json:"postUpgradeBackupAttempt,omitempty"`
+	WriteOutageStartedAt         *metav1.Time             `json:"writeOutageStartedAt,omitempty"`
+	WriteServiceRestoredAt       *metav1.Time             `json:"writeServiceRestoredAt,omitempty"`
+	UpgradedMembers              []string                 `json:"upgradedMembers,omitempty"`
+	Operation                    *OperationProgressStatus `json:"operation,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

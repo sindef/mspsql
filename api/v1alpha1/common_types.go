@@ -194,6 +194,20 @@ type BackupSpec struct {
 	Retention  BackupRetention      `json:"retention,omitempty"`
 }
 
+type OperationProgressStatus struct {
+	OperationUID               string       `json:"operationUID,omitempty"`
+	Phase                      string       `json:"phase,omitempty"`
+	Attempt                    int32        `json:"attempt,omitempty"`
+	Worker                     string       `json:"worker,omitempty"`
+	Site                       string       `json:"site,omitempty"`
+	NextRetryAt                *metav1.Time `json:"nextRetryAt,omitempty"`
+	DeadlineAt                 *metav1.Time `json:"deadlineAt,omitempty"`
+	LastErrorReason            string       `json:"lastErrorReason,omitempty"`
+	LastErrorMessage           string       `json:"lastErrorMessage,omitempty"`
+	Terminal                   bool         `json:"terminal,omitempty"`
+	ManualInterventionRequired bool         `json:"manualInterventionRequired,omitempty"`
+}
+
 type SiteRevisionStatus struct {
 	Name                 string             `json:"name"`
 	SiteRegistrationRef  string             `json:"siteRegistrationRef"`

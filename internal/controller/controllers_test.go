@@ -2079,9 +2079,9 @@ func TestMajorUpgradeRetriesPostUpgradeBackup(t *testing.T) {
 		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
 			t.Fatal(err)
 		}
-		ready, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current, now)
-		if err != nil || ready {
-			t.Fatalf("post-upgrade backup preflight = %t, %v", ready, err)
+		ready, result, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current, now)
+		if err != nil || ready || result.RequeueAfter != 0 {
+			t.Fatalf("post-upgrade backup preflight = %t, result %#v, %v", ready, result, err)
 		}
 	}
 	var directive corev1.ConfigMap
@@ -2104,15 +2104,42 @@ func TestMajorUpgradeRetriesPostUpgradeBackup(t *testing.T) {
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
 		t.Fatal(err)
 	}
-	if ready, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current, now); err != nil || ready {
-		t.Fatalf("failed backup retry = %t, %v", ready, err)
+	if ready, result, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current, now); err != nil || ready ||
+		result.RequeueAfter <= 0 {
+		t.Fatalf("failed backup retry = %t, result %#v, %v", ready, result, err)
 	}
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
 		t.Fatal(err)
 	}
 	if current.Status.PostUpgradeBackupAttempt != 1 ||
-		current.Status.PostUpgradeBackupRequestedAt != nil {
+		current.Status.PostUpgradeBackupRequestedAt != nil ||
+		current.Status.Operation == nil ||
+		current.Status.Operation.OperationUID != "upgrade-post-upgrade-backup-1" ||
+		current.Status.Operation.Attempt != 1 ||
+		current.Status.Operation.NextRetryAt == nil ||
+		current.Status.Operation.LastErrorReason != "BackupFailed" ||
+		current.Status.Operation.LastErrorMessage != "failed" {
 		t.Fatalf("post-upgrade retry status = %#v", current.Status)
+	}
+	nextRetry := current.Status.Operation.NextRetryAt.DeepCopy()
+	ready, result, err := reconciler.ensurePostUpgradeBackup(context.Background(), &current,
+		nextRetry.Add(-time.Second))
+	if err != nil || ready || result.RequeueAfter != time.Second {
+		t.Fatalf("early retry wait = %t, result %#v, %v", ready, result, err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	ready, result, err = reconciler.ensurePostUpgradeBackup(context.Background(), &current, nextRetry.Time)
+	if err != nil || ready || result.RequeueAfter != 0 {
+		t.Fatalf("due retry request = %t, result %#v, %v", ready, result, err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.PostUpgradeBackupRequestedAt == nil ||
+		current.Status.Operation.NextRetryAt != nil {
+		t.Fatalf("due retry status = %#v", current.Status)
 	}
 }
 
@@ -2135,10 +2162,10 @@ func TestMajorUpgradePostUpgradeBackupRetryLimit(t *testing.T) {
 	kube := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&api.PostgresUpgrade{}).WithObjects(upgrade).Build()
 	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
-	ready, err := reconciler.ensurePostUpgradeBackup(context.Background(), upgrade,
+	ready, result, err := reconciler.ensurePostUpgradeBackup(context.Background(), upgrade,
 		time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC))
-	if err != nil || ready {
-		t.Fatalf("retry limit result = %t, %v", ready, err)
+	if err != nil || ready || result.RequeueAfter != 0 {
+		t.Fatalf("retry limit result = %t, result %#v, %v", ready, result, err)
 	}
 	var current api.PostgresUpgrade
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
@@ -2148,7 +2175,12 @@ func TestMajorUpgradePostUpgradeBackupRetryLimit(t *testing.T) {
 	readyCondition := statusCondition(current.Status.Conditions, "Ready")
 	if current.Status.PostUpgradeBackupAttempt != maxPostUpgradeBackupAttempts ||
 		backup == nil || backup.Reason != "ManualInterventionRequired" ||
-		readyCondition == nil || readyCondition.Reason != "ManualInterventionRequired" {
+		readyCondition == nil || readyCondition.Reason != "ManualInterventionRequired" ||
+		current.Status.Operation == nil ||
+		!current.Status.Operation.Terminal ||
+		!current.Status.Operation.ManualInterventionRequired ||
+		current.Status.Operation.LastErrorReason != "BackupFailed" ||
+		current.Status.Operation.LastErrorMessage != "repository denied access" {
 		t.Fatalf("manual intervention status = %#v", current.Status)
 	}
 }

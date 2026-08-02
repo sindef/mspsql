@@ -121,10 +121,12 @@
     <tr><td><code>rollbackRetention</code></td><td>No</td><td>How long rollback artifacts are retained.</td></tr>
     <tr><td><code>benchmark</code></td><td>No</td><td>Required operational evidence for major upgrades.</td></tr>
   </table>
+  <p>Status includes <code>operation</code> with the current durable operation UID, phase, attempt, retry deadline, next retry time, and last structured error. A terminal operation with <code>manualInterventionRequired</code> set requires operator repair before the upgrade can complete.</p>
 
   <h2>Shared Types</h2>
   <table>
     <tr><th>Type</th><th>Fields</th></tr>
+    <tr><td><code>OperationProgressStatus</code></td><td><code>operationUID</code>, <code>phase</code>, <code>attempt</code>, optional <code>worker</code>/<code>site</code>, <code>nextRetryAt</code>, <code>deadlineAt</code>, last error fields, and terminal/manual-intervention flags.</td></tr>
     <tr><td><code>VaultSecretReference</code></td><td><code>mount</code>, <code>path</code>, optional <code>key</code>.</td></tr>
     <tr><td><code>IssuerReference</code></td><td><code>name</code>, optional <code>kind</code> default <code>ClusterIssuer</code>, optional <code>group</code> default <code>cert-manager.io</code>.</td></tr>
     <tr><td><code>StorageRequest</code></td><td><code>storageClassName</code>, <code>size</code>.</td></tr>
