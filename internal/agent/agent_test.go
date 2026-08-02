@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"maps"
 	"math/big"
 	"net"
@@ -38,6 +39,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -139,6 +141,82 @@ func TestApplyResolvesTypedObjectGVK(t *testing.T) {
 	}
 	if forced {
 		t.Fatal("apply used force ownership")
+	}
+}
+
+func TestApplyReportsFieldOwnershipConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		resource schema.GroupResource
+		object   client.Object
+	}{
+		{
+			name:     "service",
+			resource: schema.GroupResource{Resource: "services"},
+			object: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres"},
+			},
+		},
+		{
+			name:     "statefulset",
+			resource: schema.GroupResource{Group: "apps", Resource: "statefulsets"},
+			object: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres-vic"},
+			},
+		},
+		{
+			name:     "certificate",
+			resource: schema.GroupResource{Group: "cert-manager.io", Resource: "certificates"},
+			object: &unstructured.Unstructured{
+				Object: map[string]any{
+					"apiVersion": "cert-manager.io/v1",
+					"kind":       "Certificate",
+					"metadata": map[string]any{
+						"namespace": "orders",
+						"name":      "postgres-vic-tls",
+					},
+					"spec": map[string]any{
+						"secretName": "postgres-vic-tls",
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			forced := false
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				Patch: func(_ context.Context, _ client.WithWatch, obj client.Object,
+					_ client.Patch, opts ...client.PatchOption,
+				) error {
+					options := &client.PatchOptions{}
+					for _, opt := range opts {
+						opt.ApplyToPatch(options)
+					}
+					forced = options.Force != nil && *options.Force
+					return apierrors.NewConflict(test.resource, obj.GetName(),
+						fmt.Errorf("field is owned by another manager"))
+				},
+			}).Build()
+			reconciler := Reconciler{Client: kube}
+			err := reconciler.apply(context.Background(), test.object)
+			if !errors.Is(err, ErrFieldOwnershipConflict) {
+				t.Fatalf("error = %v", err)
+			}
+			if forced {
+				t.Fatal("field ownership conflict was force-applied")
+			}
+			if !strings.Contains(err.Error(), test.object.GetNamespace()+"/"+test.object.GetName()) {
+				t.Fatalf("conflict error lacks object identity: %v", err)
+			}
+		})
 	}
 }
 

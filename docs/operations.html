@@ -62,6 +62,7 @@ kubectl --context "${HUB_CTX}" -n database-platform describe postgresupgrade ord
   <h2>Repair</h2>
   <ul>
     <li>For stuck operations, inspect <code>status.operation</code>, <code>status.conditions</code>, the owned directive ConfigMap, site-agent logs, and recent events in the affected site namespace.</li>
+    <li><code>OwnershipConflict</code> or <code>FieldOwnershipConflict</code> means another field manager owns part of a generated Service, Certificate, StatefulSet, or related resource. Remove the external manager's ownership or migrate it deliberately; the site agent will not force-take protected fields.</li>
     <li>A post-upgrade backup retries with bounded exponential backoff and jitter. If <code>manualInterventionRequired</code> is true, repair repository or credential access, collect the directive/job logs and events, then update the operation after confirming the required full backup can run.</li>
     <li>For finalizers, prefer completing or rolling forward the recorded phase. Use force-abandon or force-orphan annotations only after recording residual PVCs, Secrets, ConfigMaps, Jobs, and site resources.</li>
   </ul>
