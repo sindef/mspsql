@@ -36,6 +36,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -207,6 +208,7 @@ func clients(config *rest.Config) client.Client {
 	must(authenticationv1.AddToScheme(scheme))
 	must(batchv1.AddToScheme(scheme))
 	must(coordinationv1.AddToScheme(scheme))
+	must(networkingv1.AddToScheme(scheme))
 	must(storagev1.AddToScheme(scheme))
 	kube, err := client.New(config, client.Options{Scheme: scheme})
 	must(err)

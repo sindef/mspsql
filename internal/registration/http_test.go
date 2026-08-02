@@ -28,6 +28,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,6 +176,57 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	if len(peer.Data["keyID"]) == 0 || string(peer.Data["revocationEpoch"]) != "0" {
 		t.Fatalf("peer rotation metadata = %#v", peer.Data)
 	}
+}
+
+func TestGeneratedAgentRBACDoesNotGrantBroadSecretAccess(t *testing.T) {
+	rules := agentClusterRoleRules("vic")
+	if ruleAllows(rules, "", "secrets", "", "get") {
+		t.Fatalf("agent ClusterRole permits broad Secret get")
+	}
+	if ruleAllows(rules, "", "secrets", "", "delete") {
+		t.Fatalf("agent ClusterRole permits broad Secret delete")
+	}
+	for _, name := range []string{
+		"postgres-auth",
+		"postgres-vic-0-tls",
+		"postgres-vic-0-pgbackrest-tls",
+		"etcd-vic-0-tls",
+		"pgpool-vic-tls",
+	} {
+		if !ruleAllows(rules, "", "secrets", name, "get") {
+			t.Fatalf("agent ClusterRole does not permit Secret get for %s", name)
+		}
+		if !ruleAllows(rules, "", "secrets", name, "delete") {
+			t.Fatalf("agent ClusterRole does not permit Secret delete for %s", name)
+		}
+	}
+	if ruleAllows(rules, "", "secrets", "tenant-password", "get") {
+		t.Fatalf("agent ClusterRole permits unrelated named Secret")
+	}
+}
+
+func ruleAllows(rules []any, group, resource, resourceName, verb string) bool {
+	for _, item := range rules {
+		rule, ok := item.(map[string]any)
+		if !ok || !containsString(rule["apiGroups"], group) ||
+			!containsString(rule["resources"], resource) || !containsString(rule["verbs"], verb) {
+			continue
+		}
+		names, scoped := rule["resourceNames"]
+		if !scoped {
+			return resourceName == ""
+		}
+		return resourceName != "" && containsString(names, resourceName)
+	}
+	return false
+}
+
+func containsString(value any, needle string) bool {
+	values, ok := value.([]string)
+	if !ok {
+		return false
+	}
+	return slices.Contains(values, needle)
 }
 
 func TestRegistrationBindingAtomicallyClaimsClusterUID(t *testing.T) {

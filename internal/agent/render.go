@@ -29,6 +29,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -149,6 +150,7 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	objects = append(objects, r.NetworkPolicies(desired)...)
 	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
 		name := fmt.Sprintf("etcd-%s-%d", desired.Site.Name, ordinal)
 		address := desired.MemberAddresses[name]
@@ -190,6 +192,61 @@ func (r Renderer) Workloads(desired plan.SitePlan) ([]client.Object, error) {
 	objects = append(objects, postgresObjects...)
 	objects = append(objects, r.majorUpgradePhaseJobs(desired)...)
 	return objects, nil
+}
+
+func (r Renderer) NetworkPolicies(desired plan.SitePlan) []client.Object {
+	labels := resourceLabels(desired)
+	objects := []client.Object{
+		networkPolicy(desired.Site.Namespace, "mspsql-etcd-"+desired.Site.Name, labels,
+			map[string]string{"multisite-postgres.dev/component": "etcd"},
+			[]networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{sameInstancePeer(labels)},
+				Ports: []networkingv1.NetworkPolicyPort{
+					{Port: ptr(intstr.FromInt32(2379))},
+					{Port: ptr(intstr.FromInt32(2380))},
+				},
+			}}),
+	}
+	if desired.Site.Role == api.SiteRoleWitness {
+		return objects
+	}
+	objects = append(objects, networkPolicy(desired.Site.Namespace, "mspsql-postgres-"+desired.Site.Name, labels,
+		map[string]string{"multisite-postgres.dev/component": "postgres"},
+		[]networkingv1.NetworkPolicyIngressRule{{
+			From: []networkingv1.NetworkPolicyPeer{sameInstancePeer(labels)},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Port: ptr(intstr.FromInt32(5432))},
+				{Port: ptr(intstr.FromInt32(8008))},
+				{Port: ptr(intstr.FromInt32(8432))},
+			},
+		}}))
+	if desired.Site.Components.PgpoolReplicas > 0 {
+		objects = append(objects, networkPolicy(desired.Site.Namespace, "mspsql-pgpool-"+desired.Site.Name, labels,
+			map[string]string{"multisite-postgres.dev/component": "pgpool"},
+			[]networkingv1.NetworkPolicyIngressRule{{Ports: []networkingv1.NetworkPolicyPort{
+				{Port: ptr(intstr.FromInt32(5432))},
+			}}}))
+	}
+	return objects
+}
+
+func networkPolicy(namespace, name string, labels, selector map[string]string,
+	ingress []networkingv1.NetworkPolicyIngressRule,
+) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, Labels: copyMap(labels)},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: selector},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+			},
+			Ingress: ingress,
+		},
+	}
+}
+
+func sameInstancePeer(labels map[string]string) networkingv1.NetworkPolicyPeer {
+	return networkingv1.NetworkPolicyPeer{PodSelector: &metav1.LabelSelector{MatchLabels: stableWorkloadLabels(labels)}}
 }
 
 func (r Renderer) postgresWorkloads(workloadPlan, desired plan.SitePlan,

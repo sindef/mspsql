@@ -182,28 +182,7 @@ func (s *HTTPServer) bundle(site *api.SiteRegistration, token string) ([]byte, e
 		map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
 			"metadata": map[string]any{"name": "mspsql-agent"},
-			"rules": []any{
-				rule([]string{""}, []string{"namespaces", "services", "serviceaccounts", "configmaps", "persistentvolumeclaims", "pods", "secrets"},
-					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
-				rule([]string{""}, []string{"serviceaccounts/token"}, []string{"create"}),
-				rule([]string{"apps"}, []string{"deployments", "statefulsets"},
-					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
-				rule([]string{"batch"}, []string{"jobs", "cronjobs"},
-					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
-				rule([]string{"coordination.k8s.io"}, []string{"leases"},
-					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
-				rule([]string{"cert-manager.io"}, []string{"certificates"},
-					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
-				rule([]string{"cert-manager.io"}, []string{"issuers", "clusterissuers"},
-					[]string{"get", "list", "watch"}),
-				rule([]string{"storage.k8s.io"}, []string{"storageclasses"}, []string{"get", "list", "watch"}),
-				rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshotclasses"},
-					[]string{"get", "list", "watch"}),
-				rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshots"},
-					[]string{"get", "list", "watch", "create", "update", "patch", "delete"}),
-				rule([]string{""}, []string{"events"}, []string{"create", "patch"}),
-				rule([]string{"events.k8s.io"}, []string{"events"}, []string{"create", "patch"}),
-			},
+			"rules":    agentClusterRoleRules(site.Name),
 		},
 		map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
@@ -564,6 +543,57 @@ func parseCapabilityPath(path string) (string, string, bool) {
 
 func rule(groups, resources, verbs []string) map[string]any {
 	return map[string]any{"apiGroups": groups, "resources": resources, "verbs": verbs}
+}
+
+func namedRule(groups, resources, resourceNames, verbs []string) map[string]any {
+	return map[string]any{
+		"apiGroups": groups, "resources": resources, "resourceNames": resourceNames, "verbs": verbs,
+	}
+}
+
+func agentClusterRoleRules(siteName string) []any {
+	mutate := []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+	return []any{
+		rule([]string{""}, []string{"namespaces", "services", "serviceaccounts", "configmaps", "persistentvolumeclaims", "pods"}, mutate),
+		namedRule([]string{""}, []string{"secrets"}, agentSecretResourceNames(siteName), mutate),
+		rule([]string{""}, []string{"serviceaccounts/token"}, []string{"create"}),
+		rule([]string{"apps"}, []string{"deployments", "statefulsets"}, mutate),
+		rule([]string{"batch"}, []string{"jobs", "cronjobs"}, mutate),
+		rule([]string{"coordination.k8s.io"}, []string{"leases"}, mutate),
+		rule([]string{"networking.k8s.io"}, []string{"networkpolicies"}, mutate),
+		rule([]string{"cert-manager.io"}, []string{"certificates"}, mutate),
+		rule([]string{"cert-manager.io"}, []string{"issuers", "clusterissuers"}, []string{"get", "list", "watch"}),
+		rule([]string{"storage.k8s.io"}, []string{"storageclasses"}, []string{"get", "list", "watch"}),
+		rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshotclasses"}, []string{"get", "list", "watch"}),
+		rule([]string{"snapshot.storage.k8s.io"}, []string{"volumesnapshots"}, mutate),
+		rule([]string{""}, []string{"events"}, []string{"create", "patch"}),
+		rule([]string{"events.k8s.io"}, []string{"events"}, []string{"create", "patch"}),
+	}
+}
+
+func agentSecretResourceNames(siteName string) []string {
+	names := []string{
+		"etcd-maintenance-client-tls",
+		"patroni-api-client-tls",
+		"patroni-etcd-client-tls",
+		"pg-tde-vault",
+		"pgbackrest-client-tls",
+		"pgbackrest-repository",
+		"pgpool-auth",
+		"postgres-auth",
+		"postgres-auth-pending",
+		"postgres-auth-previous",
+	}
+	if siteName != "" {
+		names = append(names, "pgpool-"+siteName+"-tls")
+		for ordinal := range 16 {
+			etcd := fmt.Sprintf("etcd-%s-%d", siteName, ordinal)
+			postgres := fmt.Sprintf("postgres-%s-%d", siteName, ordinal)
+			names = append(names, etcd+"-tls", postgres+"-tls", postgres+"-pgbackrest-tls")
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 func agentDeployment(site *api.SiteRegistration, agentImage, wireGuardImage string) map[string]any {

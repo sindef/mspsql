@@ -38,6 +38,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -279,17 +280,23 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	var statefulSets, deployments int
+	policies := map[string]*networkingv1.NetworkPolicy{}
 	for _, object := range objects {
-		switch object.(type) {
+		switch typed := object.(type) {
 		case *appsv1.StatefulSet:
 			statefulSets++
 		case *appsv1.Deployment:
 			deployments++
+		case *networkingv1.NetworkPolicy:
+			policies[typed.Name] = typed
 		}
 	}
 	if statefulSets != 4 || deployments != 1 {
 		t.Fatalf("statefulSets=%d deployments=%d", statefulSets, deployments)
 	}
+	assertNetworkPolicyAllowsOnlyInstancePeers(t, policies["mspsql-etcd-vic"], "etcd", 2379, 2380)
+	assertNetworkPolicyAllowsOnlyInstancePeers(t, policies["mspsql-postgres-vic"], "postgres", 5432, 8008, 8432)
+	assertPgpoolNetworkPolicy(t, policies["mspsql-pgpool-vic"])
 	for _, object := range objects {
 		assertPatroniEtcdHosts(t, object)
 		assertRenderedContainersDenyPrivilegeEscalation(t, object)
@@ -371,6 +378,54 @@ func assertLoadBalancerService(t *testing.T, service *corev1.Service) {
 	}
 	if service.Spec.Selector["multisite-postgres.dev/component"] != "pgpool" {
 		t.Fatalf("Pgpool selector = %#v", service.Spec.Selector)
+	}
+}
+
+func assertNetworkPolicyAllowsOnlyInstancePeers(t *testing.T, policy *networkingv1.NetworkPolicy,
+	component string, ports ...int32,
+) {
+	t.Helper()
+	if policy == nil {
+		t.Fatalf("missing %s NetworkPolicy", component)
+	}
+	if policy.Spec.PodSelector.MatchLabels["multisite-postgres.dev/component"] != component {
+		t.Fatalf("%s selector = %#v", policy.Name, policy.Spec.PodSelector.MatchLabels)
+	}
+	if !slices.Equal(policy.Spec.PolicyTypes, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}) {
+		t.Fatalf("%s policy types = %v", policy.Name, policy.Spec.PolicyTypes)
+	}
+	if len(policy.Spec.Ingress) != 1 || len(policy.Spec.Ingress[0].From) != 1 {
+		t.Fatalf("%s ingress = %#v", policy.Name, policy.Spec.Ingress)
+	}
+	peer := policy.Spec.Ingress[0].From[0]
+	if peer.PodSelector == nil ||
+		peer.PodSelector.MatchLabels["multisite-postgres.dev/instance-uid"] != "instance" {
+		t.Fatalf("%s peer selector = %#v", policy.Name, peer.PodSelector)
+	}
+	gotPorts := make([]int32, 0, len(policy.Spec.Ingress[0].Ports))
+	for _, port := range policy.Spec.Ingress[0].Ports {
+		if port.Port == nil {
+			t.Fatalf("%s includes an open unnamed port", policy.Name)
+		}
+		gotPorts = append(gotPorts, port.Port.IntVal)
+	}
+	if !slices.Equal(gotPorts, ports) {
+		t.Fatalf("%s ports = %v, want %v", policy.Name, gotPorts, ports)
+	}
+}
+
+func assertPgpoolNetworkPolicy(t *testing.T, policy *networkingv1.NetworkPolicy) {
+	t.Helper()
+	if policy == nil {
+		t.Fatal("missing pgpool NetworkPolicy")
+	}
+	if policy.Spec.PodSelector.MatchLabels["multisite-postgres.dev/component"] != "pgpool" {
+		t.Fatalf("pgpool selector = %#v", policy.Spec.PodSelector.MatchLabels)
+	}
+	if len(policy.Spec.Ingress) != 1 || len(policy.Spec.Ingress[0].From) != 0 ||
+		len(policy.Spec.Ingress[0].Ports) != 1 ||
+		policy.Spec.Ingress[0].Ports[0].Port.IntVal != 5432 {
+		t.Fatalf("pgpool ingress = %#v", policy.Spec.Ingress)
 	}
 }
 

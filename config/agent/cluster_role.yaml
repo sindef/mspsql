@@ -11,6 +11,17 @@ rules:
   verbs: [create]
 - apiGroups: [""]
   resources: [secrets]
+  resourceNames:
+  - etcd-maintenance-client-tls
+  - patroni-api-client-tls
+  - patroni-etcd-client-tls
+  - pg-tde-vault
+  - pgbackrest-client-tls
+  - pgbackrest-repository
+  - pgpool-auth
+  - postgres-auth
+  - postgres-auth-pending
+  - postgres-auth-previous
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [""]
   resources: [events]
@@ -23,6 +34,9 @@ rules:
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [coordination.k8s.io]
   resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [cert-manager.io]
   resources: [certificates]
