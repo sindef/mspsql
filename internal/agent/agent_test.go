@@ -45,6 +45,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
@@ -105,7 +106,19 @@ func TestApplyResolvesTypedObjectGVK(t *testing.T) {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+	forced := false
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Patch: func(ctx context.Context, underlying client.WithWatch, obj client.Object,
+			patch client.Patch, opts ...client.PatchOption,
+		) error {
+			options := &client.PatchOptions{}
+			for _, opt := range opts {
+				opt.ApplyToPatch(options)
+			}
+			forced = options.Force != nil && *options.Force
+			return underlying.Patch(ctx, obj, patch, opts...)
+		},
+	}).Build()
 	reconciler := Reconciler{Client: kube}
 	serviceAccount := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "workload"},
@@ -123,6 +136,9 @@ func TestApplyResolvesTypedObjectGVK(t *testing.T) {
 	}
 	if err := reconciler.apply(context.Background(), serviceAccount); err != nil {
 		t.Fatal(err)
+	}
+	if forced {
+		t.Fatal("apply used force ownership")
 	}
 }
 

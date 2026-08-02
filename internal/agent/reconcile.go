@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -48,6 +49,8 @@ import (
 	api "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
 )
+
+var ErrFieldOwnershipConflict = errors.New("field ownership conflict")
 
 type ApplyResult struct {
 	Phase               string
@@ -628,7 +631,11 @@ func (r *Reconciler) apply(ctx context.Context, object client.Object) error {
 		return err
 	}
 	if err := r.Client.Patch(ctx, object, client.RawPatch(types.ApplyPatchType, encoded),
-		client.FieldOwner("mspsql-agent"), client.ForceOwnership); err != nil {
+		client.FieldOwner("mspsql-agent")); err != nil {
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%w: apply %T %s/%s: %w",
+				ErrFieldOwnershipConflict, object, object.GetNamespace(), object.GetName(), err)
+		}
 		return fmt.Errorf("apply %T %s/%s: %w",
 			object, object.GetNamespace(), object.GetName(), err)
 	}
