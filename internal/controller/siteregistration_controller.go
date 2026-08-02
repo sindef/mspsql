@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -163,6 +164,14 @@ func (r *SiteRegistrationReconciler) reconcileSiteDeletion(ctx context.Context,
 	if err := r.reconcileRevoked(ctx, site, systemNamespace); err != nil {
 		return ctrl.Result{}, err
 	}
+	observed, err := r.gatewayObservedRevocation(ctx, systemNamespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !observed {
+		return ctrl.Result{RequeueAfter: 5 * time.Second},
+			r.setSiteGatewayObservationPending(ctx, site)
+	}
 	return ctrl.Result{}, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current multisitepostgresv1alpha1.SiteRegistration
 		if err := r.Get(ctx, client.ObjectKeyFromObject(site), &current); err != nil {
@@ -171,6 +180,37 @@ func (r *SiteRegistrationReconciler) reconcileSiteDeletion(ctx context.Context,
 		controllerutil.RemoveFinalizer(&current, siteFinalizer)
 		return r.Update(ctx, &current)
 	})
+}
+
+func (r *SiteRegistrationReconciler) gatewayObservedRevocation(ctx context.Context,
+	systemNamespace string,
+) (bool, error) {
+	var configMap corev1.ConfigMap
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: systemNamespace, Name: wireguard.PeersConfigMapName,
+	}, &configMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	hash := wireguard.RenderedPeerHash(configMap.Data["peers.conf"])
+	var deployment appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: systemNamespace, Name: wireguard.GatewayDeploymentName,
+	}, &deployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	replicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		replicas = *deployment.Spec.Replicas
+	}
+	return deployment.Spec.Template.Annotations[wireguard.PeersHashAnnotation] == hash &&
+		deployment.Status.ObservedGeneration >= deployment.Generation &&
+		deployment.Status.AvailableReplicas >= replicas, nil
 }
 
 func (r *SiteRegistrationReconciler) referencingInstances(ctx context.Context,
@@ -210,6 +250,23 @@ func (r *SiteRegistrationReconciler) setSiteDeletionBlocked(ctx context.Context,
 		setCondition(&current.Status.Conditions, current.Generation, "DeletionBlocked",
 			metav1.ConditionTrue, "ReferencedByInstances",
 			"Site is still referenced by: "+strings.Join(blocking, ", "))
+		return r.Status().Update(ctx, &current)
+	})
+}
+
+func (r *SiteRegistrationReconciler) setSiteGatewayObservationPending(ctx context.Context,
+	site *multisitepostgresv1alpha1.SiteRegistration,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKeyFromObject(site), &current); err != nil {
+			return err
+		}
+		current.Status.ObservedGeneration = current.Generation
+		current.Status.Phase = "Revoking"
+		setCondition(&current.Status.Conditions, current.Generation, "WireGuardReady",
+			metav1.ConditionFalse, "GatewayObservationPending",
+			"Waiting for gateway replicas to observe the rendered peer removal")
 		return r.Status().Update(ctx, &current)
 	})
 }

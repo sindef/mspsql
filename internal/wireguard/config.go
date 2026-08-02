@@ -29,9 +29,11 @@ import (
 	"strconv"
 	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,11 +43,13 @@ import (
 )
 
 const (
-	DefaultNetworkCIDR = "10.254.0.0/16"
-	IdentitySecretName = "mspsql-wireguard-identity"
-	PeersConfigMapName = "mspsql-wireguard-peers"
-	allocationsName    = "mspsql-wireguard-addresses"
-	peerLabel          = "multisite-postgres.dev/wireguard-peer"
+	DefaultNetworkCIDR    = "10.254.0.0/16"
+	IdentitySecretName    = "mspsql-wireguard-identity"
+	PeersConfigMapName    = "mspsql-wireguard-peers"
+	GatewayDeploymentName = "mspsql-wireguard"
+	PeersHashAnnotation   = "multisite-postgres.dev/wireguard-peers-hash"
+	allocationsName       = "mspsql-wireguard-addresses"
+	peerLabel             = "multisite-postgres.dev/wireguard-peer"
 )
 
 type HubIdentity struct {
@@ -203,24 +207,58 @@ func RenderPeers(ctx context.Context, kube client.Client, namespace string) erro
 			string(secret.Data["siteName"]), publicKey, address))
 	}
 	slices.Sort(peers)
+	rendered := strings.Join(peers, "\n")
 	key := types.NamespacedName{Namespace: namespace, Name: PeersConfigMapName}
 	var configMap corev1.ConfigMap
 	err := kube.Get(ctx, key, &configMap)
 	if apierrors.IsNotFound(err) {
-		return kube.Create(ctx, &corev1.ConfigMap{
+		if err := kube.Create(ctx, &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: PeersConfigMapName},
-			Data:       map[string]string{"peers.conf": strings.Join(peers, "\n")},
-		})
+			Data:       map[string]string{"peers.conf": rendered},
+		}); err != nil {
+			return err
+		}
+		return updateGatewayPeerHash(ctx, kube, namespace, rendered)
 	}
 	if err != nil {
 		return err
 	}
-	rendered := strings.Join(peers, "\n")
-	if configMap.Data["peers.conf"] == rendered {
-		return nil
+	if configMap.Data["peers.conf"] != rendered {
+		configMap.Data = map[string]string{"peers.conf": rendered}
+		if err := kube.Update(ctx, &configMap); err != nil {
+			return err
+		}
 	}
-	configMap.Data = map[string]string{"peers.conf": rendered}
-	return kube.Update(ctx, &configMap)
+	return updateGatewayPeerHash(ctx, kube, namespace, rendered)
+}
+
+func updateGatewayPeerHash(ctx context.Context, kube client.Client, namespace, rendered string) error {
+	hash := RenderedPeerHash(rendered)
+	key := types.NamespacedName{Namespace: namespace, Name: GatewayDeploymentName}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var deployment appsv1.Deployment
+		if err := kube.Get(ctx, key, &deployment); apierrors.IsNotFound(err) {
+			return nil
+		} else if runtime.IsNotRegisteredError(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if deployment.Spec.Template.Annotations != nil &&
+			deployment.Spec.Template.Annotations[PeersHashAnnotation] == hash {
+			return nil
+		}
+		if deployment.Spec.Template.Annotations == nil {
+			deployment.Spec.Template.Annotations = map[string]string{}
+		}
+		deployment.Spec.Template.Annotations[PeersHashAnnotation] = hash
+		return kube.Update(ctx, &deployment)
+	})
+}
+
+func RenderedPeerHash(rendered string) string {
+	sum := sha256.Sum256([]byte(rendered))
+	return hex.EncodeToString(sum[:])
 }
 
 func reserveAddress(ctx context.Context, kube client.Client, namespace string, prefix netip.Prefix,

@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -44,6 +45,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	if err := api.AddToScheme(scheme); err != nil {
@@ -257,6 +261,91 @@ func TestSiteRegistrationDeletionRevokesPeerAndToken(t *testing.T) {
 	if strings.Contains(currentRendered.Data["peers.conf"], "peer-key") ||
 		currentRendered.Data["peers.conf"] == "old peer" {
 		t.Fatalf("rendered peers not refreshed: %q", currentRendered.Data["peers.conf"])
+	}
+}
+
+func TestSiteRegistrationDeletionWaitsForGatewayObservation(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 5, 0, 0, 0, time.UTC))
+	site := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "vic", UID: types.UID("site-uid"), Generation: 2,
+			Finalizers: []string{siteFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Status: api.SiteRegistrationStatus{ClusterUID: "cluster-uid"},
+	}
+	peer := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "system", Name: "wireguard-peer-site-uid",
+		Labels: map[string]string{"multisite-postgres.dev/wireguard-peer": "true"},
+	}, Data: map[string][]byte{
+		"publicKey": []byte("peer-key"), "address": []byte("10.60.0.3"),
+		"siteName": []byte("vic"), "state": []byte("authorized"),
+	}}
+	rendered := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "mspsql-wireguard-peers"},
+		Data:       map[string]string{"peers.conf": "old peer"},
+	}
+	replicas := int32(2)
+	gateway := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "system", Name: "mspsql-wireguard", Generation: 7,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{"multisite-postgres.dev/wireguard-peers-hash": "old"},
+			}},
+		},
+		Status: appsv1.DeploymentStatus{ObservedGeneration: 6, AvailableReplicas: 1},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.SiteRegistration{}, &appsv1.Deployment{}).
+		WithObjects(site, peer, rendered, gateway).Build()
+	reconciler := SiteRegistrationReconciler{Client: kube, Scheme: scheme, SystemNamespace: "system"}
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != 5*time.Second {
+		t.Fatalf("requeue after = %s", result.RequeueAfter)
+	}
+	var current api.SiteRegistration
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: "vic"}, &current); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&current, siteFinalizer) {
+		t.Fatalf("site finalized before gateway observation: %#v", current.Finalizers)
+	}
+	condition := statusCondition(current.Status.Conditions, "WireGuardReady")
+	if condition == nil || condition.Reason != "GatewayObservationPending" {
+		t.Fatalf("wireguard condition = %#v", condition)
+	}
+	var patched appsv1.Deployment
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(gateway), &patched); err != nil {
+		t.Fatal(err)
+	}
+	hash := patched.Spec.Template.Annotations["multisite-postgres.dev/wireguard-peers-hash"]
+	patched.Status.ObservedGeneration = patched.Generation
+	patched.Status.AvailableReplicas = replicas
+	if err := kube.Status().Update(context.Background(), &patched); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	}); err != nil {
+		t.Fatal(err)
+	} else if result.RequeueAfter != 0 {
+		t.Fatalf("second requeue after = %s", result.RequeueAfter)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: "vic"}, &current); err != nil {
+		if !apierrors.IsNotFound(err) {
+			t.Fatal(err)
+		}
+	} else if controllerutil.ContainsFinalizer(&current, siteFinalizer) {
+		t.Fatalf("site retained finalizer after gateway observed hash %s: %#v",
+			hash, current.Finalizers)
 	}
 }
 
