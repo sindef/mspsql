@@ -108,6 +108,10 @@ func validateInstance(obj *api.MultiSitePostgres) error {
 	var etcd, postgres int32
 	siteNames := map[string]struct{}{}
 	siteNamespaces := map[string]struct{}{}
+	if !strings.Contains(obj.Spec.Postgres.Image, "@sha256:") {
+		errs = append(errs, field.Invalid(specPath.Child("postgres", "image"),
+			obj.Spec.Postgres.Image, "must be pinned by sha256 digest"))
+	}
 
 	for i, site := range obj.Spec.Sites {
 		p := specPath.Child("sites").Index(i)

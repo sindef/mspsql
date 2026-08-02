@@ -34,7 +34,7 @@ func TestValidateInstance(t *testing.T) {
 		Spec: api.MultiSitePostgresSpec{
 			Postgres: api.PostgresSpec{
 				MajorVersion:            17,
-				Image:                   "postgres:17",
+				Image:                   "postgres@sha256:0123456789abcdef",
 				SynchronousStandbyCount: 1,
 			},
 			Credentials: api.InstanceCredentialsSpec{
@@ -69,6 +69,12 @@ func TestValidateInstance(t *testing.T) {
 	if err := validateInstance(base); err != nil {
 		t.Fatalf("valid topology rejected: %v", err)
 	}
+
+	base.Spec.Postgres.Image = "postgres:17"
+	if err := validateInstance(base); err == nil {
+		t.Fatal("mutable PostgreSQL image tag was accepted")
+	}
+	base.Spec.Postgres.Image = "postgres@sha256:0123456789abcdef"
 
 	base.Spec.TDE = api.TDESpec{Enabled: true, Vault: &api.TDEVaultSpec{
 		KVMount: "mspsql", KeyPath: "../shared", ProviderName: "orders",
