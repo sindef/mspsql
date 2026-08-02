@@ -35,6 +35,8 @@ jobs:
           sudo apt-get install --no-install-recommends -y shellcheck
           find . -type f -name '*.sh' -not -path './.git/*' -print0 | xargs -0 -r bash -n
           find . -type f -name '*.sh' -not -path './.git/*' -print0 | xargs -0 -r shellcheck
+      - name: Verify image policy
+        run: make verify-image-policy
 
   race:
     permissions:

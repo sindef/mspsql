@@ -1,4 +1,4 @@
-FROM golang:1.26 AS builder
+FROM golang:1.26@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -10,6 +10,6 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o tun-device-plugin ./cmd/tun-device-plugin
 
-FROM gcr.io/distroless/static
+FROM gcr.io/distroless/static@sha256:9197324ba51d9cd071af8505989365c006adf9d6d2067eada25aef00abbb5278
 COPY --from=builder /workspace/tun-device-plugin /tun-device-plugin
 ENTRYPOINT ["/tun-device-plugin"]

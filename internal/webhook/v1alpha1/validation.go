@@ -446,12 +446,21 @@ func validateUpgrade(obj *api.PostgresUpgrade) error {
 	if obj.Spec.InstanceRef == "" || obj.Spec.TargetImage == "" {
 		return fmt.Errorf("instanceRef and targetImage are required")
 	}
+	specPath := field.NewPath("spec")
+	if !strings.Contains(obj.Spec.TargetImage, "@sha256:") {
+		return field.Invalid(specPath.Child("targetImage"), obj.Spec.TargetImage,
+			"must be pinned by sha256 digest")
+	}
+	if obj.Spec.UpgradeImage != "" && !strings.Contains(obj.Spec.UpgradeImage, "@sha256:") {
+		return field.Invalid(specPath.Child("upgradeImage"), obj.Spec.UpgradeImage,
+			"must be pinned by sha256 digest")
+	}
 	if obj.Spec.ServiceRestorationTarget.Duration <= 0 {
-		return field.Invalid(field.NewPath("spec", "serviceRestorationTarget"),
+		return field.Invalid(specPath.Child("serviceRestorationTarget"),
 			obj.Spec.ServiceRestorationTarget, "must be positive")
 	}
 	if obj.Spec.RollbackRetention.Duration <= 0 {
-		return field.Invalid(field.NewPath("spec", "rollbackRetention"),
+		return field.Invalid(specPath.Child("rollbackRetention"),
 			obj.Spec.RollbackRetention, "must be positive")
 	}
 	if benchmark := obj.Spec.Benchmark; benchmark != nil {

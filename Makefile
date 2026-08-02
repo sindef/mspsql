@@ -90,6 +90,10 @@ verify-manifests: kustomize ## Build every deployment, RBAC, sample, and test ov
 		"$(KUSTOMIZE)" build "$${file%/*}" >/dev/null; \
 	done
 
+.PHONY: verify-image-policy
+verify-image-policy: ## Verify image bases and release workflow supply-chain controls.
+	./hack/verify-image-policy.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	GOCACHE="$(GO_BUILD_CACHE)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE_DIR)" "$(GOLANGCI_LINT)" run

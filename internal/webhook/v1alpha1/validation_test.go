@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -189,6 +190,29 @@ func TestRestoreSpecIsValidatedAndImmutable(t *testing.T) {
 	restore.Spec.TargetBackup.Repository.Endpoint = "http://s3.example"
 	if err := validateRestore(restore); err == nil {
 		t.Fatal("insecure target backup endpoint was accepted")
+	}
+}
+
+func TestUpgradeImagesMustBePinned(t *testing.T) {
+	upgrade := &api.PostgresUpgrade{Spec: api.PostgresUpgradeSpec{
+		InstanceRef:              "orders",
+		TargetImage:              "postgres@sha256:0123456789abcdef",
+		TargetMajorVersion:       18,
+		UpgradeImage:             "upgrade@sha256:0123456789abcdef",
+		ServiceRestorationTarget: metav1.Duration{Duration: time.Minute},
+		RollbackRetention:        metav1.Duration{Duration: time.Hour},
+	}}
+	if err := validateUpgrade(upgrade); err != nil {
+		t.Fatalf("valid pinned upgrade rejected: %v", err)
+	}
+	upgrade.Spec.TargetImage = "postgres:18"
+	if err := validateUpgrade(upgrade); err == nil {
+		t.Fatal("mutable target image tag was accepted")
+	}
+	upgrade.Spec.TargetImage = "postgres@sha256:0123456789abcdef"
+	upgrade.Spec.UpgradeImage = "upgrade:17-to-18"
+	if err := validateUpgrade(upgrade); err == nil {
+		t.Fatal("mutable upgrade image tag was accepted")
 	}
 }
 
