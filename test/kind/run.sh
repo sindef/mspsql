@@ -69,6 +69,17 @@ e2e_phase() {
   fi
 }
 
+assert_orders_not_ready_true() {
+  local context="$1"
+  local ready_status
+  ready_status="$(kubectl -n database-platform get multisitepostgres orders \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  if [[ "${ready_status}" == "True" ]]; then
+    echo "orders Ready=True while ${context}" >&2
+    exit 1
+  fi
+}
+
 kubectl_command_context() {
   local namespace="default"
   local resource="unknown"
@@ -965,6 +976,7 @@ test "${observed_standby}" -eq 2
 
 docker pause "mspsql-${primary_site}-control-plane" >/dev/null
 for _ in $(seq 1 120); do
+  assert_orders_not_ready_true "primary site ${primary_site} is paused"
   promoted="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
     -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
     psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
@@ -977,6 +989,7 @@ test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${
   -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
 for _ in $(seq 1 180); do
+  assert_orders_not_ready_true "primary site ${primary_site} remains paused after promotion"
   ready_status="$(kubectl -n database-platform get multisitepostgres orders \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
   [[ "${ready_status}" == "False" ]] && break
@@ -1174,8 +1187,18 @@ spec:
     postgresStorageClasses: [csi-hostpath]
     evidence: file://major-upgrade-benchmark.json@sha256:${benchmark_digest}
 EOF
-kubectl -n database-platform wait --for=condition=Ready \
-  postgresupgrade/orders-pg18 --timeout=2400s
+for _ in $(seq 1 1200); do
+  upgrade_phase="$(kubectl -n database-platform get postgresupgrade orders-pg18 \
+    -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  upgrade_ready="$(kubectl -n database-platform get postgresupgrade orders-pg18 \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  if [[ -n "${upgrade_phase}" && "${upgrade_phase}" != "Completed" ]]; then
+    assert_orders_not_ready_true "major upgrade phase ${upgrade_phase} is active"
+  fi
+  [[ "${upgrade_ready}" == "True" ]] && break
+  sleep 2
+done
+test "${upgrade_ready}" = "True"
 test "$(kubectl -n database-platform get postgresupgrade orders-pg18 \
   -o jsonpath='{.status.phase}')" = "Completed"
 test "$(kubectl -n database-platform get multisitepostgres orders \
