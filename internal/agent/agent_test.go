@@ -293,8 +293,9 @@ func assertEtcdSupportsLoadBalancedPeers(t *testing.T, statefulSet *appsv1.State
 		return
 	}
 	args := statefulSet.Spec.Template.Spec.Containers[0].Args
-	if !slices.Contains(args, "--peer-skip-client-san-verification=true") {
-		t.Fatalf("etcd does not support authenticated peers through load balancers: %v", args)
+	if slices.Contains(args, "--peer-skip-client-san-verification=true") ||
+		!slices.Contains(args, "--peer-client-cert-auth=true") {
+		t.Fatalf("etcd peer authentication is not strict: %v", args)
 	}
 	probe := statefulSet.Spec.Template.Spec.Containers[0].ReadinessProbe.Exec.Command
 	if !slices.Contains(probe, "--endpoints=https://10.0.0.1:2379") {
