@@ -714,7 +714,7 @@ func (s *Server) recordResult(ctx context.Context, siteName string, result *cont
 	if result.OperationUid != "" {
 		return s.recordDirectiveResult(ctx, result)
 	}
-	return s.updateInstanceSite(ctx, result.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
+	if err := s.updateInstanceSite(ctx, result.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
 		if result.AppliedRevision != site.DesiredRevision {
 			return
 		}
@@ -727,7 +727,10 @@ func (s *Server) recordResult(ctx context.Context, siteName string, result *cont
 				site.Phase = "Deleted"
 			}
 		}
-	})
+	}); err != nil {
+		return err
+	}
+	return s.triggerInstanceReconcile(ctx, result.InstanceUid)
 }
 
 func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.PlanResult) error {
@@ -1007,13 +1010,6 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 					update(&instance.Status.Sites[j])
 					for k := range instance.Status.Sites[j].Conditions {
 						instance.Status.Sites[j].Conditions[k].ObservedGeneration = instance.Generation
-					}
-					aggregateInstanceConditions(instance)
-					if instance.DeletionTimestamp.IsZero() &&
-						allApplied(instance.Status.Sites, instance.Status.ActiveRevision) {
-						instance.Status.Phase = "Ready"
-						setSiteCondition(&instance.Status.Conditions, "Ready", metav1.ConditionTrue,
-							"AllSitesReady", "All sites applied the active revision")
 					}
 					return s.Client.Status().Update(ctx, instance)
 				}

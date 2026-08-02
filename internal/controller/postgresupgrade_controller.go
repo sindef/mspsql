@@ -71,16 +71,51 @@ func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !upgrade.DeletionTimestamp.IsZero() {
+		return r.reconcileUpgradeDeletion(ctx, &upgrade)
+	}
+	if upgrade.Status.Phase == "Completed" || upgrade.Status.Phase == "Failed" {
+		var instance multisitepostgresv1alpha1.MultiSitePostgres
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: upgrade.Namespace, Name: upgrade.Spec.InstanceRef,
+		}, &instance)
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		if err == nil {
+			if _, err := r.reconcileTerminalUpgrade(ctx, &upgrade, &instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if controllerutil.ContainsFinalizer(&upgrade, operationFinalizer) {
+			controllerutil.RemoveFinalizer(&upgrade, operationFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &upgrade)
+		}
 		return ctrl.Result{}, nil
+	}
+	if !controllerutil.ContainsFinalizer(&upgrade, operationFinalizer) {
+		controllerutil.AddFinalizer(&upgrade, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, &upgrade)
 	}
 	var instance multisitepostgresv1alpha1.MultiSitePostgres
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: upgrade.Namespace, Name: upgrade.Spec.InstanceRef,
 	}, &instance); err != nil {
+		if (upgrade.Status.Phase == "Completed" || upgrade.Status.Phase == "Failed") &&
+			controllerutil.ContainsFinalizer(&upgrade, operationFinalizer) {
+			controllerutil.RemoveFinalizer(&upgrade, operationFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &upgrade)
+		}
 		return ctrl.Result{}, r.upgradeBlocked(ctx, &upgrade, "InstanceUnavailable", err.Error())
 	}
 	if handled, err := r.reconcileTerminalUpgrade(ctx, &upgrade, &instance); handled {
-		return ctrl.Result{}, err
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if controllerutil.ContainsFinalizer(&upgrade, operationFinalizer) {
+			controllerutil.RemoveFinalizer(&upgrade, operationFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &upgrade)
+		}
+		return ctrl.Result{}, nil
 	}
 	now := time.Now
 	if r.Now != nil {
@@ -143,6 +178,74 @@ func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.reconcileMajorUpgrade(ctx, &upgrade, &instance, now())
 	} else {
 		return r.reconcileMinorUpgrade(ctx, &upgrade, &instance, now())
+	}
+}
+
+func (r *PostgresUpgradeReconciler) reconcileUpgradeDeletion(ctx context.Context,
+	upgrade *multisitepostgresv1alpha1.PostgresUpgrade,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(upgrade, operationFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	var instance multisitepostgresv1alpha1.MultiSitePostgres
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: upgrade.Namespace, Name: upgrade.Spec.InstanceRef,
+	}, &instance)
+	if client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, err
+	}
+	if err != nil {
+		controllerutil.RemoveFinalizer(upgrade, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, upgrade)
+	}
+	owned := instance.Annotations[upgradeUIDAnnotation] == string(upgrade.UID)
+	if upgrade.Annotations[forceAbandonAnnotation] == "true" {
+		if owned {
+			base := instance.DeepCopy()
+			clearUpgradeAnnotations(&instance)
+			if err := r.Patch(ctx, &instance, client.MergeFrom(base)); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		_ = r.upgradeBlocked(ctx, upgrade, "ForceAbandoned",
+			"Upgrade deletion was force-abandoned; residual resources require operator review")
+		controllerutil.RemoveFinalizer(upgrade, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, upgrade)
+	}
+	if !owned || upgrade.Status.Phase == "" ||
+		upgrade.Status.Phase == "Completed" || upgrade.Status.Phase == "Failed" {
+		controllerutil.RemoveFinalizer(upgrade, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, upgrade)
+	}
+	phase := plan.MajorUpgradePhase(instance.Annotations[upgradePhaseAnnotation])
+	switch phase {
+	case plan.MajorUpgradePhasePreflight:
+		base := instance.DeepCopy()
+		clearUpgradeAnnotations(&instance)
+		if err := r.Patch(ctx, &instance, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+		controllerutil.RemoveFinalizer(upgrade, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, upgrade)
+	case plan.MajorUpgradePhaseDrain, plan.MajorUpgradePhaseStop,
+		plan.MajorUpgradePhaseSnapshot, plan.MajorUpgradePhaseUpgradePrimary,
+		plan.MajorUpgradePhaseStanzaUpgrade, plan.MajorUpgradePhaseStartPrimary:
+		if _, err := r.advanceMajorPhase(ctx, upgrade, &instance, plan.MajorUpgradePhaseRollback,
+			"RollingBack", "DeletionRequested", "Rolling back before accepting operation deletion",
+			r.now(), false); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: restoreProgressRequeue}, nil
+	case plan.MajorUpgradePhaseRollback, plan.MajorUpgradePhaseRollbackStart,
+		plan.MajorUpgradePhaseRollbackRestoreWrites:
+		return ctrl.Result{RequeueAfter: restoreProgressRequeue},
+			r.setUpgradePhase(ctx, upgrade, upgrade.Status.Phase,
+				"CancellationInProgress", "Waiting for rollback to complete before deletion", r.now())
+	default:
+		return ctrl.Result{}, r.setUpgradePhase(ctx, upgrade, upgrade.Status.Phase,
+			"ForwardRepairRequired",
+			"Upgrade deletion is blocked after writes may have resumed; repair forward or force-abandon with explicit approval",
+			r.now())
 	}
 }
 
@@ -688,6 +791,13 @@ func (r *PostgresUpgradeReconciler) completeUpgrade(ctx context.Context,
 	setCondition(&upgrade.Status.Conditions, upgrade.Generation, "Ready", metav1.ConditionTrue,
 		"UpgradeCompleted", "All PostgreSQL members run the requested image")
 	return r.Status().Update(ctx, upgrade)
+}
+
+func (r *PostgresUpgradeReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func (r *PostgresUpgradeReconciler) validateMajorUpgradeContract(ctx context.Context,

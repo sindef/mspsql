@@ -34,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
@@ -859,6 +860,13 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("finalizer adoption requeue = %s", result.RequeueAfter)
+	}
+	result, err = reconciler.Reconcile(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.RequeueAfter != restoreProgressRequeue {
 		t.Fatalf("target creation requeue = %s", result.RequeueAfter)
 	}
@@ -1168,6 +1176,154 @@ func TestFailedUpgradeIsTerminal(t *testing.T) {
 	}
 	if _, found := currentInstance.Annotations[upgradeUIDAnnotation]; found {
 		t.Fatalf("failed upgrade annotation was not cleared: %#v", currentInstance.Annotations)
+	}
+}
+
+func TestRestoreDeletionDeletesOwnedTarget(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 1, 0, 0, 0, time.UTC))
+	restore := &api.PostgresRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-restore", UID: types.UID("restore-uid"),
+			Finalizers:        []string{operationFinalizer},
+			DeletionTimestamp: &deletingAt,
+		},
+		Spec: api.PostgresRestoreSpec{
+			SourceInstanceRef: "orders", TargetInstanceRef: "orders-recovered",
+		},
+		Status: api.PostgresRestoreStatus{Phase: "Restoring"},
+	}
+	target := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-recovered",
+			Annotations: map[string]string{
+				restoreUIDAnnotation:   string(restore.UID),
+				restoreNameAnnotation:  restore.Name,
+				restorePhaseAnnotation: string(plan.RestorePhaseSeed),
+			},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresRestore{}).
+		WithObjects(restore, target).Build()
+	reconciler := PostgresRestoreReconciler{Client: kube, Scheme: scheme}
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-restore"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != restoreProgressRequeue {
+		t.Fatalf("restore delete requeue = %s", result.RequeueAfter)
+	}
+	var currentTarget api.MultiSitePostgres
+	err = kube.Get(context.Background(), client.ObjectKeyFromObject(target), &currentTarget)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("target still exists or unexpected error: %v", err)
+	}
+	var currentRestore api.PostgresRestore
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(restore), &currentRestore); err != nil {
+		t.Fatal(err)
+	}
+	ready := statusCondition(currentRestore.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "CancellationInProgress" {
+		t.Fatalf("restore deletion condition = %#v", ready)
+	}
+}
+
+func TestMajorUpgradeDeletionBeforeWritesRollsBack(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 2, 0, 0, 0, time.UTC))
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", Generation: 4,
+			Annotations: map[string]string{
+				upgradeUIDAnnotation:      "upgrade",
+				upgradeNameAnnotation:     "orders-pg18",
+				upgradePhaseAnnotation:    string(plan.MajorUpgradePhaseStartPrimary),
+				upgradeRevisionAnnotation: "9",
+			},
+		},
+		Status: api.MultiSitePostgresStatus{ActiveRevision: 9, Sites: []api.SiteRevisionStatus{
+			{Name: "vic", AppliedRevision: 9},
+		}},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"),
+			Generation: 1, Finalizers: []string{operationFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Spec:   api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status: api.PostgresUpgradeStatus{Phase: "RestoringService"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return deletingAt.Time },
+	}
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-pg18"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != restoreProgressRequeue {
+		t.Fatalf("upgrade rollback requeue = %s", result.RequeueAfter)
+	}
+	var current api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseRollback) {
+		t.Fatalf("upgrade phase annotation = %q", current.Annotations[upgradePhaseAnnotation])
+	}
+}
+
+func TestMajorUpgradeDeletionAfterWritesBlocks(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 3, 0, 0, 0, time.UTC))
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders",
+			Annotations: map[string]string{
+				upgradeUIDAnnotation:      "upgrade",
+				upgradeNameAnnotation:     "orders-pg18",
+				upgradePhaseAnnotation:    string(plan.MajorUpgradePhaseReplicas),
+				upgradeRevisionAnnotation: "10",
+			},
+		},
+	}
+	restoredAt := metav1.NewTime(deletingAt.Time.Add(-time.Minute))
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"),
+			Generation: 1, Finalizers: []string{operationFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Spec: api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status: api.PostgresUpgradeStatus{
+			Phase: "ReseedingReplicas", WriteServiceRestoredAt: &restoredAt,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return deletingAt.Time },
+	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-pg18"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var current api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	ready := statusCondition(current.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "ForwardRepairRequired" ||
+		!controllerutil.ContainsFinalizer(&current, operationFinalizer) {
+		t.Fatalf("upgrade deletion state = status %#v finalizers %#v", current.Status, current.Finalizers)
 	}
 }
 

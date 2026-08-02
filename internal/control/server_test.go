@@ -153,6 +153,71 @@ func TestDirectiveOwnerMustMatchAuthoritativeObject(t *testing.T) {
 	}
 }
 
+func TestPlanResultDoesNotSetAggregateReady(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "platform",
+			Name:       "orders",
+			UID:        types.UID("instance-uid"),
+			Generation: 7,
+		},
+		Status: api.MultiSitePostgresStatus{
+			Phase:          "Reconciling",
+			ActiveRevision: 3,
+			Conditions: []metav1.Condition{{
+				Type: "Ready", Status: metav1.ConditionFalse, Reason: "TopologyPending",
+				Message: "Waiting for current topology consensus across all data sites",
+			}},
+			Sites: []api.SiteRevisionStatus{
+				{Name: "vic", DesiredRevision: 3, AppliedRevision: 2, Phase: "Applying"},
+				{Name: "qld", DesiredRevision: 3, AppliedRevision: 3, Phase: "Ready"},
+			},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(instance).
+		WithObjects(instance).
+		Build()
+	server := &Server{
+		Client: kube,
+		Now: func() time.Time {
+			return time.Date(2026, 8, 2, 1, 2, 3, 4, time.UTC)
+		},
+	}
+	result := &controlv1.PlanResult{
+		InstanceUid:     string(instance.UID),
+		AppliedRevision: 3,
+		Conditions: []*controlv1.Condition{{
+			Type: "Ready", Status: string(metav1.ConditionTrue), Reason: "SiteReady",
+			Message: "site applied the plan",
+		}},
+	}
+	if err := server.recordResult(context.Background(), "vic", result); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status.Phase != "Reconciling" {
+		t.Fatalf("aggregate phase changed to %q", observed.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(observed.Status.Conditions, "Ready")
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "TopologyPending" {
+		t.Fatalf("aggregate Ready condition = %#v", ready)
+	}
+	if observed.Status.Sites[0].AppliedRevision != 3 || observed.Status.Sites[0].Phase != "Ready" {
+		t.Fatalf("site status was not updated: %#v", observed.Status.Sites[0])
+	}
+	if observed.Annotations["multisite-postgres.dev/address-observation"] == "" {
+		t.Fatalf("result did not trigger instance reconcile: annotations=%#v", observed.Annotations)
+	}
+}
+
 func TestAggregateConditionsExcludesWitnessFromPatroni(t *testing.T) {
 	healthy := func(conditionTypes ...string) []metav1.Condition {
 		conditions := make([]metav1.Condition, 0, len(conditionTypes))

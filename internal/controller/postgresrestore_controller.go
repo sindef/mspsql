@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
@@ -61,8 +62,19 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &restore); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !restore.DeletionTimestamp.IsZero() || restore.Status.Phase == "Completed" {
+	if !restore.DeletionTimestamp.IsZero() {
+		return r.reconcileRestoreDeletion(ctx, &restore)
+	}
+	if restore.Status.Phase == "Completed" {
+		if controllerutil.ContainsFinalizer(&restore, operationFinalizer) {
+			controllerutil.RemoveFinalizer(&restore, operationFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &restore)
+		}
 		return ctrl.Result{}, nil
+	}
+	if !controllerutil.ContainsFinalizer(&restore, operationFinalizer) {
+		controllerutil.AddFinalizer(&restore, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, &restore)
 	}
 
 	var source api.MultiSitePostgres
@@ -144,6 +156,57 @@ func (r *PostgresRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return restoreProgressOrError(r.restoreBlocked(ctx, &restore, "InvalidTarget",
 			"target instance has an unknown restore phase"))
 	}
+}
+
+func (r *PostgresRestoreReconciler) reconcileRestoreDeletion(ctx context.Context,
+	restore *api.PostgresRestore,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(restore, operationFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if restore.Status.Phase == "Completed" || restore.Status.Phase == "" {
+		controllerutil.RemoveFinalizer(restore, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, restore)
+	}
+	var target api.MultiSitePostgres
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: restore.Namespace, Name: restore.Spec.TargetInstanceRef,
+	}, &target)
+	if apierrors.IsNotFound(err) {
+		controllerutil.RemoveFinalizer(restore, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, restore)
+	}
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	owned := target.Annotations[restoreUIDAnnotation] == string(restore.UID)
+	if restore.Annotations[forceAbandonAnnotation] == "true" {
+		if owned {
+			base := target.DeepCopy()
+			delete(target.Annotations, restoreUIDAnnotation)
+			delete(target.Annotations, restoreNameAnnotation)
+			delete(target.Annotations, restoreSourceUIDAnnotation)
+			delete(target.Annotations, restorePhaseAnnotation)
+			if err := r.Patch(ctx, &target, client.MergeFrom(base)); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		_ = r.restoreBlocked(ctx, restore, "ForceAbandoned",
+			"Restore deletion was force-abandoned; residual target resources require operator review")
+		controllerutil.RemoveFinalizer(restore, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, restore)
+	}
+	if !owned {
+		controllerutil.RemoveFinalizer(restore, operationFinalizer)
+		return ctrl.Result{}, r.Update(ctx, restore)
+	}
+	if target.DeletionTimestamp.IsZero() {
+		if err := r.Delete(ctx, &target); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+	return restoreProgressOrError(r.restoreBlocked(ctx, restore, "CancellationInProgress",
+		"Deleting the isolated restore target before removing operation state"))
 }
 
 func restoreProgressResult() ctrl.Result {
