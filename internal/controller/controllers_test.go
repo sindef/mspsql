@@ -93,6 +93,10 @@ func TestSiteRegistrationIssuesHashedToken(t *testing.T) {
 		len(signingKey.Data["publicKey"]) == 0 {
 		t.Fatal("directive signing key was not initialized during site registration")
 	}
+	if len(signingKey.Data["keyID"]) == 0 ||
+		string(signingKey.Data["revocationEpoch"]) != "0" {
+		t.Fatalf("signing key rotation metadata = %#v", signingKey.Data)
+	}
 	var updated api.SiteRegistration
 	if err := kube.Get(context.Background(), types.NamespacedName{Name: "vic"}, &updated); err != nil {
 		t.Fatal(err)

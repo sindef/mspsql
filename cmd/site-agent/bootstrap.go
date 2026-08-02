@@ -121,8 +121,11 @@ func bootstrapIfRequired(ctx context.Context, kube client.Client, namespace, ide
 			"tls.key":               string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
 			"ca.crt":                binding.CABundlePEM,
 			"plan-public-key":       binding.PlanPublicKey,
+			"plan-public-key-id":    binding.PlanPublicKeyID,
 			"wireguard-private-key": base64.StdEncoding.EncodeToString(wireGuardPrivate),
 			"wireguard-public-key":  base64.StdEncoding.EncodeToString(wireGuardPublic),
+			"wireguard-key-id":      binding.WireGuardKeyID,
+			"revocation-epoch":      binding.RevocationEpoch,
 			"wg0.conf": "[Interface]\nPrivateKey = " +
 				base64.StdEncoding.EncodeToString(wireGuardPrivate) + "\n" + binding.WireGuardPeerState,
 		},

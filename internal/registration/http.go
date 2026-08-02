@@ -26,6 +26,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -75,6 +76,9 @@ type BindResponse struct {
 	CertificatePEM     string `json:"certificatePEM"`
 	CABundlePEM        string `json:"caBundlePEM"`
 	PlanPublicKey      string `json:"planPublicKey"`
+	PlanPublicKeyID    string `json:"planPublicKeyID,omitempty"`
+	WireGuardKeyID     string `json:"wireGuardKeyID,omitempty"`
+	RevocationEpoch    string `json:"revocationEpoch,omitempty"`
 	WireGuardPeerState string `json:"wireGuardPeerState"`
 }
 
@@ -378,8 +382,16 @@ func (s *HTTPServer) bind(response http.ResponseWriter, request *http.Request,
 	_ = json.NewEncoder(response).Encode(BindResponse{
 		CertificatePEM: string(certificatePEM), CABundlePEM: string(caPEM),
 		PlanPublicKey:      string(signingKey.Data["publicKey"]),
+		PlanPublicKeyID:    string(signingKey.Data["keyID"]),
+		WireGuardKeyID:     bindingKeyID(binding.WireGuardPublicKey),
+		RevocationEpoch:    "0",
 		WireGuardPeerState: peerConfiguration,
 	})
+}
+
+func bindingKeyID(publicKey string) string {
+	sum := sha256.Sum256([]byte(publicKey))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (s *HTTPServer) SignCSR(ctx context.Context, site *api.SiteRegistration,

@@ -47,6 +47,7 @@ multisite-postgres.dev/instance-uid: &lt;instance-uid&gt;</code></pre>
     <li>Hub can issue desired changes but cannot read workload Secret values.</li>
     <li>Agent has broad rights for managed resource types in its cluster.</li>
     <li>Trust anchors are separate for registration, plan signing, hub-agent mTLS, WireGuard, workload TLS, Vault, and pgBackRest.</li>
+    <li>Plan-signing and WireGuard identity material carries a stable key ID plus revocation epoch. Rotations publish overlapping trust first, wait for site observation, switch issuance, then retire the previous key after old credentials are proven rejected.</li>
     <li>Kubernetes Secret encryption at rest is required.</li>
   </ul>
 

@@ -20,7 +20,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -55,8 +57,10 @@ func ensureSigningKey(ctx context.Context, kube client.Client, namespace string)
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: signingKeySecretName},
 		Immutable:  &immutable,
 		Data: map[string][]byte{
-			"privateKey": []byte(base64.RawStdEncoding.EncodeToString(privateKey)),
-			"publicKey":  []byte(base64.RawStdEncoding.EncodeToString(publicKey)),
+			"privateKey":      []byte(base64.RawStdEncoding.EncodeToString(privateKey)),
+			"publicKey":       []byte(base64.RawStdEncoding.EncodeToString(publicKey)),
+			"keyID":           []byte(signingKeyID(publicKey)),
+			"revocationEpoch": []byte("0"),
 		},
 	}
 	if err := kube.Create(ctx, &secret); err != nil {
@@ -66,6 +70,11 @@ func ensureSigningKey(ctx context.Context, kube client.Client, namespace string)
 		return nil, err
 	}
 	return privateKey, nil
+}
+
+func signingKeyID(publicKey ed25519.PublicKey) string {
+	sum := sha256.Sum256(publicKey)
+	return hex.EncodeToString(sum[:8])
 }
 
 func envelopeData(value any) (map[string]string, error) {

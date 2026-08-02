@@ -67,6 +67,24 @@ func TestAuthorizeAndRevokePeers(t *testing.T) {
 	if strings.Count(peers.Data["peers.conf"], "[Peer]") != 2 {
 		t.Fatalf("rendered peers:\n%s", peers.Data["peers.conf"])
 	}
+	var identity corev1.Secret
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "system", Name: IdentitySecretName,
+	}, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if len(identity.Data["keyID"]) == 0 || string(identity.Data["revocationEpoch"]) != "0" {
+		t.Fatalf("hub WireGuard rotation metadata = %#v", identity.Data)
+	}
+	var peer corev1.Secret
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "system", Name: "wireguard-peer-site-vic",
+	}, &peer); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.Data["keyID"]) == 0 || string(peer.Data["revocationEpoch"]) != "0" {
+		t.Fatalf("peer WireGuard rotation metadata = %#v", peer.Data)
+	}
 	if err := RevokePeer(context.Background(), kube, "system", sites[0].UID); err != nil {
 		t.Fatal(err)
 	}

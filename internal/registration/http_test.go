@@ -76,7 +76,9 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	}
 	signingKey := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "mspsql-plan-signing-key"},
-		Data:       map[string][]byte{"publicKey": []byte("public-key")},
+		Data: map[string][]byte{
+			"publicKey": []byte("public-key"), "keyID": []byte("plan-key-id"),
+		},
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&api.SiteRegistration{}).
@@ -128,6 +130,15 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	if postResponse.Code != http.StatusOK {
 		t.Fatalf("bind response: code=%d body=%s", postResponse.Code, postResponse.Body.String())
 	}
+	var binding BindResponse
+	if err := json.Unmarshal(postResponse.Body.Bytes(), &binding); err != nil {
+		t.Fatal(err)
+	}
+	if binding.PlanPublicKeyID != "plan-key-id" ||
+		binding.WireGuardKeyID == "" ||
+		binding.RevocationEpoch != "0" {
+		t.Fatalf("bind rotation metadata = %#v", binding)
+	}
 	var updated api.SiteRegistration
 	if err := kube.Get(context.Background(), types.NamespacedName{Name: "vic"}, &updated); err != nil {
 		t.Fatal(err)
@@ -160,6 +171,9 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 	}
 	if len(peer.OwnerReferences) != 1 || peer.OwnerReferences[0].UID != site.UID {
 		t.Fatalf("peer owner references = %#v", peer.OwnerReferences)
+	}
+	if len(peer.Data["keyID"]) == 0 || string(peer.Data["revocationEpoch"]) != "0" {
+		t.Fatalf("peer rotation metadata = %#v", peer.Data)
 	}
 }
 

@@ -19,7 +19,9 @@ package wireguard
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
@@ -84,10 +86,12 @@ func EnsureHubIdentity(ctx context.Context, kube client.Client, namespace, cidr 
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: IdentitySecretName},
 		Immutable:  pointer(true),
 		Data: map[string][]byte{
-			"privateKey":  []byte(privateKey),
-			"publicKey":   []byte(publicKey),
-			"networkCIDR": []byte(prefix.String()),
-			"address":     []byte(address.String()),
+			"privateKey":      []byte(privateKey),
+			"publicKey":       []byte(publicKey),
+			"keyID":           []byte(keyID(publicKey)),
+			"revocationEpoch": []byte("0"),
+			"networkCIDR":     []byte(prefix.String()),
+			"address":         []byte(address.String()),
 			"interface.conf": fmt.Appendf(nil,
 				"[Interface]\nPrivateKey = %s\nAddress = %s/%d\nListenPort = 51820\n",
 				privateKey, address, prefix.Bits()),
@@ -135,6 +139,7 @@ func AuthorizePeer(ctx context.Context, kube client.Client, namespace, cidr, end
 		},
 		Data: map[string][]byte{
 			"publicKey": []byte(publicKey), "address": []byte(address.String()),
+			"keyID": []byte(keyID(publicKey)), "revocationEpoch": []byte("0"),
 			"siteName": []byte(site.Name), "state": []byte("authorized"),
 		},
 	}
@@ -157,6 +162,11 @@ func AuthorizePeer(ctx context.Context, kube client.Client, namespace, cidr, end
 	return fmt.Sprintf(
 		"Address = %s/32\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = %s/32\nPersistentKeepalive = 25\n",
 		address, identity.PublicKey, endpoint, identity.Address), nil
+}
+
+func keyID(publicKey string) string {
+	sum := sha256.Sum256([]byte(publicKey))
+	return hex.EncodeToString(sum[:8])
 }
 
 func RevokePeer(ctx context.Context, kube client.Client, namespace string, uid types.UID) error {
