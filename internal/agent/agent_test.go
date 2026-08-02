@@ -69,16 +69,17 @@ func TestCacheRejectsRollback(t *testing.T) {
 		Client: kube, Namespace: "system", PublicKey: publicKey, SiteUID: "site",
 		Now: func() time.Time { return now },
 	}
-	sign := func(revision int64) plan.Envelope {
+	sign := func(revision int64, addresses map[string]string) plan.Envelope {
 		envelope, err := plan.Sign(privateKey, plan.SitePlan{
 			SiteUID: "site", InstanceUID: "instance", Revision: revision,
+			MemberAddresses: addresses,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return envelope
 	}
-	envelope := sign(2)
+	envelope := sign(2, map[string]string{"postgres-vic-0": "10.0.0.10"})
 	if _, err := cache.Store(context.Background(), envelope, "instance"); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,11 @@ func TestCacheRejectsRollback(t *testing.T) {
 		t.Fatalf("duplicate plan changed cache resourceVersion: %s -> %s",
 			before.ResourceVersion, after.ResourceVersion)
 	}
-	if _, err := cache.Store(context.Background(), sign(1), "instance"); err == nil {
+	if _, err := cache.Store(context.Background(),
+		sign(2, map[string]string{"postgres-vic-0": "10.0.0.11"}), "instance"); err == nil {
+		t.Fatal("equal-revision equivocation was accepted")
+	}
+	if _, err := cache.Store(context.Background(), sign(1, nil), "instance"); err == nil {
 		t.Fatal("rollback plan was accepted")
 	}
 }
