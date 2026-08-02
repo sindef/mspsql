@@ -896,6 +896,13 @@ func TestMajorUpgradeRequiresAgentCapability(t *testing.T) {
 	if missing := missingPlanCapabilities(instance, registrations, nil); len(missing) != 0 {
 		t.Fatalf("non-major plan required capabilities: %#v", missing)
 	}
+	required := requiredPlanCapabilities(&plan.MajorUpgradePlan{})
+	if len(required) != 1 || required[0] != capabilityMajorUpgradeSyncBeforeWrites {
+		t.Fatalf("required major-upgrade capabilities = %#v", required)
+	}
+	if required := requiredPlanCapabilities(nil); len(required) != 0 {
+		t.Fatalf("non-major required capabilities = %#v", required)
+	}
 }
 
 func TestBackupSchedulerIssuesOneCatchUpDirective(t *testing.T) {

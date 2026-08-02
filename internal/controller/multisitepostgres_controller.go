@@ -234,9 +234,12 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			AddressCandidates:  addressCandidates,
 			AddressMigration:   addressMigration,
 			CredentialRotation: credentialRotation,
-			Restore:            restorePlan,
-			Upgrade:            upgradePlan,
-			MajorUpgrade:       majorUpgradePlan,
+			RequiredCapabilities: requiredPlanCapabilities(
+				majorUpgradePlan,
+			),
+			Restore:      restorePlan,
+			Upgrade:      upgradePlan,
+			MajorUpgrade: majorUpgradePlan,
 		}
 		envelope, err := plan.Sign(privateKey, desired)
 		if err != nil {
@@ -473,20 +476,29 @@ func missingPlanCapabilities(instance *multisitepostgresv1alpha1.MultiSitePostgr
 	registrations map[string]*multisitepostgresv1alpha1.SiteRegistration,
 	majorUpgradePlan *plan.MajorUpgradePlan,
 ) []string {
-	if majorUpgradePlan == nil {
+	required := requiredPlanCapabilities(majorUpgradePlan)
+	if len(required) == 0 {
 		return nil
 	}
 	var missing []string
 	for _, site := range instance.Spec.Sites {
 		registration := registrations[site.Name]
-		if registration == nil ||
-			!slices.Contains(registration.Status.Capabilities, capabilityMajorUpgradeSyncBeforeWrites) {
-			missing = append(missing, fmt.Sprintf("%s/%s:%s",
-				site.Name, site.SiteRegistrationRef, capabilityMajorUpgradeSyncBeforeWrites))
+		for _, capability := range required {
+			if registration == nil || !slices.Contains(registration.Status.Capabilities, capability) {
+				missing = append(missing, fmt.Sprintf("%s/%s:%s",
+					site.Name, site.SiteRegistrationRef, capability))
+			}
 		}
 	}
 	slices.Sort(missing)
 	return missing
+}
+
+func requiredPlanCapabilities(majorUpgradePlan *plan.MajorUpgradePlan) []string {
+	if majorUpgradePlan == nil {
+		return nil
+	}
+	return []string{capabilityMajorUpgradeSyncBeforeWrites}
 }
 
 func (r *MultiSitePostgresReconciler) validateInstanceClaims(ctx context.Context,

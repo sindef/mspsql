@@ -48,6 +48,7 @@ type SitePlan struct {
 	AddressCandidates        map[string]string           `json:"addressCandidates,omitempty"`
 	AddressMigration         *AddressMigrationPlan       `json:"addressMigration,omitempty"`
 	CredentialRotation       *CredentialRotationPlan     `json:"credentialRotation,omitempty"`
+	RequiredCapabilities     []string                    `json:"requiredCapabilities,omitempty"`
 	RuntimeCredentialVersion int64                       `json:"-"`
 	RuntimeCertificateHashes map[string]string           `json:"-"`
 	Restore                  *RestorePlan                `json:"restore,omitempty"`

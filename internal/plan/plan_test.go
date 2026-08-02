@@ -19,6 +19,7 @@ package plan
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"testing"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
@@ -49,6 +50,38 @@ func TestSignVerify(t *testing.T) {
 	}
 	if _, err := Verify(publicKey, envelope, "site-1", "instance-1", 5); err == nil {
 		t.Fatal("old plan revision was accepted")
+	}
+}
+
+func TestVerifyAllowsUnknownOptionalFields(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := Canonical(map[string]any{
+		"protocolVersion":      ProtocolVersion,
+		"siteUID":              "site-1",
+		"instanceUID":          "instance-1",
+		"revision":             4,
+		"generatedAt":          "2026-08-02T00:00:00Z",
+		"site":                 map[string]any{"name": "vic"},
+		"postgres":             map[string]any{"majorVersion": 17},
+		"credentials":          map[string]any{},
+		"futureOptionalPolicy": map[string]any{"mode": "observe"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := Envelope{
+		Plan:      payload,
+		Signature: base64.RawStdEncoding.EncodeToString(ed25519.Sign(privateKey, payload)),
+	}
+	got, err := Verify(publicKey, envelope, "site-1", "instance-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProtocolVersion != ProtocolVersion || got.Revision != 4 {
+		t.Fatalf("verified plan = %#v", got)
 	}
 }
 

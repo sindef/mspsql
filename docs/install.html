@@ -57,6 +57,15 @@ kustomize build /tmp/mspsql-config/tun-device-plugin &gt; rendered/20-tun-device
 
   <p class="note">Release images are published by immutable version tag, signed by digest, and built with SBOM and provenance attestations. Pin hub, TUN plugin, generated site-agent, gateway, WireGuard, PostgreSQL runtime, and upgrade images by digest before production apply.</p>
 
+  <h2>Upgrade Order</h2>
+  <table>
+    <tr><th>Hub</th><th>Site agent</th><th>Supported behavior</th></tr>
+    <tr><td>N</td><td>N</td><td>All operations permitted when registrations advertise the operation capabilities required by the signed plan.</td></tr>
+    <tr><td>N</td><td>N-1</td><td>Safe reconciliation can continue. Major upgrades are blocked with <code>AgentCapabilityMissing</code> until every target site advertises <code>major-upgrade-sync-before-writes</code>.</td></tr>
+    <tr><td>N-1</td><td>N</td><td>Agents accept signed <code>v1alpha1</code> plans and ignore unknown optional fields. New required operations must wait until the hub is upgraded.</td></tr>
+  </table>
+  <p>Rollback is supported within a single <code>v1alpha1</code> storage window. Do not downgrade after applying a CRD storage-version migration or a required-capability operation that the older hub cannot produce or repair.</p>
+
   <h2>Install Hub</h2>
   <pre><code>kubectl --context "${HUB_CTX}" apply -f rendered/00-crds.yaml
 kubectl --context "${HUB_CTX}" apply -f rendered/20-tun-device-plugin.yaml
