@@ -19,6 +19,9 @@
 
   <h1>CRD Reference</h1>
   <p>API group: <code>multisite-postgres.dev/v1alpha1</code>. Hub-scoped workload CRs are namespaced unless noted.</p>
+  <h2>Compatibility</h2>
+  <p>The current storage API is <code>multisite-postgres.dev/v1alpha1</code>. Objects written in this storage window must round-trip without losing spec, status, lifecycle, condition, operation-progress, backup, identity, and policy fields.</p>
+  <p>Downgrade is supported only inside the same <code>v1alpha1</code> storage window and before any future CRD storage-version migration. A future hub version that introduces required operation capabilities must block unsafe operations until every target site agent advertises support.</p>
 
   <h2>SiteRegistration</h2>
   <p><strong>Scope:</strong> cluster. <strong>Short name:</strong> <code>site</code>. Declares one target cluster and its allowed platform policy.</p>
