@@ -772,11 +772,12 @@ func TestReadyRequiresTopologyConsensusWithoutSynchronousStandbys(t *testing.T) 
 }
 
 func TestBackupSchedulingUsesDataSiteReadinessDuringControlDegradation(t *testing.T) {
-	instance := &api.MultiSitePostgres{
+	base := api.MultiSitePostgres{
 		Spec: api.MultiSitePostgresSpec{
 			Backup: &api.BackupSpec{},
 			Sites: []api.PostgresSiteSpec{
 				{Name: "vic", Role: api.SiteRoleData},
+				{Name: "qld", Role: api.SiteRoleData},
 				{Name: "nsw", Role: api.SiteRoleWitness},
 			},
 		},
@@ -784,6 +785,7 @@ func TestBackupSchedulingUsesDataSiteReadinessDuringControlDegradation(t *testin
 			ActiveRevision: 6,
 			Sites: []api.SiteRevisionStatus{
 				{Name: "vic", AppliedRevision: 6},
+				{Name: "qld", AppliedRevision: 6},
 				{Name: "nsw", AppliedRevision: 5},
 			},
 			Conditions: []metav1.Condition{
@@ -793,12 +795,76 @@ func TestBackupSchedulingUsesDataSiteReadinessDuringControlDegradation(t *testin
 			},
 		},
 	}
-	if !backupSchedulingReady(instance, nil, nil, nil, false) {
-		t.Fatal("backup scheduling was blocked by an unrelated witness/control outage")
+	tests := []struct {
+		name            string
+		mutate          func(*api.MultiSitePostgres)
+		restorePlan     *plan.RestorePlan
+		upgradePlan     *plan.UpgradePlan
+		majorUpgrade    *plan.MajorUpgradePlan
+		operationActive bool
+		want            bool
+	}{
+		{
+			name: "witness outage allows backup",
+			want: true,
+		},
+		{
+			name: "standby data site stale blocks backup",
+			mutate: func(instance *api.MultiSitePostgres) {
+				instance.Status.Sites[1].AppliedRevision = 5
+			},
+		},
+		{
+			name: "primary data site stale blocks backup",
+			mutate: func(instance *api.MultiSitePostgres) {
+				instance.Status.Sites[0].AppliedRevision = 5
+			},
+		},
+		{
+			name: "topology uncertainty blocks backup",
+			mutate: func(instance *api.MultiSitePostgres) {
+				meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+					Type: "TopologyReady", Status: metav1.ConditionFalse, Reason: "InsufficientObservations",
+				})
+			},
+		},
+		{
+			name: "backup TLS gap blocks backup",
+			mutate: func(instance *api.MultiSitePostgres) {
+				meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+					Type: "BackupTLSReady", Status: metav1.ConditionFalse, Reason: "CertificatePending",
+				})
+			},
+		},
+		{
+			name:        "restore operation blocks backup",
+			restorePlan: &plan.RestorePlan{},
+		},
+		{
+			name:        "minor upgrade operation blocks backup",
+			upgradePlan: &plan.UpgradePlan{},
+		},
+		{
+			name:         "major upgrade operation blocks backup",
+			majorUpgrade: &plan.MajorUpgradePlan{},
+		},
+		{
+			name:            "active child operation blocks backup",
+			operationActive: true,
+		},
 	}
-	instance.Status.Sites[0].AppliedRevision = 5
-	if backupSchedulingReady(instance, nil, nil, nil, false) {
-		t.Fatal("backup scheduling ignored stale data-site convergence")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := base.DeepCopy()
+			if test.mutate != nil {
+				test.mutate(instance)
+			}
+			got := backupSchedulingReady(instance, test.restorePlan, test.upgradePlan,
+				test.majorUpgrade, test.operationActive)
+			if got != test.want {
+				t.Fatalf("backupSchedulingReady = %t, want %t", got, test.want)
+			}
+		})
 	}
 }
 

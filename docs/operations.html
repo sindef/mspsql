@@ -37,6 +37,12 @@ kubectl --context "${VIC_CTX}" -n mspsql-agent get events.events.k8s.io --sort-b
     <li>Use a unique repository <code>prefix</code> per instance.</li>
     <li>Check <code>status.lastBackupTime</code>, <code>status.recoveryWindowStart</code>, and backup schedule status.</li>
   </ul>
+  <table>
+    <tr><th>Condition</th><th>Backup behavior</th><th>Topology-changing behavior</th></tr>
+    <tr><td>Witness/control-only site disconnected</td><td>Allowed when data sites are applied and backup TLS/topology are ready.</td><td>Guarded until observers recover.</td></tr>
+    <tr><td>Primary or standby data site disconnected/stale</td><td>Blocked.</td><td>Blocked to avoid split-primary decisions.</td></tr>
+    <tr><td>Restore, minor upgrade, major upgrade, or child operation active</td><td>Blocked until the lifecycle operation completes.</td><td>Serialized by the active operation.</td></tr>
+  </table>
 
   <h2>Restore</h2>
   <pre><code>kubectl --context "${HUB_CTX}" -n database-platform apply -f docs/examples/restore.yaml
