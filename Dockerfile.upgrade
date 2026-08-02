@@ -2,6 +2,11 @@ FROM percona/percona-distribution-postgresql@sha256:f10a110088699edd09ab706446f2
 FROM percona/percona-distribution-postgresql@sha256:e2cc221e458a11b8cc39cbf74e947289568d3e182de5036eadef66d9c15569fb
 
 USER 0:0
+RUN if command -v microdnf >/dev/null 2>&1; then \
+      microdnf update -y && microdnf clean all; \
+    else \
+      dnf update -y && dnf clean all; \
+    fi
 COPY --from=source /usr/pgsql-17 /opt/mspsql/old
 RUN cp -a /usr/pgsql-18 /opt/mspsql/new \
     && test -x /opt/mspsql/old/bin/postgres \
