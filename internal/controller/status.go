@@ -29,6 +29,8 @@ const (
 
 	forceAbandonAnnotation = "multisite-postgres.dev/force-abandon"
 	forceOrphanAnnotation  = "multisite-postgres.dev/force-orphan"
+
+	capabilityMajorUpgradeSyncBeforeWrites = "major-upgrade-sync-before-writes"
 )
 
 func setCondition(conditions *[]metav1.Condition, generation int64, conditionType string,

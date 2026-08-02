@@ -155,6 +155,13 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "Upgrading"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
+	if missing := missingPlanCapabilities(&instance, registrations, majorUpgradePlan); len(missing) > 0 {
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "AgentCapabilityMissing",
+			"Plan requires newer site-agent capabilities: "+strings.Join(missing, ", "))
+		instance.Status.Phase = "Blocked"
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
+	}
 	memberAddresses, addressCandidates, addressMigration, err := r.addressPlan(ctx, &instance)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -430,6 +437,26 @@ func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgr
 	instance.Status.Phase = "Ready"
 	setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 		metav1.ConditionTrue, "AllSitesReady", "All sites applied the active revision")
+}
+
+func missingPlanCapabilities(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	registrations map[string]*multisitepostgresv1alpha1.SiteRegistration,
+	majorUpgradePlan *plan.MajorUpgradePlan,
+) []string {
+	if majorUpgradePlan == nil {
+		return nil
+	}
+	var missing []string
+	for _, site := range instance.Spec.Sites {
+		registration := registrations[site.Name]
+		if registration == nil ||
+			!slices.Contains(registration.Status.Capabilities, capabilityMajorUpgradeSyncBeforeWrites) {
+			missing = append(missing, fmt.Sprintf("%s/%s:%s",
+				site.Name, site.SiteRegistrationRef, capabilityMajorUpgradeSyncBeforeWrites))
+		}
+	}
+	slices.Sort(missing)
+	return missing
 }
 
 func (r *MultiSitePostgresReconciler) validateInstanceClaims(ctx context.Context,

@@ -255,6 +255,7 @@ func runControlLoop(ctx context.Context, target string, tlsConfig *tls.Config, c
 				ProtocolVersion: plan.ProtocolVersion,
 				Capabilities: []string{
 					"signed-cache", "server-side-apply", "cert-manager-v1", "metallb", "inventory-v1",
+					"major-upgrade-sync-before-writes",
 				},
 			},
 			Cache: cache, Reconciler: reconciler, Directives: directiveExecutor,

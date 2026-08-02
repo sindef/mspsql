@@ -771,6 +771,36 @@ func TestReadyRequiresTopologyConsensusWithoutSynchronousStandbys(t *testing.T) 
 	}
 }
 
+func TestMajorUpgradeRequiresAgentCapability(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", SiteRegistrationRef: "production-vic"},
+			{Name: "qld", SiteRegistrationRef: "production-qld"},
+		}},
+	}
+	registrations := map[string]*api.SiteRegistration{
+		"vic": {Status: api.SiteRegistrationStatus{
+			Capabilities: []string{capabilityMajorUpgradeSyncBeforeWrites},
+		}},
+		"qld": {Status: api.SiteRegistrationStatus{
+			Capabilities: []string{"inventory-v1"},
+		}},
+	}
+	missing := missingPlanCapabilities(instance, registrations, &plan.MajorUpgradePlan{})
+	if len(missing) != 1 ||
+		missing[0] != "qld/production-qld:"+capabilityMajorUpgradeSyncBeforeWrites {
+		t.Fatalf("missing capabilities = %#v", missing)
+	}
+	registrations["qld"].Status.Capabilities = append(registrations["qld"].Status.Capabilities,
+		capabilityMajorUpgradeSyncBeforeWrites)
+	if missing := missingPlanCapabilities(instance, registrations, &plan.MajorUpgradePlan{}); len(missing) != 0 {
+		t.Fatalf("capability unexpectedly missing: %#v", missing)
+	}
+	if missing := missingPlanCapabilities(instance, registrations, nil); len(missing) != 0 {
+		t.Fatalf("non-major plan required capabilities: %#v", missing)
+	}
+}
+
 func TestBackupSchedulerIssuesOneCatchUpDirective(t *testing.T) {
 	scheme := testScheme(t)
 	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
