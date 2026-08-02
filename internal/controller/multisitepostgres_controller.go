@@ -387,11 +387,13 @@ func setAppliedInstanceReady(instance *multisitepostgresv1alpha1.MultiSitePostgr
 		case plan.MajorUpgradePhaseDrain, plan.MajorUpgradePhaseStop,
 			plan.MajorUpgradePhaseSnapshot, plan.MajorUpgradePhaseUpgradePrimary,
 			plan.MajorUpgradePhaseStanzaUpgrade, plan.MajorUpgradePhaseStartPrimary,
-			plan.MajorUpgradePhaseRollback, plan.MajorUpgradePhaseRollbackStart:
+			plan.MajorUpgradePhaseReplicas, plan.MajorUpgradePhaseRestoreWrites,
+			plan.MajorUpgradePhaseFinalize, plan.MajorUpgradePhaseRollback,
+			plan.MajorUpgradePhaseRollbackStart:
 			instance.Status.Phase = "Upgrading"
 			setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 				metav1.ConditionFalse, "WriteServiceUnavailable",
-				"Write service is intentionally unavailable for the active major-upgrade phase")
+				"The major-upgrade operation is still converging and accepting writes is not yet complete")
 			return
 		}
 	}
@@ -791,8 +793,7 @@ func aggregateTopology(instance *multisitepostgresv1alpha1.MultiSitePostgres, no
 		setSynchronousReplicationCondition(instance)
 		return
 	}
-	majorPrimaryOnly := majorPhase == plan.MajorUpgradePhaseStartPrimary ||
-		majorPhase == plan.MajorUpgradePhaseRestoreWrites
+	majorPrimaryOnly := majorPhase == plan.MajorUpgradePhaseStartPrimary
 	if seedRestore {
 		dataSites = 1
 	}

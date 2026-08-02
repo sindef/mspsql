@@ -1280,6 +1280,13 @@ func TestRendererMajorUpgradeControlsServiceRestorationBoundary(t *testing.T) {
 	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
 		"postgres-vic-0": {replicas: 1, image: "postgres:18"},
 		"postgres-vic-1": {replicas: 1, image: "postgres:18"},
+		"pgpool-vic":     {replicas: 0},
+	})
+
+	desired.MajorUpgrade.Phase = plan.MajorUpgradePhaseRestoreWrites
+	assertMajorWorkloadState(t, renderer, desired, map[string]workloadExpectation{
+		"postgres-vic-0": {replicas: 1, image: "postgres:18"},
+		"postgres-vic-1": {replicas: 1, image: "postgres:18"},
 		"pgpool-vic":     {replicas: 2},
 	})
 }
@@ -1398,15 +1405,29 @@ func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	}
 	acceptanceJob := renderer.MajorAcceptanceJob(desired)
 	acceptanceCommand := acceptanceJob.Spec.Template.Spec.Containers[0].Command[2]
-	for _, expected := range []string{
-		"SHOW server_version_num", "SET synchronous_commit = local", "CREATE SCHEMA", "write_test", "DROP SCHEMA",
-	} {
+	for _, expected := range []string{"SHOW server_version_num", "SELECT pg_is_in_recovery()"} {
 		if !strings.Contains(acceptanceCommand, expected) {
 			t.Fatalf("acceptance command is missing %q:\n%s", expected, acceptanceCommand)
 		}
 	}
+	for _, unexpected := range []string{"SET synchronous_commit = local", "CREATE SCHEMA", "write_test"} {
+		if strings.Contains(acceptanceCommand, unexpected) {
+			t.Fatalf("primary acceptance command should be read-only, found %q:\n%s",
+				unexpected, acceptanceCommand)
+		}
+	}
 	if policy := acceptanceJob.Spec.Template.Spec.Containers[0].TerminationMessagePolicy; policy != corev1.TerminationMessageFallbackToLogsOnError {
 		t.Fatalf("acceptance termination message policy = %q", policy)
+	}
+	writeAcceptanceJob := renderer.MajorWriteAcceptanceJob(desired)
+	writeAcceptanceCommand := writeAcceptanceJob.Spec.Template.Spec.Containers[0].Command[2]
+	for _, expected := range []string{"SHOW server_version_num", "CREATE SCHEMA", "write_test", "DROP SCHEMA"} {
+		if !strings.Contains(writeAcceptanceCommand, expected) {
+			t.Fatalf("write acceptance command is missing %q:\n%s", expected, writeAcceptanceCommand)
+		}
+	}
+	if strings.Contains(writeAcceptanceCommand, "SET synchronous_commit = local") {
+		t.Fatalf("write acceptance command weakens synchronous commit:\n%s", writeAcceptanceCommand)
 	}
 	rollbackAcceptanceJob := renderer.MajorRollbackAcceptanceJob(desired)
 	rollbackAcceptanceCommand := rollbackAcceptanceJob.Spec.Template.Spec.Containers[0].Command[2]

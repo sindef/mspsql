@@ -1440,6 +1440,83 @@ func TestMajorUpgradeDeletionAfterWritesBlocks(t *testing.T) {
 	}
 }
 
+func TestMajorUpgradeRestoresWritesOnlyAfterSynchronousReplica(t *testing.T) {
+	scheme := testScheme(t)
+	now := time.Date(2026, 8, 2, 7, 0, 0, 0, time.UTC)
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", Generation: 4,
+			Annotations: map[string]string{
+				upgradeUIDAnnotation:      "upgrade",
+				upgradeNameAnnotation:     "orders-pg18",
+				upgradePhaseAnnotation:    string(plan.MajorUpgradePhaseReplicas),
+				upgradeRevisionAnnotation: "12",
+			},
+		},
+		Spec: api.MultiSitePostgresSpec{
+			Postgres: api.PostgresSpec{SynchronousStandbyCount: 1},
+		},
+		Status: api.MultiSitePostgresStatus{
+			ActiveRevision: 12,
+			Sites:          []api.SiteRevisionStatus{{Name: "vic", AppliedRevision: 12}},
+		},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{
+			InstanceRef: "orders", TargetMajorVersion: 18, TargetImage: "postgres:18",
+		},
+		Status: api.PostgresUpgradeStatus{Phase: "ReseedingReplicas"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}, &api.PostgresUpgrade{}).
+		WithObjects(instance, upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+	}
+	if _, err := reconciler.reconcileMajorUpgrade(context.Background(), upgrade, instance, now); err != nil {
+		t.Fatal(err)
+	}
+	var currentUpgrade api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade); err != nil {
+		t.Fatal(err)
+	}
+	if statusCondition(currentUpgrade.Status.Conditions, "Ready").Reason != "ReplicaSyncPending" {
+		t.Fatalf("replica wait status = %#v", currentUpgrade.Status)
+	}
+	var currentInstance api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &currentInstance); err != nil {
+		t.Fatal(err)
+	}
+	if currentInstance.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseReplicas) {
+		t.Fatalf("phase advanced before sync: %q", currentInstance.Annotations[upgradePhaseAnnotation])
+	}
+	currentInstance.Status.Conditions = []metav1.Condition{
+		{Type: "TopologyReady", Status: metav1.ConditionTrue},
+		{Type: "SynchronousReplicationReady", Status: metav1.ConditionTrue},
+	}
+	if err := kube.Status().Update(context.Background(), &currentInstance); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.reconcileMajorUpgrade(context.Background(), &currentUpgrade, &currentInstance, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &currentInstance); err != nil {
+		t.Fatal(err)
+	}
+	if currentInstance.Annotations[upgradePhaseAnnotation] != string(plan.MajorUpgradePhaseRestoreWrites) {
+		t.Fatalf("phase after sync = %q", currentInstance.Annotations[upgradePhaseAnnotation])
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &currentUpgrade); err != nil {
+		t.Fatal(err)
+	}
+	if currentUpgrade.Status.WriteServiceRestoredAt != nil {
+		t.Fatal("write restoration was recorded before restore-writes phase applied")
+	}
+}
+
 func TestUpgradeInstanceWatchIncludesPreflightBlockedUpgrade(t *testing.T) {
 	scheme := testScheme(t)
 	instance := &api.MultiSitePostgres{

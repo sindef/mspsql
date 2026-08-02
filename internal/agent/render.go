@@ -242,6 +242,11 @@ func (r Renderer) majorUpgradePhaseJobs(desired plan.SitePlan) []client.Object {
 		objects = append(objects, r.MajorAcceptanceJob(desired))
 	}
 	if desired.MajorUpgrade != nil &&
+		desired.MajorUpgrade.Phase == plan.MajorUpgradePhaseRestoreWrites &&
+		memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name) {
+		objects = append(objects, r.MajorWriteAcceptanceJob(desired))
+	}
+	if desired.MajorUpgrade != nil &&
 		desired.MajorUpgrade.Phase == plan.MajorUpgradePhaseRollbackStart &&
 		memberBelongsToSite(desired.MajorUpgrade.Primary, desired.Site.Name) {
 		objects = append(objects, r.MajorRollbackAcceptanceJob(desired))
@@ -258,8 +263,7 @@ func majorMemberStopped(desired plan.SitePlan, member string) bool {
 		plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
 		plan.MajorUpgradePhaseRollback:
 		return true
-	case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRollbackStart,
-		plan.MajorUpgradePhaseRestoreWrites:
+	case plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRollbackStart:
 		return member != desired.MajorUpgrade.Primary
 	default:
 		return false
@@ -273,7 +277,8 @@ func majorWriteServiceStopped(desired plan.SitePlan) bool {
 	switch desired.MajorUpgrade.Phase {
 	case plan.MajorUpgradePhaseDrain, plan.MajorUpgradePhaseStop, plan.MajorUpgradePhaseSnapshot,
 		plan.MajorUpgradePhaseUpgradePrimary, plan.MajorUpgradePhaseStanzaUpgrade,
-		plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseRollback,
+		plan.MajorUpgradePhaseStartPrimary, plan.MajorUpgradePhaseReplicas,
+		plan.MajorUpgradePhaseRollback,
 		plan.MajorUpgradePhaseRollbackStart:
 		return true
 	default:

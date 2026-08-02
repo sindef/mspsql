@@ -397,15 +397,26 @@ func (r *PostgresUpgradeReconciler) reconcileMajorUpgrade(ctx context.Context,
 			"RestoringService", "BackupStanzaUpgraded",
 			"Starting and verifying the upgraded primary", now, false)
 	case plan.MajorUpgradePhaseStartPrimary:
-		return r.advanceMajorPhase(ctx, upgrade, instance, plan.MajorUpgradePhaseRestoreWrites,
-			"RestoringWrites", "PrimaryAccepted", "Starting Pgpool write service", now, false)
-	case plan.MajorUpgradePhaseRestoreWrites:
-		restored := metav1.NewTime(now)
-		upgrade.Status.WriteServiceRestoredAt = &restored
 		return r.advanceMajorPhase(ctx, upgrade, instance, plan.MajorUpgradePhaseReplicas,
-			"ReseedingReplicas", "WriteServiceRestored", "Recloning every standby from the upgraded primary",
-			now, false)
+			"ReseedingReplicas", "PrimaryAccepted",
+			"Recloning every standby from the upgraded primary before write service is restored", now, false)
 	case plan.MajorUpgradePhaseReplicas:
+		if !conditionTrue(instance.Status.Conditions, "TopologyReady") ||
+			instance.Spec.Postgres.SynchronousStandbyCount > 0 &&
+				!conditionTrue(instance.Status.Conditions, "SynchronousReplicationReady") {
+			return ctrl.Result{}, r.setUpgradePhase(ctx, upgrade, "ReseedingReplicas",
+				"ReplicaSyncPending",
+				"Waiting for a target-version standby to catch up and become synchronous before restoring writes",
+				now)
+		}
+		return r.advanceMajorPhase(ctx, upgrade, instance, plan.MajorUpgradePhaseRestoreWrites,
+			"RestoringWrites", "ReplicaSyncVerified", "Starting Pgpool write service after synchronous replay proof",
+			now, false)
+	case plan.MajorUpgradePhaseRestoreWrites:
+		if upgrade.Status.WriteServiceRestoredAt == nil {
+			restored := metav1.NewTime(now)
+			upgrade.Status.WriteServiceRestoredAt = &restored
+		}
 		base := instance.DeepCopy()
 		instance.Spec.Postgres.MajorVersion = upgrade.Spec.TargetMajorVersion
 		instance.Spec.Postgres.Image = upgrade.Spec.TargetImage

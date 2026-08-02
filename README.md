@@ -156,13 +156,14 @@ record must be at most 30 days old, and its estimated write outage must fit
 The state machine requests and verifies a new full backup, drains Pgpool,
 stops every member, captures rollback storage, converts only the former
 primary, runs offline `pgbackrest stanza-upgrade`, and verifies the target
-catalog, TDE audit, and a committed write before restoring Pgpool. Standbys are
-then wiped and recloned through Patroni. Completion requires synchronous
-topology and another verified full backup. Automatic rollback is permitted only
-before Pgpool is restored; afterward the operator preserves new writes and
-reports that forward repair is required. Rollback itself restores every PVC,
-resets Patroni DCS state, verifies the source version, and only then restores
-Pgpool.
+catalog and TDE audit while Pgpool remains drained. Standbys are then wiped and
+recloned through Patroni. Pgpool is restored only after a target-version standby
+is caught up and observed as synchronous, and the committed acceptance write uses
+the instance's configured synchronous commit policy. Completion requires another
+verified full backup. Automatic rollback is permitted only before Pgpool is
+restored; afterward the operator preserves new writes and reports that forward
+repair is required. Rollback itself restores every PVC, resets Patroni DCS state,
+verifies the source version, and only then restores Pgpool.
 
 Minor upgrades roll one PostgreSQL member at a time. The first target must be
 an observed synchronous standby; after its StatefulSet rollout is fully

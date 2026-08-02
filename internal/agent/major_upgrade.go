@@ -604,6 +604,12 @@ pgbackrest --config=/tmp/pgbackrest.conf --stanza=%q --no-online stanza-upgrade
 func (r Renderer) MajorAcceptanceJob(desired plan.SitePlan) *batchv1.Job {
 	upgrade := desired.MajorUpgrade
 	return r.majorAcceptanceJob(desired, "major-acceptance-", upgrade.TargetImage,
+		upgrade.TargetMajor, false)
+}
+
+func (r Renderer) MajorWriteAcceptanceJob(desired plan.SitePlan) *batchv1.Job {
+	upgrade := desired.MajorUpgrade
+	return r.majorAcceptanceJob(desired, "major-write-acceptance-", upgrade.TargetImage,
 		upgrade.TargetMajor, true)
 }
 
@@ -637,7 +643,6 @@ test "$(psql -X -h %q -d postgres -Atqc 'SHOW server_version_num')" -ge %d0000
 `, host, host, expectedMajor)
 	if writeTest {
 		script += fmt.Sprintf(`psql -X -h %q -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-SET synchronous_commit = local;
 DROP SCHEMA IF EXISTS %s CASCADE;
 CREATE SCHEMA %s;
 CREATE TABLE %s.write_test (value integer PRIMARY KEY);
