@@ -218,6 +218,39 @@ func TestPlanResultDoesNotSetAggregateReady(t *testing.T) {
 	}
 }
 
+func TestUpdateInstanceSiteSkipsUnchangedStatusWrite(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance-uid"),
+		},
+		Status: api.MultiSitePostgresStatus{Sites: []api.SiteRevisionStatus{{
+			Name: "vic", DesiredRevision: 4, AppliedRevision: 4, Phase: "Ready",
+		}}},
+	}
+	statusUpdates := 0
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance).
+		WithObjects(instance).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, underlying client.Client, subresource string,
+			object client.Object, options ...client.SubResourceUpdateOption,
+		) error {
+			statusUpdates++
+			return underlying.Status().Update(ctx, object, options...)
+		},
+	}).Build()
+	server := &Server{Client: kube}
+	if err := server.updateInstanceSite(context.Background(), string(instance.UID), "vic",
+		func(_ *api.SiteRevisionStatus) {}); err != nil {
+		t.Fatal(err)
+	}
+	if statusUpdates != 0 {
+		t.Fatalf("unchanged site report wrote status %d times", statusUpdates)
+	}
+}
+
 func TestAggregateConditionsExcludesWitnessFromPatroni(t *testing.T) {
 	healthy := func(conditionTypes ...string) []metav1.Condition {
 		conditions := make([]metav1.Condition, 0, len(conditionTypes))

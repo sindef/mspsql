@@ -34,6 +34,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1023,9 +1024,13 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 			}
 			for j := range instance.Status.Sites {
 				if instance.Status.Sites[j].Name == siteName {
+					before := instance.Status.Sites[j].DeepCopy()
 					update(&instance.Status.Sites[j])
 					for k := range instance.Status.Sites[j].Conditions {
 						instance.Status.Sites[j].Conditions[k].ObservedGeneration = instance.Generation
+					}
+					if apiequality.Semantic.DeepEqual(before, &instance.Status.Sites[j]) {
+						return nil
 					}
 					return s.Client.Status().Update(ctx, instance)
 				}
