@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -58,12 +59,16 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.Get(ctx, req.NamespacedName, &site); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !site.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
-	}
 	systemNamespace := r.SystemNamespace
 	if systemNamespace == "" {
 		systemNamespace = "mspsql-system"
+	}
+	if !site.DeletionTimestamp.IsZero() {
+		return r.reconcileSiteDeletion(ctx, &site, systemNamespace)
+	}
+	if !controllerutil.ContainsFinalizer(&site, siteFinalizer) {
+		controllerutil.AddFinalizer(&site, siteFinalizer)
+		return ctrl.Result{}, r.Update(ctx, &site)
 	}
 	if site.Spec.Revoked {
 		return ctrl.Result{}, r.reconcileRevoked(ctx, &site, systemNamespace)
@@ -139,6 +144,74 @@ func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+func (r *SiteRegistrationReconciler) reconcileSiteDeletion(ctx context.Context,
+	site *multisitepostgresv1alpha1.SiteRegistration, systemNamespace string,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(site, siteFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	blocking, err := r.referencingInstances(ctx, site.Name)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(blocking) > 0 {
+		return ctrl.Result{RequeueAfter: siteHeartbeatTimeout / 2},
+			r.setSiteDeletionBlocked(ctx, site, blocking)
+	}
+	if err := r.reconcileRevoked(ctx, site, systemNamespace); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKeyFromObject(site), &current); err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(&current, siteFinalizer)
+		return r.Update(ctx, &current)
+	})
+}
+
+func (r *SiteRegistrationReconciler) referencingInstances(ctx context.Context,
+	siteName string,
+) ([]string, error) {
+	var instances multisitepostgresv1alpha1.MultiSitePostgresList
+	if err := r.List(ctx, &instances); err != nil {
+		return nil, err
+	}
+	var blocking []string
+	for i := range instances.Items {
+		instance := &instances.Items[i]
+		if !instance.DeletionTimestamp.IsZero() &&
+			instance.Annotations[forceOrphanAnnotation] == "true" {
+			continue
+		}
+		for _, site := range instance.Spec.Sites {
+			if site.SiteRegistrationRef == siteName {
+				blocking = append(blocking, instance.Namespace+"/"+instance.Name)
+				break
+			}
+		}
+	}
+	return blocking, nil
+}
+
+func (r *SiteRegistrationReconciler) setSiteDeletionBlocked(ctx context.Context,
+	site *multisitepostgresv1alpha1.SiteRegistration, blocking []string,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current multisitepostgresv1alpha1.SiteRegistration
+		if err := r.Get(ctx, client.ObjectKeyFromObject(site), &current); err != nil {
+			return err
+		}
+		current.Status.ObservedGeneration = current.Generation
+		current.Status.Phase = "DeletionBlocked"
+		setCondition(&current.Status.Conditions, current.Generation, "DeletionBlocked",
+			metav1.ConditionTrue, "ReferencedByInstances",
+			"Site is still referenced by: "+strings.Join(blocking, ", "))
+		return r.Status().Update(ctx, &current)
+	})
 }
 
 func (r *SiteRegistrationReconciler) updateControllerStatus(ctx context.Context,

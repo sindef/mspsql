@@ -25,8 +25,10 @@ const (
 	instanceFinalizer  = "multisite-postgres.dev/instance-protection"
 	childFinalizer     = "multisite-postgres.dev/declaration-protection"
 	operationFinalizer = "multisite-postgres.dev/operation-protection"
+	siteFinalizer      = "multisite-postgres.dev/site-protection"
 
 	forceAbandonAnnotation = "multisite-postgres.dev/force-abandon"
+	forceOrphanAnnotation  = "multisite-postgres.dev/force-orphan"
 )
 
 func setCondition(conditions *[]metav1.Condition, generation int64, conditionType string,

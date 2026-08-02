@@ -69,6 +69,11 @@ func TestSiteRegistrationIssuesHashedToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var secret corev1.Secret
 	if err := kube.Get(context.Background(), types.NamespacedName{
 		Namespace: "system", Name: "registration-site-uid",
@@ -122,6 +127,11 @@ func TestSiteRegistrationRevocationRemovesCredentials(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{token.Name, peer.Name} {
 		var secret corev1.Secret
 		err := kube.Get(context.Background(), types.NamespacedName{Namespace: "system", Name: name}, &secret)
@@ -140,6 +150,109 @@ func TestSiteRegistrationRevocationRemovesCredentials(t *testing.T) {
 	if condition == nil || condition.Status != metav1.ConditionFalse ||
 		condition.Reason != "AdministrativelyRevoked" {
 		t.Fatalf("Connected condition = %#v", condition)
+	}
+}
+
+func TestSiteRegistrationDeletionBlocksWhileReferenced(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 4, 0, 0, 0, time.UTC))
+	site := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "vic", UID: types.UID("site-uid"), Generation: 2,
+			Finalizers: []string{siteFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+	}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
+			{Name: "vic", SiteRegistrationRef: "vic"},
+		}},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.SiteRegistration{}).
+		WithObjects(site, instance).Build()
+	reconciler := SiteRegistrationReconciler{Client: kube, Scheme: scheme, SystemNamespace: "system"}
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatal("referenced site deletion did not requeue")
+	}
+	var current api.SiteRegistration
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(site), &current); err != nil {
+		t.Fatal(err)
+	}
+	blocked := statusCondition(current.Status.Conditions, "DeletionBlocked")
+	if blocked == nil || blocked.Reason != "ReferencedByInstances" ||
+		!controllerutil.ContainsFinalizer(&current, siteFinalizer) {
+		t.Fatalf("site deletion state = status %#v finalizers %#v", current.Status, current.Finalizers)
+	}
+}
+
+func TestSiteRegistrationDeletionRevokesPeerAndToken(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 5, 0, 0, 0, time.UTC))
+	site := &api.SiteRegistration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "vic", UID: types.UID("site-uid"), Generation: 2,
+			Finalizers: []string{siteFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Status: api.SiteRegistrationStatus{ClusterUID: "cluster-uid"},
+	}
+	token := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "system", Name: "registration-site-uid",
+	}}
+	peer := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "system", Name: "wireguard-peer-site-uid",
+		Labels: map[string]string{"multisite-postgres.dev/wireguard-peer": "true"},
+	}, Data: map[string][]byte{
+		"publicKey": []byte("peer-key"), "address": []byte("10.60.0.3"),
+		"siteName": []byte("vic"), "state": []byte("authorized"),
+	}}
+	allocations := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "mspsql-wireguard-addresses"},
+		Data:       map[string]string{"site-uid": "10.60.0.3"},
+	}
+	rendered := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "system", Name: "mspsql-wireguard-peers"},
+		Data:       map[string]string{"peers.conf": "old peer"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.SiteRegistration{}).
+		WithObjects(site, token, peer, allocations, rendered).Build()
+	reconciler := SiteRegistrationReconciler{Client: kube, Scheme: scheme, SystemNamespace: "system"}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "vic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []types.NamespacedName{
+		{Namespace: "system", Name: token.Name},
+		{Namespace: "system", Name: peer.Name},
+	} {
+		var secret corev1.Secret
+		err := kube.Get(context.Background(), key, &secret)
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("%s still exists: %v", key.Name, err)
+		}
+	}
+	var currentAllocations corev1.ConfigMap
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(allocations), &currentAllocations); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := currentAllocations.Data["site-uid"]; found {
+		t.Fatalf("allocation still present: %#v", currentAllocations.Data)
+	}
+	var currentRendered corev1.ConfigMap
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(rendered), &currentRendered); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(currentRendered.Data["peers.conf"], "peer-key") ||
+		currentRendered.Data["peers.conf"] == "old peer" {
+		t.Fatalf("rendered peers not refreshed: %q", currentRendered.Data["peers.conf"])
 	}
 }
 

@@ -547,7 +547,7 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 	if !controllerutil.ContainsFinalizer(instance, instanceFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if instance.Annotations["multisite-postgres.dev/force-orphan"] == "true" {
+	if instance.Annotations[forceOrphanAnnotation] == "true" {
 		if err := r.deletePlanConfigMaps(ctx, instance); err != nil {
 			return ctrl.Result{}, err
 		}
