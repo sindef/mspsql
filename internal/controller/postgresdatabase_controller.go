@@ -20,6 +20,7 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -59,6 +60,35 @@ func (r *PostgresDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			database.Status.Phase == "Deleted" {
 			controllerutil.RemoveFinalizer(&database, childFinalizer)
 			return ctrl.Result{}, r.Update(ctx, &database)
+		}
+		var instance multisitepostgresv1alpha1.MultiSitePostgres
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: database.Namespace, Name: database.Spec.InstanceRef,
+		}, &instance)
+		if apierrors.IsNotFound(err) {
+			database.Status.ObservedGeneration = database.Generation
+			database.Status.Phase = "Orphaned"
+			setCondition(&database.Status.Conditions, database.Generation, "DeletionBlocked",
+				metav1.ConditionTrue, "ParentUnavailable",
+				"Parent instance is unavailable; set multisite-postgres.dev/force-orphan=true to abandon residual database cleanup")
+			if database.Annotations[forceOrphanAnnotation] != "true" {
+				return ctrl.Result{}, r.Status().Update(ctx, &database)
+			}
+			setCondition(&database.Status.Conditions, database.Generation, "DeletionBlocked",
+				metav1.ConditionFalse, "ForceOrphaned",
+				"Residual database cleanup was force-orphaned after parent loss")
+			if err := r.Status().Update(ctx, &database); err != nil {
+				return ctrl.Result{}, err
+			}
+			var current multisitepostgresv1alpha1.PostgresDatabase
+			if err := r.Get(ctx, req.NamespacedName, &current); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+			controllerutil.RemoveFinalizer(&current, childFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &current)
+		}
+		if err != nil {
+			return ctrl.Result{}, err
 		}
 		if err := reconcileDirective(ctx, r.Client, r.Scheme, &database,
 			"mspsql-database-"+database.Name, "Database", database.Spec.InstanceRef,

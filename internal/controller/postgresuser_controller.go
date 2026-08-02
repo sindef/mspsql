@@ -21,6 +21,7 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -60,6 +61,35 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			user.Status.Phase == "Deleted" {
 			controllerutil.RemoveFinalizer(&user, childFinalizer)
 			return ctrl.Result{}, r.Update(ctx, &user)
+		}
+		var instance multisitepostgresv1alpha1.MultiSitePostgres
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: user.Namespace, Name: user.Spec.InstanceRef,
+		}, &instance)
+		if apierrors.IsNotFound(err) {
+			user.Status.ObservedGeneration = user.Generation
+			user.Status.Phase = "Orphaned"
+			setCondition(&user.Status.Conditions, user.Generation, "DeletionBlocked",
+				metav1.ConditionTrue, "ParentUnavailable",
+				"Parent instance is unavailable; set multisite-postgres.dev/force-orphan=true to abandon residual user cleanup")
+			if user.Annotations[forceOrphanAnnotation] != "true" {
+				return ctrl.Result{}, r.Status().Update(ctx, &user)
+			}
+			setCondition(&user.Status.Conditions, user.Generation, "DeletionBlocked",
+				metav1.ConditionFalse, "ForceOrphaned",
+				"Residual user cleanup was force-orphaned after parent loss")
+			if err := r.Status().Update(ctx, &user); err != nil {
+				return ctrl.Result{}, err
+			}
+			var current multisitepostgresv1alpha1.PostgresUser
+			if err := r.Get(ctx, req.NamespacedName, &current); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+			controllerutil.RemoveFinalizer(&current, childFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &current)
+		}
+		if err != nil {
+			return ctrl.Result{}, err
 		}
 		if err := reconcileDirective(ctx, r.Client, r.Scheme, &user,
 			"mspsql-user-"+user.Name, "User", user.Spec.InstanceRef, user.Spec, true); err != nil {

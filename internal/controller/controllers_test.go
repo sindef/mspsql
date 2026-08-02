@@ -1517,6 +1517,71 @@ func TestMajorUpgradeRestoresWritesOnlyAfterSynchronousReplica(t *testing.T) {
 	}
 }
 
+func TestDatabaseDeletionBlocksWhenParentMissing(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC))
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-api", Generation: 2,
+			Finalizers: []string{childFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Spec: api.PostgresDatabaseSpec{
+			InstanceRef: "orders", DatabaseName: "orders", DeletionPolicy: api.DeletionPolicyDelete,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresDatabase{}).
+		WithObjects(database).Build()
+	reconciler := PostgresDatabaseReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-api"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var current api.PostgresDatabase
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(database), &current); err != nil {
+		t.Fatal(err)
+	}
+	blocked := statusCondition(current.Status.Conditions, "DeletionBlocked")
+	if blocked == nil || blocked.Reason != "ParentUnavailable" ||
+		!controllerutil.ContainsFinalizer(&current, childFinalizer) {
+		t.Fatalf("database deletion state = status %#v finalizers %#v", current.Status, current.Finalizers)
+	}
+}
+
+func TestUserDeletionForceOrphansWhenParentMissing(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 9, 0, 0, 0, time.UTC))
+	user := &api.PostgresUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-writer", Generation: 2,
+			Finalizers: []string{childFinalizer}, DeletionTimestamp: &deletingAt,
+			Annotations: map[string]string{forceOrphanAnnotation: "true"},
+		},
+		Spec: api.PostgresUserSpec{
+			InstanceRef: "orders", RoleName: "orders_writer", DeletionPolicy: api.DeletionPolicyDelete,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUser{}).
+		WithObjects(user).Build()
+	reconciler := PostgresUserReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-writer"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var current api.PostgresUser
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(user), &current); apierrors.IsNotFound(err) {
+		return
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&current, childFinalizer) {
+		t.Fatalf("user finalizer was not removed: %#v", current.Finalizers)
+	}
+}
+
 func TestUpgradeInstanceWatchIncludesPreflightBlockedUpgrade(t *testing.T) {
 	scheme := testScheme(t)
 	instance := &api.MultiSitePostgres{
