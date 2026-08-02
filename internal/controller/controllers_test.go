@@ -1753,6 +1753,43 @@ func TestMajorUpgradeRetriesPostUpgradeBackup(t *testing.T) {
 	}
 }
 
+func TestMajorUpgradePostUpgradeBackupRetryLimit(t *testing.T) {
+	scheme := testScheme(t)
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"), Generation: 1,
+		},
+		Spec: api.PostgresUpgradeSpec{InstanceRef: "orders"},
+		Status: api.PostgresUpgradeStatus{
+			Phase:                    "Finalizing",
+			PostUpgradeBackupAttempt: maxPostUpgradeBackupAttempts,
+			Conditions: []metav1.Condition{{
+				Type: "PostUpgradeBackupReady", Status: metav1.ConditionFalse,
+				Reason: "BackupFailed", Message: "repository denied access",
+			}},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUpgrade{}).WithObjects(upgrade).Build()
+	reconciler := PostgresUpgradeReconciler{Client: kube, Scheme: scheme}
+	ready, err := reconciler.ensurePostUpgradeBackup(context.Background(), upgrade,
+		time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC))
+	if err != nil || ready {
+		t.Fatalf("retry limit result = %t, %v", ready, err)
+	}
+	var current api.PostgresUpgrade
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(upgrade), &current); err != nil {
+		t.Fatal(err)
+	}
+	backup := statusCondition(current.Status.Conditions, "PostUpgradeBackupReady")
+	readyCondition := statusCondition(current.Status.Conditions, "Ready")
+	if current.Status.PostUpgradeBackupAttempt != maxPostUpgradeBackupAttempts ||
+		backup == nil || backup.Reason != "ManualInterventionRequired" ||
+		readyCondition == nil || readyCondition.Reason != "ManualInterventionRequired" {
+		t.Fatalf("manual intervention status = %#v", current.Status)
+	}
+}
+
 func TestMinorUpgradeRollsReplicaThenSwitchesPrimary(t *testing.T) {
 	scheme := testScheme(t)
 	instance := &api.MultiSitePostgres{

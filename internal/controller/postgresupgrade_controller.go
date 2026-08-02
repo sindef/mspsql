@@ -50,6 +50,8 @@ const (
 	upgradeSwitchedAnnotation    = "multisite-postgres.dev/upgrade-switched"
 	upgradeRevisionAnnotation    = "multisite-postgres.dev/upgrade-expected-revision"
 	upgradeSourceMajorAnnotation = "multisite-postgres.dev/upgrade-source-major"
+
+	maxPostUpgradeBackupAttempts = int32(5)
 )
 
 // PostgresUpgradeReconciler reconciles a PostgresUpgrade object
@@ -475,6 +477,16 @@ func (r *PostgresUpgradeReconciler) ensurePostUpgradeBackup(ctx context.Context,
 	}
 	if condition != nil && condition.Status == metav1.ConditionFalse &&
 		condition.Reason == "BackupFailed" {
+		if upgrade.Status.PostUpgradeBackupAttempt >= maxPostUpgradeBackupAttempts {
+			setCondition(&upgrade.Status.Conditions, upgrade.Generation, "PostUpgradeBackupReady",
+				metav1.ConditionFalse, "ManualInterventionRequired",
+				"Post-upgrade backup retry limit reached; fix repository access and request operator repair")
+			setCondition(&upgrade.Status.Conditions, upgrade.Generation, "Ready",
+				metav1.ConditionFalse, "ManualInterventionRequired",
+				"Major upgrade is blocked until the required post-upgrade backup is repaired")
+			upgrade.Status.Phase = "Finalizing"
+			return false, r.Status().Update(ctx, upgrade)
+		}
 		upgrade.Status.PostUpgradeBackupAttempt++
 		upgrade.Status.PostUpgradeBackupRequestedAt = nil
 		setCondition(&upgrade.Status.Conditions, upgrade.Generation, "PostUpgradeBackupReady",
