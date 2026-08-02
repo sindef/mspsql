@@ -74,6 +74,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Scan image digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image.name }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
       - name: Sign image digest
         env:
           COSIGN_EXPERIMENTAL: "true"
