@@ -1,11 +1,12 @@
 :root {
-  color-scheme: light dark;
-  --bg: #fbfbf8;
-  --fg: #202124;
-  --muted: #5f6368;
-  --line: #d8d7d0;
-  --code: #f1f3f4;
-  --accent: #0b6bcb;
+  color-scheme: dark;
+  --bg: #111111;
+  --fg: #eeeeee;
+  --muted: #b8b8b8;
+  --line: #343434;
+  --code: #1d1d1d;
+  --accent: #61d394;
+  --accent-hover: #8ee6b4;
 }
 
 body {
@@ -33,6 +34,10 @@ nav a, a {
   color: var(--accent);
 }
 
+nav a:hover, a:hover {
+  color: var(--accent-hover);
+}
+
 h1, h2, h3 {
   line-height: 1.2;
 }
@@ -54,12 +59,14 @@ code, pre {
 
 code {
   padding: 0.1rem 0.25rem;
+  border-radius: 4px;
 }
 
 pre {
   overflow-x: auto;
   padding: 14px;
   border: 1px solid var(--line);
+  border-radius: 6px;
 }
 
 table {
@@ -73,6 +80,10 @@ th, td {
   padding: 8px;
   text-align: left;
   vertical-align: top;
+}
+
+th {
+  color: #ffffff;
 }
 
 .note {
