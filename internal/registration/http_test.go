@@ -180,10 +180,10 @@ func TestRegistrationBindingConsumesToken(t *testing.T) {
 
 func TestGeneratedAgentRBACDoesNotGrantBroadSecretAccess(t *testing.T) {
 	rules := agentClusterRoleRules("vic")
-	if ruleAllows(rules, "", "secrets", "", "get") {
+	if secretRuleAllows(rules, "", "get") {
 		t.Fatalf("agent ClusterRole permits broad Secret get")
 	}
-	if ruleAllows(rules, "", "secrets", "", "delete") {
+	if secretRuleAllows(rules, "", "delete") {
 		t.Fatalf("agent ClusterRole permits broad Secret delete")
 	}
 	for _, name := range []string{
@@ -193,23 +193,23 @@ func TestGeneratedAgentRBACDoesNotGrantBroadSecretAccess(t *testing.T) {
 		"etcd-vic-0-tls",
 		"pgpool-vic-tls",
 	} {
-		if !ruleAllows(rules, "", "secrets", name, "get") {
+		if !secretRuleAllows(rules, name, "get") {
 			t.Fatalf("agent ClusterRole does not permit Secret get for %s", name)
 		}
-		if !ruleAllows(rules, "", "secrets", name, "delete") {
+		if !secretRuleAllows(rules, name, "delete") {
 			t.Fatalf("agent ClusterRole does not permit Secret delete for %s", name)
 		}
 	}
-	if ruleAllows(rules, "", "secrets", "tenant-password", "get") {
+	if secretRuleAllows(rules, "tenant-password", "get") {
 		t.Fatalf("agent ClusterRole permits unrelated named Secret")
 	}
 }
 
-func ruleAllows(rules []any, group, resource, resourceName, verb string) bool {
+func secretRuleAllows(rules []any, resourceName, verb string) bool {
 	for _, item := range rules {
 		rule, ok := item.(map[string]any)
-		if !ok || !containsString(rule["apiGroups"], group) ||
-			!containsString(rule["resources"], resource) || !containsString(rule["verbs"], verb) {
+		if !ok || !containsString(rule["apiGroups"], "") ||
+			!containsString(rule["resources"], "secrets") || !containsString(rule["verbs"], verb) {
 			continue
 		}
 		names, scoped := rule["resourceNames"]
