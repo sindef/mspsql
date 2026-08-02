@@ -56,6 +56,11 @@ Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold
 The e2e tests are designed to validate the solution in an isolated environment (similar to GitHub Actions CI).
 Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluster (not your “real” dev/prod cluster).
 
+### CI Gates Are Acceptance Criteria
+Any change is accepted only after all CI gates pass: lint, unit tests,
+generated/manifest checks, race/images, E2E, and Pages when docs are affected.
+Do not treat docs-only, workflow-only, or manifest-only changes as exempt.
+
 ## After Making Changes
 
 **After editing `*_types.go` or markers:**
