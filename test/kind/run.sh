@@ -3,17 +3,35 @@
 set -euo pipefail
 
 kind_bin="$(command -v "${KIND:-kind}")"
+kubectl_bin="$(command -v kubectl)"
 command -v jq >/dev/null
 kind() {
   "${kind_bin}" "$@"
 }
 
+diagnostics_deadline=0
+diagnostics_budget_seconds=480
+
+diagnostic_timeout() {
+  local maximum_seconds="$1"
+  shift
+  local remaining_seconds=$((diagnostics_deadline - SECONDS))
+  if (( remaining_seconds <= 0 )); then
+    echo "diagnostics budget of ${diagnostics_budget_seconds}s exhausted" >&2
+    return 124
+  fi
+  if (( remaining_seconds > maximum_seconds )); then
+    remaining_seconds="${maximum_seconds}"
+  fi
+  timeout "${remaining_seconds}s" "$@"
+}
+
 kind_diag() {
-  timeout 120s "${kind_bin}" "$@"
+  diagnostic_timeout 120 "${kind_bin}" "$@"
 }
 
 kubectl_diag() {
-  timeout 25s kubectl --request-timeout=10s "$@"
+  diagnostic_timeout 25 "${kubectl_bin}" --request-timeout=10s "$@"
 }
 
 clusters=(mspsql-hub mspsql-vic mspsql-nsw mspsql-qld)
@@ -36,8 +54,132 @@ metallb_version="v0.16.0"
 temp_dir="$(mktemp -d)"
 diagnostics_dir="${ARTIFACT_DIR:-${temp_dir}/diagnostics}"
 mkdir -p "${diagnostics_dir}"
+current_phase="startup"
 original_inotify_instances="$(sysctl -n fs.inotify.max_user_instances)"
 inotify_instances_changed=false
+
+e2e_phase() {
+  if [[ -n "${GITHUB_ACTIONS:-}" && "${current_phase}" != "startup" ]]; then
+    echo "::endgroup::"
+  fi
+  current_phase="$1"
+  echo "E2E_PHASE=${current_phase}"
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "::group::E2E phase: ${current_phase}"
+  fi
+}
+
+kubectl_command_context() {
+  local namespace="default"
+  local resource="unknown"
+  local verb=""
+  local argument
+  local next_is_namespace=false
+  local next_is_resource=false
+  for argument in "$@"; do
+    if [[ "${next_is_namespace}" == "true" ]]; then
+      namespace="${argument}"
+      next_is_namespace=false
+      continue
+    fi
+    if [[ "${next_is_resource}" == "true" ]]; then
+      resource="${argument}"
+      [[ "${resource}" == "-" ]] && resource="stdin"
+      next_is_resource=false
+      continue
+    fi
+    case "${argument}" in
+      -n|--namespace) next_is_namespace=true ;;
+      --namespace=*) namespace="${argument#*=}" ;;
+      -f|--filename) next_is_resource=true ;;
+      --filename=*) resource="${argument#*=}" ;;
+      get|wait|apply|rollout) verb="${argument}" ;;
+      status) ;;
+      -*) ;;
+      *)
+        if [[ -n "${verb}" && "${resource}" == "unknown" ]]; then
+          resource="${argument}"
+        fi
+        ;;
+    esac
+  done
+  printf 'namespace=%q resource=%q' "${namespace}" "${resource}"
+}
+
+kubectl_retry() {
+  local max_attempts=5
+  local attempt=1
+  local status=0
+  local output_file error_file input_file=""
+  local argument previous_argument=""
+  output_file="$(mktemp "${temp_dir}/kubectl-output.XXXXXX")"
+  error_file="$(mktemp "${temp_dir}/kubectl-error.XXXXXX")"
+
+  for argument in "$@"; do
+    if [[ ( "${previous_argument}" == "-f" || "${previous_argument}" == "--filename" ) &&
+      "${argument}" == "-" ]] || [[ "${argument}" == "--filename=-" ]]; then
+      input_file="$(mktemp "${temp_dir}/kubectl-input.XXXXXX")"
+      cat >"${input_file}"
+      break
+    fi
+    previous_argument="${argument}"
+  done
+
+  while (( attempt <= max_attempts )); do
+    if [[ -n "${input_file}" ]]; then
+      "${kubectl_bin}" "$@" <"${input_file}" >"${output_file}" 2>"${error_file}" && status=0 || status=$?
+    else
+      "${kubectl_bin}" "$@" >"${output_file}" 2>"${error_file}" && status=0 || status=$?
+    fi
+    if (( status == 0 )); then
+      cat "${output_file}"
+      rm -f "${output_file}" "${error_file}"
+      if [[ -n "${input_file}" ]]; then
+        rm -f "${input_file}"
+      fi
+      return 0
+    fi
+    if ! grep -Eqi 'Timeout|EOF|client rate limiter|context deadline exceeded' \
+      "${error_file}"; then
+      break
+    fi
+    if (( attempt == max_attempts )); then
+      break
+    fi
+    echo "Transient kubectl failure in phase ${current_phase}; retrying attempt $((attempt + 1))/${max_attempts}: $(<"${error_file}")" \
+      >&2
+    sleep $((attempt * 2))
+    attempt=$((attempt + 1))
+  done
+
+  cat "${output_file}"
+  cat "${error_file}" >&2
+  printf 'kubectl failed: phase=%q %s command=' \
+    "${current_phase}" "$(kubectl_command_context "$@")" >&2
+  printf '%q ' "${kubectl_bin}" "$@" >&2
+  echo >&2
+  rm -f "${output_file}" "${error_file}"
+  if [[ -n "${input_file}" ]]; then
+    rm -f "${input_file}"
+  fi
+  return "${status}"
+}
+
+kubectl() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      get|wait|apply|rollout)
+        kubectl_retry "$@"
+        return
+        ;;
+      create|delete|describe|exec|logs|patch|set|version|api-resources|cluster-info)
+        break
+        ;;
+    esac
+  done
+  "${kubectl_bin}" "$@"
+}
 
 if (( original_inotify_instances < 8192 )); then
   if [[ "${EUID}" -eq 0 ]]; then
@@ -58,6 +200,8 @@ cleanup() {
     docker unpause "${cluster}-control-plane" >/dev/null 2>&1 || true
   done
   if [[ "${status}" -ne 0 ]]; then
+    diagnostics_deadline=$((SECONDS + diagnostics_budget_seconds))
+    echo "collecting failure diagnostics with a ${diagnostics_budget_seconds}s overall budget" >&2
     for cluster in "${clusters[@]}"; do
       kind_diag export logs "${diagnostics_dir}/${cluster}" --name "${cluster}" || true
     done
@@ -74,7 +218,7 @@ cleanup() {
     fi
     for site in vic nsw qld; do
       site_kubeconfig="$(mktemp)"
-      if kind get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}" 2>/dev/null; then
+      if kind_diag get kubeconfig --name "mspsql-${site}" >"${site_kubeconfig}" 2>/dev/null; then
         kubectl_diag --kubeconfig="${site_kubeconfig}" -n mspsql-agent get pods -o wide || true
         kubectl_diag --kubeconfig="${site_kubeconfig}" -n mspsql-agent logs deployment/mspsql-agent \
           --all-containers --tail=200 || true
@@ -103,6 +247,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+e2e_phase dependencies
 docker rm -f mspsql-minio mspsql-registry >/dev/null 2>&1 || true
 
 docker pull "${vault_image}"
@@ -130,6 +275,7 @@ tar -xzf "${temp_dir}/snapshotter.tar.gz" --strip-components=1 -C "${temp_dir}/s
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=mspsql-kind-ca" \
   -keyout "${temp_dir}/ca.key" -out "${temp_dir}/ca.crt" >/dev/null 2>&1
 
+e2e_phase cluster_setup
 for cluster in "${clusters[@]}"; do
   created=false
   for attempt in 1 2 3; do
@@ -203,6 +349,7 @@ route_site_pool() {
   done
 }
 
+e2e_phase site_platform_setup
 pool_offset=10
 for site in vic nsw qld; do
   kind load docker-image "${vault_image}" --name "mspsql-${site}"
@@ -238,6 +385,7 @@ for site in vic nsw qld; do
   pool_offset=$((pool_offset + 20))
 done
 
+e2e_phase image_build
 docker build -t "${image}" .
 docker build -f Dockerfile.agent -t "${agent_image}" .
 docker build -f Dockerfile.gateway -t "${gateway_image}" .
@@ -302,6 +450,7 @@ if [[ -z "${KUBECONFIG}" ]]; then
   kind get kubeconfig --name mspsql-hub >"${KUBECONFIG}"
 fi
 
+e2e_phase hub_platform_setup
 make kustomize
 ./test/kind/configure-platform.sh "${KUBECONFIG}" \
   "${subnet_a}.${subnet_b}.100.70" "${subnet_a}.${subnet_b}.100.89" \
@@ -342,6 +491,7 @@ hub_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{
 ./test/kind/create-control-tls.sh mspsql-system "${hub_ip}" 10.254.0.1
 kubectl -n mspsql-system rollout status deployment/mspsql-controller-manager --timeout=180s
 
+e2e_phase registration_connectivity
 for site in vic nsw qld; do
   kubectl apply -f - <<EOF
 apiVersion: multisite-postgres.dev/v1alpha1
@@ -431,6 +581,7 @@ test "${gateway_endpoints}" = "1"
 test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
   wg show wg0 peers | wc -l | tr -d ' ')" = "3"
 
+e2e_phase initial_provision
 kubectl create namespace database-platform
 if validation_error="$(sed 's/deletionPolicy: Retain/deletionPolicy: Destroy/' \
   test/kind/instance.yaml | kubectl apply -f - 2>&1)"; then
@@ -505,6 +656,7 @@ for site in vic nsw qld; do
   test "${agent_events}" -gt 0
 done
 
+e2e_phase tenant_crs
 kubectl apply -f test/kind/tenant.yaml
 kubectl -n database-platform wait --for=condition=Ready postgresdatabase/orders-api --timeout=300s
 kubectl -n database-platform wait --for=condition=Ready postgresuser/orders-application --timeout=300s
@@ -561,6 +713,7 @@ if [[ "${pgpool_value}" != "1" ]]; then
   exit 1
 fi
 
+e2e_phase operator_upgrade
 controller_uid="$(kubectl -n mspsql-system get deployment mspsql-controller-manager \
   -o jsonpath='{.metadata.uid}')"
 ./bin/kustomize build test/kind/hub |
@@ -602,6 +755,7 @@ test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${
   -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT id FROM mspsql_e2e')" = "1"
 
+e2e_phase resilience
 vault_selector="$(kubectl --kubeconfig="${replica_kubeconfig}" -n vault get service vault \
   -o json | jq -c '.spec.selector')"
 kubectl --kubeconfig="${replica_kubeconfig}" -n vault patch service vault --type=merge \
@@ -701,6 +855,7 @@ kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres get \
   configmap "pgpool-${primary_site}" -o jsonpath='{.data.pgpool\.conf}' |
   grep -q "backend_clustering_mode = 'streaming_replication'"
 
+e2e_phase backup
 kubectl -n database-platform wait --for=condition=BackupReady \
   multisitepostgres/orders --timeout=900s
 test -n "$(kubectl -n database-platform get multisitepostgres orders \
@@ -719,6 +874,7 @@ test "${backup_jobs}" -ge 1
 test "$(docker exec mspsql-minio mc find local/mspsql-backups --insecure | wc -l | tr -d ' ')" -gt 0
 
 upgrade_source_primary="${primary}"
+e2e_phase minor_upgrade
 kubectl -n database-platform apply -f - <<'EOF'
 apiVersion: multisite-postgres.dev/v1alpha1
 kind: PostgresUpgrade
@@ -860,6 +1016,7 @@ primary_password="$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postg
 replica_password="$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres \
   get secret postgres-auth -o jsonpath='{.data.superuser-password}' | base64 -d)"
 
+e2e_phase restore
 kubectl -n database-platform patch multisitepostgres orders --type=merge \
   -p '{"spec":{"backup":{"schedules":{"full":"0 0 1 1 *","timezone":"UTC"}}}}'
 expected_generation="$(kubectl -n database-platform get multisitepostgres orders \
@@ -909,6 +1066,7 @@ restored_rows="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_na
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT count(*) FROM mspsql_e2e')"
 test "${restored_rows}" = "1"
 
+e2e_phase major_upgrade_rollback
 benchmark_tested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 kubectl -n database-platform apply -f - <<EOF
 apiVersion: multisite-postgres.dev/v1alpha1
@@ -985,6 +1143,7 @@ if [[ "${failure_events}" -lt 1 ]]; then
   exit 1
 fi
 
+e2e_phase major_upgrade
 benchmark_file="${diagnostics_dir}/major-upgrade-benchmark.json"
 jq -n --sort-keys \
   --arg testedAt "${benchmark_tested_at}" \
@@ -1061,6 +1220,7 @@ test "$(kubectl --kubeconfig="${primary_kubeconfig}" -n orders-postgres exec "${
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc \
   'SELECT count(*) FROM mspsql_e2e')" = "2"
 
+e2e_phase deletion_finalizers
 kubectl -n database-platform patch multisitepostgres orders --type=merge \
   -p '{"spec":{"deletionPolicy":"Delete"}}'
 kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
