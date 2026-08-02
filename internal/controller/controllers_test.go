@@ -1222,6 +1222,11 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 		target.Spec.Backup != nil {
 		t.Fatalf("restore target = %#v", target)
 	}
+	var currentRestore api.PostgresRestore
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(restore), &currentRestore); err != nil {
+		t.Fatal(err)
+	}
+	assertRestoreOperation(t, currentRestore.Status.Operation, string(restore.UID), "Provisioning", false)
 
 	target.Status.Primary = "postgres-vic-0"
 	target.Status.Conditions = []metav1.Condition{
@@ -1285,6 +1290,22 @@ func TestRestoreCreatesIsolatedTargetAndAdvancesAfterPromotion(t *testing.T) {
 		completed.Status.RecoveredTo == nil ||
 		!completed.Status.RecoveredTo.Equal(&restore.Spec.TargetTime) {
 		t.Fatalf("restore status = %#v", completed.Status)
+	}
+	assertRestoreOperation(t, completed.Status.Operation, string(restore.UID), "Completed", true)
+}
+
+func assertRestoreOperation(t *testing.T, operation *api.OperationProgressStatus,
+	operationUID, phase string, terminal bool,
+) {
+	t.Helper()
+	if operation == nil ||
+		operation.OperationUID != operationUID ||
+		operation.Phase != phase ||
+		operation.Attempt != 1 ||
+		operation.DeadlineAt == nil ||
+		operation.Terminal != terminal ||
+		operation.ManualInterventionRequired {
+		t.Fatalf("restore operation status = %#v", operation)
 	}
 }
 

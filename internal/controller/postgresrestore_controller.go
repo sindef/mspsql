@@ -225,6 +225,12 @@ func (r *PostgresRestoreReconciler) completeRestore(ctx context.Context,
 ) error {
 	restore.Status.ObservedGeneration = restore.Generation
 	restore.Status.Phase = "Completed"
+	r.ensureRestoreOperation(restore, "Completed")
+	restore.Status.Operation.Terminal = true
+	restore.Status.Operation.ManualInterventionRequired = false
+	restore.Status.Operation.LastErrorReason = ""
+	restore.Status.Operation.LastErrorMessage = ""
+	restore.Status.Operation.NextRetryAt = nil
 	restore.Status.RecoveredTo = restore.Spec.TargetTime.DeepCopy()
 	if restore.Spec.BackupSet != "" {
 		restore.Status.SelectedBackupSet = restore.Spec.BackupSet
@@ -337,6 +343,10 @@ func (r *PostgresRestoreReconciler) setRestorePhase(ctx context.Context, restore
 	before := restore.Status.DeepCopy()
 	restore.Status.ObservedGeneration = restore.Generation
 	restore.Status.Phase = phase
+	r.ensureRestoreOperation(restore, phase)
+	restore.Status.Operation.Terminal = false
+	restore.Status.Operation.LastErrorReason = ""
+	restore.Status.Operation.LastErrorMessage = ""
 	setCondition(&restore.Status.Conditions, restore.Generation, "Ready", metav1.ConditionFalse, reason, message)
 	if apiequality.Semantic.DeepEqual(before, &restore.Status) {
 		return nil
@@ -350,11 +360,31 @@ func (r *PostgresRestoreReconciler) restoreBlocked(ctx context.Context,
 	before := restore.Status.DeepCopy()
 	restore.Status.ObservedGeneration = restore.Generation
 	restore.Status.Phase = "Preflight"
+	r.ensureRestoreOperation(restore, "Preflight")
+	restore.Status.Operation.Terminal = false
+	restore.Status.Operation.LastErrorReason = reason
+	restore.Status.Operation.LastErrorMessage = message
 	setCondition(&restore.Status.Conditions, restore.Generation, "Ready", metav1.ConditionFalse, reason, message)
 	if apiequality.Semantic.DeepEqual(before, &restore.Status) {
 		return nil
 	}
 	return r.Status().Update(ctx, restore)
+}
+
+func (r *PostgresRestoreReconciler) ensureRestoreOperation(restore *api.PostgresRestore, phase string) {
+	if restore.Status.Operation == nil {
+		deadline := metav1.NewTime(r.now().Add(24 * time.Hour))
+		restore.Status.Operation = &api.OperationProgressStatus{
+			OperationUID: string(restore.UID),
+			Attempt:      1,
+			DeadlineAt:   &deadline,
+		}
+	}
+	restore.Status.Operation.OperationUID = string(restore.UID)
+	restore.Status.Operation.Phase = phase
+	if restore.Status.Operation.Attempt == 0 {
+		restore.Status.Operation.Attempt = 1
+	}
 }
 
 func (r *PostgresRestoreReconciler) operationConflict(ctx context.Context, namespace, instanceRef,
