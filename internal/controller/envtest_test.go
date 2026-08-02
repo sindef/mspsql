@@ -77,6 +77,8 @@ var _ = Describe("API-server reconciliation", Ordered, func() {
 		request := ctrl.Request{NamespacedName: client.ObjectKey{Name: site.Name}}
 		_, err := reconciler.Reconcile(context.Background(), request)
 		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(context.Background(), request)
+		Expect(err).NotTo(HaveOccurred())
 
 		key := client.ObjectKey{Namespace: systemNamespace, Name: "registration-" + string(siteUID)}
 		var token corev1.Secret
