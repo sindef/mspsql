@@ -75,6 +75,11 @@ make lint-fix   # Auto-fix code style
 make test       # Run unit tests
 ```
 
+**After editing any user-facing code or behavior:**
+```
+Update README.md if required, or docs/ directory appropriately
+```
+
 ## CLI Commands Cheat Sheet
 
 ### Create API (your own types)
