@@ -77,6 +77,7 @@ kubectl --context "${HUB_CTX}" -n database-platform describe postgresupgrade ord
   <ul>
     <li><code>Retain</code> keeps PVCs, namespaces, and backups.</li>
     <li><code>Delete</code> permits namespace and PVC deletion after backup checks.</li>
+    <li>Delete <code>PostgresUser</code> and <code>PostgresDatabase</code> children before deleting their parent instance when destructive cleanup is required. If the parent is already gone, children publish <code>ParentUnavailable</code> and require <code>multisite-postgres.dev/force-orphan=true</code> to abandon residual cleanup.</li>
     <li>Disconnected sites can block finalization. Investigate before forcing orphaned resources.</li>
   </ul>
 

@@ -2008,6 +2008,52 @@ func TestDatabaseDeletionBlocksWhenParentMissing(t *testing.T) {
 	}
 }
 
+func TestDatabaseDeletionWithParentIssuesCleanupDirective(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 8, 30, 0, 0, time.UTC))
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orders"},
+	}
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-api", Generation: 2,
+			Finalizers: []string{childFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Spec: api.PostgresDatabaseSpec{
+			InstanceRef: "orders", DatabaseName: "orders", DeletionPolicy: api.DeletionPolicyDelete,
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresDatabase{}).
+		WithObjects(instance, database).Build()
+	reconciler := PostgresDatabaseReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-api"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var directive corev1.ConfigMap
+	if err := kube.Get(context.Background(), client.ObjectKey{
+		Namespace: "platform", Name: "mspsql-database-orders-api",
+	}, &directive); err != nil {
+		t.Fatal(err)
+	}
+	if directive.Data["type"] != "Database" ||
+		directive.Data["instanceRef"] != "orders" ||
+		directive.Data["deleting"] != "true" ||
+		len(directive.OwnerReferences) != 1 ||
+		directive.OwnerReferences[0].Kind != "PostgresDatabase" {
+		t.Fatalf("database cleanup directive = %#v", directive)
+	}
+	var current api.PostgresDatabase
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(database), &current); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(&current, childFinalizer) {
+		t.Fatalf("database finalizer removed before cleanup completed: %#v", current.Finalizers)
+	}
+}
+
 func TestUserDeletionForceOrphansWhenParentMissing(t *testing.T) {
 	scheme := testScheme(t)
 	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 9, 0, 0, 0, time.UTC))
@@ -2038,6 +2084,39 @@ func TestUserDeletionForceOrphansWhenParentMissing(t *testing.T) {
 	}
 	if controllerutil.ContainsFinalizer(&current, childFinalizer) {
 		t.Fatalf("user finalizer was not removed: %#v", current.Finalizers)
+	}
+}
+
+func TestUserTerminalDeletionReleasesFinalizer(t *testing.T) {
+	scheme := testScheme(t)
+	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 9, 30, 0, 0, time.UTC))
+	user := &api.PostgresUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-writer", Generation: 2,
+			Finalizers: []string{childFinalizer}, DeletionTimestamp: &deletingAt,
+		},
+		Spec: api.PostgresUserSpec{
+			InstanceRef: "orders", RoleName: "orders_writer", DeletionPolicy: api.DeletionPolicyDelete,
+		},
+		Status: api.PostgresUserStatus{Phase: "Deleted"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresUser{}).
+		WithObjects(user).Build()
+	reconciler := PostgresUserReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "platform", Name: "orders-writer"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var current api.PostgresUser
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(user), &current); apierrors.IsNotFound(err) {
+		return
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(&current, childFinalizer) {
+		t.Fatalf("terminal user retained finalizer: %#v", current.Finalizers)
 	}
 }
 
