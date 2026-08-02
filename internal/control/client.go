@@ -73,6 +73,11 @@ type planWorkerResult struct {
 	err         error
 }
 
+type directiveWorkerResult struct {
+	operationUID string
+	err          error
+}
+
 func (c *AgentClient) Run(ctx context.Context) error {
 	connection, err := grpc.NewClient(c.Target, c.DialOptions...)
 	if err != nil {
@@ -122,9 +127,14 @@ func (c *AgentClient) Run(ctx context.Context) error {
 		cancel   context.CancelFunc
 	}{}
 	workerResults := make(chan planWorkerResult)
+	directiveWorkers := map[string]context.CancelFunc{}
+	directiveResults := make(chan directiveWorkerResult)
 	defer func() {
 		for _, worker := range workers {
 			worker.cancel()
+		}
+		for _, cancelDirective := range directiveWorkers {
+			cancelDirective()
 		}
 	}()
 
@@ -138,14 +148,46 @@ func (c *AgentClient) Run(ctx context.Context) error {
 				return receive.err
 			}
 			message := receive.message
-			handled, err := c.handleNonPlanMessage(ctx, stream, message)
-			if err != nil {
-				return err
+			if message.GetCertificate() != nil {
+				if c.Certificates == nil {
+					return errors.New("hub sent a certificate response when rotation is disabled")
+				}
+				if err := c.Certificates.Install(ctx, message.GetCertificate()); err != nil {
+					return err
+				}
+				continue
 			}
-			if handled {
+			if cancelMessage := message.GetCancel(); cancelMessage != nil {
+				if cancelDirective := directiveWorkers[cancelMessage.OperationUid]; cancelDirective != nil {
+					cancelDirective()
+				}
+				continue
+			}
+			if directiveMessage := message.GetDirective(); directiveMessage != nil {
+				if directiveMessage.OperationUid == "" {
+					return errors.New("hub sent a directive without an operation UID")
+				}
+				if _, exists := directiveWorkers[directiveMessage.OperationUid]; exists {
+					continue
+				}
+				workerCtx, cancelWorker := context.WithCancel(ctx)
+				directiveWorkers[directiveMessage.OperationUid] = cancelWorker
+				go func(directive *controlv1.OperationDirective) {
+					result := directiveWorkerResult{
+						operationUID: directive.OperationUid,
+						err:          c.applyDirective(workerCtx, stream, directive),
+					}
+					select {
+					case directiveResults <- result:
+					case <-ctx.Done():
+					}
+				}(directiveMessage)
 				continue
 			}
 			desired := message.GetPlan()
+			if desired == nil {
+				return errors.New("hub sent an unsupported empty control message")
+			}
 			if worker, exists := workers[desired.InstanceUid]; exists {
 				if worker.revision >= desired.Revision {
 					continue
@@ -173,6 +215,11 @@ func (c *AgentClient) Run(ctx context.Context) error {
 			if exists && worker.revision == result.revision {
 				delete(workers, result.instanceUID)
 			}
+			if result.err != nil && !errors.Is(result.err, context.Canceled) {
+				return result.err
+			}
+		case result := <-directiveResults:
+			delete(directiveWorkers, result.operationUID)
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
 				return result.err
 			}
@@ -210,22 +257,6 @@ func (c *AgentClient) requestCertificate(ctx context.Context,
 			CertificateSigningRequest: request,
 		},
 	})
-}
-
-func (c *AgentClient) handleNonPlanMessage(ctx context.Context,
-	stream controlv1.AgentControl_ConnectClient,
-	message *controlv1.HubMessage,
-) (bool, error) {
-	if message.GetCertificate() != nil {
-		if c.Certificates == nil {
-			return true, errors.New("hub sent a certificate response when rotation is disabled")
-		}
-		return true, c.Certificates.Install(ctx, message.GetCertificate())
-	}
-	if message.GetDirective() != nil {
-		return true, c.applyDirective(ctx, stream, message.GetDirective())
-	}
-	return message.GetPlan() == nil, nil
 }
 
 func (c *AgentClient) applyDirective(ctx context.Context, stream controlv1.AgentControl_ConnectClient,
