@@ -1459,6 +1459,7 @@ func assertMajorWorkloadState(t *testing.T, renderer Renderer, desired plan.Site
 	}
 }
 
+//nolint:gocyclo // Table checks cover each rendered major-upgrade job contract in one fixture.
 func TestMajorUpgradeJobsUsePinnedToolingWithoutRetry(t *testing.T) {
 	desired := plan.SitePlan{
 		InstanceUID: "instance",

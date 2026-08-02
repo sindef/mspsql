@@ -526,19 +526,6 @@ func (s *HTTPServer) ensureCA(ctx context.Context) (*x509.Certificate, *ecdsa.Pr
 	return certificate, privateKey, certPEM, err
 }
 
-func (s *HTTPServer) clusterUIDClaimed(ctx context.Context, clusterUID, except string) (bool, error) {
-	var sites api.SiteRegistrationList
-	if err := s.Client.List(ctx, &sites); err != nil {
-		return false, err
-	}
-	for _, site := range sites.Items {
-		if site.Name != except && site.Status.ClusterUID == clusterUID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func clusterUIDClaimName(clusterUID string) string {
 	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).
 		EncodeToString([]byte(clusterUIDHash(clusterUID)))

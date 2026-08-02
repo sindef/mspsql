@@ -78,6 +78,7 @@ type directiveWorkerResult struct {
 	err          error
 }
 
+//nolint:gocyclo // Run is the control stream state machine; split helpers own blocking operations.
 func (c *AgentClient) Run(ctx context.Context) error {
 	connection, err := grpc.NewClient(c.Target, c.DialOptions...)
 	if err != nil {

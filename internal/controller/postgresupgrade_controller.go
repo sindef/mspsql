@@ -71,6 +71,7 @@ type PostgresUpgradeReconciler struct {
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=multisitepostgres;postgresrestores;siteregistrations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
+//nolint:gocyclo // Upgrade reconciliation is a lifecycle state machine with explicit phase gates.
 func (r *PostgresUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var upgrade multisitepostgresv1alpha1.PostgresUpgrade
 	if err := r.Get(ctx, req.NamespacedName, &upgrade); err != nil {
@@ -334,6 +335,7 @@ func (r *PostgresUpgradeReconciler) ensureFreshUpgradeBackup(ctx context.Context
 		"FreshBackupProgressing", "Waiting for the preflight full backup to complete", now)
 }
 
+//nolint:gocyclo // Major upgrades intentionally enumerate each safety-critical phase.
 func (r *PostgresUpgradeReconciler) reconcileMajorUpgrade(ctx context.Context,
 	upgrade *multisitepostgresv1alpha1.PostgresUpgrade,
 	instance *multisitepostgresv1alpha1.MultiSitePostgres,

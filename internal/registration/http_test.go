@@ -253,14 +253,12 @@ func TestClusterUIDClaimConcurrentBindsSelectOneOwner(t *testing.T) {
 	successOwners := map[string]struct{}{}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		site := winner
 		if i%2 == 1 {
 			site = loser
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			_, err := server.acquireClusterUIDClaim(context.Background(), "cluster-uid", site)
 			switch {
@@ -274,7 +272,7 @@ func TestClusterUIDClaimConcurrentBindsSelectOneOwner(t *testing.T) {
 			default:
 				t.Errorf("claim result for %s: %v", site.Name, err)
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

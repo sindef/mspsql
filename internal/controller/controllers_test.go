@@ -1680,7 +1680,7 @@ func TestMajorUpgradeDeletionAfterWritesBlocks(t *testing.T) {
 			},
 		},
 	}
-	restoredAt := metav1.NewTime(deletingAt.Time.Add(-time.Minute))
+	restoredAt := metav1.NewTime(deletingAt.Add(-time.Minute))
 	upgrade := &api.PostgresUpgrade{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "platform", Name: "orders-pg18", UID: types.UID("upgrade"),
@@ -2213,6 +2213,7 @@ func TestMajorUpgradeRequestsFreshFullBackup(t *testing.T) {
 	}
 }
 
+//nolint:gocyclo // The retry lifecycle is asserted end-to-end to preserve status transitions.
 func TestMajorUpgradeRetriesPostUpgradeBackup(t *testing.T) {
 	scheme := testScheme(t)
 	upgrade := &api.PostgresUpgrade{

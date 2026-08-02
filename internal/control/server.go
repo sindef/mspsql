@@ -951,18 +951,18 @@ func setRecoveryWindowCondition(instance *api.MultiSitePostgres) {
 		"Archived WAL continuity is present but a disposable restore drill has not verified recoverability")
 }
 
-func updateBackupEvidence(status *api.MultiSitePostgresStatus, conditions []*controlv1.Condition) {
+func updateBackupEvidence(instanceStatus *api.MultiSitePostgresStatus, conditions []*controlv1.Condition) {
 	for _, condition := range conditions {
 		var target **metav1.Time
 		switch condition.Type {
 		case "BackupCompletedAt":
-			target = &status.LastBackupTime
+			target = &instanceStatus.LastBackupTime
 		case "RecoveryWindowStart":
-			target = &status.RecoveryWindowStart
+			target = &instanceStatus.RecoveryWindowStart
 		case "DisposableRestoreVerifiedAt":
-			target = &status.RestoreDrillLastVerifiedAt
+			target = &instanceStatus.RestoreDrillLastVerifiedAt
 		case "RestoreDrillBackupSet":
-			status.RestoreDrillBackupSet = condition.Message
+			instanceStatus.RestoreDrillBackupSet = condition.Message
 			continue
 		default:
 			continue
@@ -1175,15 +1175,6 @@ func certificateHasURI(certificate *x509.Certificate, identity string) bool {
 		}
 	}
 	return false
-}
-
-func allApplied(sites []api.SiteRevisionStatus, revision int64) bool {
-	for _, site := range sites {
-		if site.AppliedRevision != revision {
-			return false
-		}
-	}
-	return len(sites) > 0
 }
 
 func setSiteCondition(conditions *[]metav1.Condition, conditionType string,

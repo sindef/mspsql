@@ -66,6 +66,7 @@ type MultiSitePostgresReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
+//nolint:gocyclo // Reconcile is the CR state machine; helpers own validation, planning, and scheduling details.
 func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var instance multisitepostgresv1alpha1.MultiSitePostgres
 	if err := r.Get(ctx, req.NamespacedName, &instance); err != nil {
