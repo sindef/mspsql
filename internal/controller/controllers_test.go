@@ -771,6 +771,37 @@ func TestReadyRequiresTopologyConsensusWithoutSynchronousStandbys(t *testing.T) 
 	}
 }
 
+func TestBackupSchedulingUsesDataSiteReadinessDuringControlDegradation(t *testing.T) {
+	instance := &api.MultiSitePostgres{
+		Spec: api.MultiSitePostgresSpec{
+			Backup: &api.BackupSpec{},
+			Sites: []api.PostgresSiteSpec{
+				{Name: "vic", Role: api.SiteRoleData},
+				{Name: "nsw", Role: api.SiteRoleWitness},
+			},
+		},
+		Status: api.MultiSitePostgresStatus{
+			ActiveRevision: 6,
+			Sites: []api.SiteRevisionStatus{
+				{Name: "vic", AppliedRevision: 6},
+				{Name: "nsw", AppliedRevision: 5},
+			},
+			Conditions: []metav1.Condition{
+				{Type: "Ready", Status: metav1.ConditionFalse, Reason: "ControlPlaneDegraded"},
+				{Type: "TopologyReady", Status: metav1.ConditionTrue},
+				{Type: "BackupTLSReady", Status: metav1.ConditionTrue},
+			},
+		},
+	}
+	if !backupSchedulingReady(instance, nil, nil, nil, false) {
+		t.Fatal("backup scheduling was blocked by an unrelated witness/control outage")
+	}
+	instance.Status.Sites[0].AppliedRevision = 5
+	if backupSchedulingReady(instance, nil, nil, nil, false) {
+		t.Fatal("backup scheduling ignored stale data-site convergence")
+	}
+}
+
 func TestMajorUpgradeRequiresAgentCapability(t *testing.T) {
 	instance := &api.MultiSitePostgres{
 		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{

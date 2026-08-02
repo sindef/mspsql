@@ -87,7 +87,8 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	registrations := make(map[string]*multisitepostgresv1alpha1.SiteRegistration, len(instance.Spec.Sites))
-	allConnected := true
+	disconnectedDataSites := 0
+	disconnectedControlSites := 0
 	for _, site := range instance.Spec.Sites {
 		var registration multisitepostgresv1alpha1.SiteRegistration
 		if err := r.Get(ctx, client.ObjectKey{Name: site.SiteRegistrationRef}, &registration); err != nil {
@@ -114,7 +115,13 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 		}
 		registrations[site.Name] = &registration
-		allConnected = allConnected && registration.Status.Phase == "Connected"
+		if registration.Status.Phase != "Connected" {
+			if site.Role == multisitepostgresv1alpha1.SiteRoleData {
+				disconnectedDataSites++
+			} else {
+				disconnectedControlSites++
+			}
+		}
 	}
 	setCondition(&instance.Status.Conditions, instance.Generation, "SitesRegistered",
 		metav1.ConditionTrue, "AllSitesRegistered", "All referenced sites are registered")
@@ -126,7 +133,7 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "ValidatingSites"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
-	if !allConnected {
+	if disconnectedDataSites > 0 {
 		setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
 			metav1.ConditionFalse, "AgentDisconnected", "One or more site agents are disconnected")
 		instance.Status.Primary = ""
@@ -138,8 +145,19 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "Pending"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
-	setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
-		metav1.ConditionTrue, "AllAgentsConnected", "All site agents are connected")
+	if disconnectedControlSites > 0 {
+		setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
+			metav1.ConditionFalse, "ControlPlaneDegraded",
+			"One or more non-data site agents are disconnected; topology-changing operations remain guarded")
+		setCondition(&instance.Status.Conditions, instance.Generation, "ControlPlaneDegraded",
+			metav1.ConditionTrue, "WitnessDisconnected",
+			"Safe data-site reconciliation can continue while a witness/control-only site is disconnected")
+	} else {
+		setCondition(&instance.Status.Conditions, instance.Generation, "AgentsConnected",
+			metav1.ConditionTrue, "AllAgentsConnected", "All site agents are connected")
+		setCondition(&instance.Status.Conditions, instance.Generation, "ControlPlaneDegraded",
+			metav1.ConditionFalse, "AllAgentsConnected", "All site agents are connected")
+	}
 
 	restorePlan, err := r.restorePlan(ctx, &instance)
 	if err != nil {
@@ -280,11 +298,23 @@ func backupSchedulingReady(instance *multisitepostgresv1alpha1.MultiSitePostgres
 	restorePlan *plan.RestorePlan, upgradePlan *plan.UpgradePlan,
 	majorUpgradePlan *plan.MajorUpgradePlan, operationActive bool,
 ) bool {
-	return conditionTrue(instance.Status.Conditions, "Ready") &&
-		conditionTrue(instance.Status.Conditions, "TopologyReady") &&
+	return dataSitesApplied(instance) && conditionTrue(instance.Status.Conditions, "TopologyReady") &&
 		(instance.Spec.Backup == nil ||
 			conditionTrue(instance.Status.Conditions, "BackupTLSReady")) &&
 		restorePlan == nil && upgradePlan == nil && majorUpgradePlan == nil && !operationActive
+}
+
+func dataSitesApplied(instance *multisitepostgresv1alpha1.MultiSitePostgres) bool {
+	for _, site := range instance.Spec.Sites {
+		if site.Role != multisitepostgresv1alpha1.SiteRoleData {
+			continue
+		}
+		status := previousSiteStatus(instance.Status.Sites, site.Name)
+		if status.AppliedRevision != instance.Status.ActiveRevision {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *MultiSitePostgresReconciler) lifecycleOperationActive(ctx context.Context,
