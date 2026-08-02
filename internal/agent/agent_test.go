@@ -104,6 +104,39 @@ func TestCacheRejectsRollback(t *testing.T) {
 	}
 }
 
+func TestReconcilerLocksPerInstance(t *testing.T) {
+	reconciler := &Reconciler{}
+	unlockA := reconciler.lockInstance("instance-a")
+	sameInstanceEntered := make(chan struct{})
+	go func() {
+		unlock := reconciler.lockInstance("instance-a")
+		defer unlock()
+		close(sameInstanceEntered)
+	}()
+	differentInstanceEntered := make(chan struct{})
+	go func() {
+		unlock := reconciler.lockInstance("instance-b")
+		defer unlock()
+		close(differentInstanceEntered)
+	}()
+	select {
+	case <-differentInstanceEntered:
+	case <-time.After(time.Second):
+		t.Fatal("different instance lock was blocked")
+	}
+	select {
+	case <-sameInstanceEntered:
+		t.Fatal("same instance lock was not serialized")
+	case <-time.After(25 * time.Millisecond):
+	}
+	unlockA()
+	select {
+	case <-sameInstanceEntered:
+	case <-time.After(time.Second):
+		t.Fatal("same instance lock did not unblock")
+	}
+}
+
 func TestApplyResolvesTypedObjectGVK(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {

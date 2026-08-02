@@ -76,7 +76,8 @@ type Reconciler struct {
 	HubDomain string
 	SiteUID   string
 	Events    *EventReporter
-	applyLock sync.Mutex
+	locksMu   sync.Mutex
+	applyLock map[string]*sync.Mutex
 }
 
 func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
@@ -92,8 +93,8 @@ func (r *Reconciler) Apply(ctx context.Context, desired, previous plan.SitePlan,
 func (r *Reconciler) reconcile(ctx context.Context, desired, previous plan.SitePlan,
 	connected bool,
 ) (ApplyResult, error) {
-	r.applyLock.Lock()
-	defer r.applyLock.Unlock()
+	unlock := r.lockInstance(desired.InstanceUID)
+	defer unlock()
 	result := ApplyResult{Phase: "CreatingNamespaces", Addresses: map[string]string{}}
 	if desired.Deletion != nil {
 		if !connected {
@@ -951,6 +952,24 @@ func fillMissingAddresses(planned, observed map[string]string) map[string]string
 		}
 	}
 	return merged
+}
+
+func (r *Reconciler) lockInstance(instanceUID string) func() {
+	if instanceUID == "" {
+		instanceUID = "<empty>"
+	}
+	r.locksMu.Lock()
+	if r.applyLock == nil {
+		r.applyLock = map[string]*sync.Mutex{}
+	}
+	lock := r.applyLock[instanceUID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		r.applyLock[instanceUID] = lock
+	}
+	r.locksMu.Unlock()
+	lock.Lock()
+	return func() { lock.Unlock() }
 }
 
 func setLocalCondition(conditions *[]metav1.Condition, conditionType string,
