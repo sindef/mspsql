@@ -1,8 +1,8 @@
 # mspsql
 
-`mspsql` is a hub-and-agent Kubernetes operator for independent,
+`mspsql` is an unashamedly fully vibe coded AI slop mess hub-and-agent Kubernetes operator for independent,
 Patroni-managed PostgreSQL installations spanning isolated Kubernetes
-clusters.
+clusters. It exists because I wanted to see what an LLM would do when given an acceptance criteria, little framework and a bunch of manifests and go forth. 
 
 The hub reconciles `multisite-postgres.dev/v1alpha1` resources in a management
 cluster. Site agents make outbound mTLS gRPC connections through a
