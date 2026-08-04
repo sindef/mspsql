@@ -11,10 +11,16 @@ rules:
   verbs: [create]
 - apiGroups: [""]
   resources: [secrets]
+  verbs: [create]
+- apiGroups: [""]
+  resources: [secrets]
   resourceNames:
   - etcd-maintenance-client-tls
+  - minio-ca
   - mspsql-agent-bootstrap
   - mspsql-agent-identity
+  - mspsql-agent-identity-a
+  - mspsql-agent-identity-b
   - patroni-api-client-tls
   - patroni-etcd-client-tls
   - pg-tde-vault
@@ -25,7 +31,7 @@ rules:
   - postgres-auth-pending
   - postgres-auth-previous
   - vault-ca
-  verbs: [get, list, watch, create, update, patch, delete]
+  verbs: [get, update, patch, delete]
 - apiGroups: [""]
   resources: [events]
   verbs: [create, patch]

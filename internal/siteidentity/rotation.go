@@ -22,10 +22,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -49,6 +47,8 @@ const (
 	managedLabel = "multisite-postgres.dev/agent-identity"
 	volumeName   = "identity"
 )
+
+var identitySlotNames = []string{"mspsql-agent-identity-a", "mspsql-agent-identity-b"}
 
 type Rotator struct {
 	Client          client.Client
@@ -129,7 +129,7 @@ func (r *Rotator) Install(ctx context.Context, response *controlv1.CertificateRe
 	if r.pending == nil || response.RequestId != r.pending.id {
 		return errors.New("certificate response does not match the pending request")
 	}
-	certificate, err := r.validateResponse(response)
+	_, err := r.validateResponse(response)
 	if err != nil {
 		return err
 	}
@@ -140,8 +140,10 @@ func (r *Rotator) Install(ctx context.Context, response *controlv1.CertificateRe
 	data["tls.crt"] = response.CertificatePem
 	data["tls.key"] = r.pending.keyPEM
 	data["ca.crt"] = response.CaBundlePem
-	sum := sha256.Sum256(certificate.Raw)
-	name := "mspsql-agent-identity-" + hex.EncodeToString(sum[:6])
+	name, err := r.nextIdentitySecretName(ctx)
+	if err != nil {
+		return err
+	}
 	immutable := true
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,6 +153,11 @@ func (r *Rotator) Install(ctx context.Context, response *controlv1.CertificateRe
 		},
 		Immutable: &immutable,
 		Data:      data,
+	}
+	if err := r.Client.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: r.Namespace, Name: name,
+	}}); err != nil && !apierrors.IsNotFound(err) {
+		return err
 	}
 	if err := r.Client.Create(ctx, secret); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -164,11 +171,23 @@ func (r *Rotator) Install(ctx context.Context, response *controlv1.CertificateRe
 			return fmt.Errorf("identity Secret %s already exists with different certificate data", name)
 		}
 	}
-	if err := r.useSecret(ctx, name, sum[:]); err != nil {
+	if err := r.useSecret(ctx, name); err != nil {
 		return err
 	}
 	r.pending = nil
 	return nil
+}
+
+func (r *Rotator) nextIdentitySecretName(ctx context.Context) (string, error) {
+	deployment, _, err := r.deploymentIdentity(ctx)
+	if err != nil {
+		return "", err
+	}
+	current := deploymentIdentitySecretName(deployment)
+	if current == identitySlotNames[0] {
+		return identitySlotNames[1], nil
+	}
+	return identitySlotNames[0], nil
 }
 
 func (r *Rotator) validateResponse(response *controlv1.CertificateResponse) (*x509.Certificate, error) {
@@ -206,13 +225,7 @@ func (r *Rotator) deploymentIdentity(ctx context.Context) (*appsv1.Deployment, *
 	}, &deployment); err != nil {
 		return nil, nil, err
 	}
-	secretName := ""
-	for _, volume := range deployment.Spec.Template.Spec.Volumes {
-		if volume.Name == volumeName && volume.Secret != nil {
-			secretName = volume.Secret.SecretName
-			break
-		}
-	}
+	secretName := deploymentIdentitySecretName(&deployment)
 	if secretName == "" {
 		return nil, nil, errors.New("agent Deployment has no identity Secret volume")
 	}
@@ -226,7 +239,16 @@ func (r *Rotator) deploymentIdentity(ctx context.Context) (*appsv1.Deployment, *
 	return &deployment, certificate, err
 }
 
-func (r *Rotator) useSecret(ctx context.Context, name string, certificateHash []byte) error {
+func deploymentIdentitySecretName(deployment *appsv1.Deployment) string {
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == volumeName && volume.Secret != nil {
+			return volume.Secret.SecretName
+		}
+	}
+	return ""
+}
+
+func (r *Rotator) useSecret(ctx context.Context, name string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var deployment appsv1.Deployment
 		key := client.ObjectKey{Namespace: r.Namespace, Name: r.DeploymentName}
@@ -247,8 +269,7 @@ func (r *Rotator) useSecret(ctx context.Context, name string, certificateHash []
 		if deployment.Spec.Template.Annotations == nil {
 			deployment.Spec.Template.Annotations = map[string]string{}
 		}
-		deployment.Spec.Template.Annotations["multisite-postgres.dev/agent-certificate"] =
-			hex.EncodeToString(certificateHash[:8])
+		deployment.Spec.Template.Annotations["multisite-postgres.dev/agent-identity-secret"] = name
 		return r.Client.Update(ctx, &deployment)
 	})
 }
@@ -264,13 +285,21 @@ func (r *Rotator) cleanup(ctx context.Context, deployment *appsv1.Deployment,
 		deployment.Status.AvailableReplicas != *deployment.Spec.Replicas {
 		return nil
 	}
-	var secrets corev1.SecretList
-	if err := r.Client.List(ctx, &secrets, client.InNamespace(r.Namespace),
-		client.MatchingLabels{managedLabel: "true"}); err != nil {
-		return err
-	}
-	for i := range secrets.Items {
-		secret := &secrets.Items[i]
+	currentName := deploymentIdentitySecretName(deployment)
+	for _, name := range identitySlotNames {
+		if name == currentName {
+			continue
+		}
+		var secret corev1.Secret
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: r.Namespace, Name: name}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if secret.Labels[managedLabel] != "true" {
+			continue
+		}
 		certificate, err := parseCertificate(secret.Data["tls.crt"])
 		if err != nil {
 			return fmt.Errorf("parse managed identity Secret %s: %w", secret.Name, err)
@@ -278,7 +307,7 @@ func (r *Rotator) cleanup(ctx context.Context, deployment *appsv1.Deployment,
 		if bytes.Equal(certificate.Raw, current.Raw) {
 			continue
 		}
-		if err := r.Client.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.Client.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

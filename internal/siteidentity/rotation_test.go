@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	controlv1 "github.com/sindef/mspsql/gen/control/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -45,7 +46,7 @@ import (
 func TestCertificateRotationSwitchesDeploymentIdentity(t *testing.T) {
 	now := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
 	caCertificate, caKey, caPEM := testCA(t, now)
-	oldCertificate, oldKey := testCertificate(t, caCertificate, caKey, "site-uid",
+	oldCertificate, oldKey := testCertificate(t, caCertificate, caKey,
 		now.Add(-time.Hour), now.Add(4*time.Hour))
 	mountPath := t.TempDir()
 	writeIdentity(t, mountPath, oldCertificate, oldKey, caPEM)
@@ -134,7 +135,7 @@ func TestCertificateRotationSwitchesDeploymentIdentity(t *testing.T) {
 func TestCertificateRotationSkipsHealthyCertificate(t *testing.T) {
 	now := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
 	caCertificate, caKey, caPEM := testCA(t, now)
-	certificate, key := testCertificate(t, caCertificate, caKey, "site-uid",
+	certificate, key := testCertificate(t, caCertificate, caKey,
 		now.Add(-time.Hour), now.Add(12*time.Hour))
 	mountPath := t.TempDir()
 	writeIdentity(t, mountPath, certificate, key, caPEM)
@@ -165,6 +166,75 @@ func TestCertificateRotationSkipsHealthyCertificate(t *testing.T) {
 	}
 	if request != nil {
 		t.Fatal("healthy certificate produced a signing request")
+	}
+}
+
+func TestCertificateRotationCleanupDoesNotListSecrets(t *testing.T) {
+	now := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	caCertificate, caKey, caPEM := testCA(t, now)
+	currentCertificate, currentKey := testCertificate(t, caCertificate, caKey,
+		now.Add(-time.Hour), now.Add(12*time.Hour))
+	staleCertificate, staleKey := testCertificate(t, caCertificate, caKey,
+		now.Add(-2*time.Hour), now.Add(3*time.Hour))
+	mountPath := t.TempDir()
+	writeIdentity(t, mountPath, currentCertificate, currentKey, caPEM)
+	replicas := int32(2)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "agent", Name: "agent", Generation: 4},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+				Name: volumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName: "mspsql-agent-identity-a",
+				}},
+			}}}},
+		},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 4, UpdatedReplicas: 2, AvailableReplicas: 2,
+		},
+	}
+	current := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "agent", Name: "mspsql-agent-identity-a",
+			Labels: map[string]string{managedLabel: "true"},
+		},
+		Data: map[string][]byte{"tls.crt": currentCertificate, "tls.key": currentKey, "ca.crt": caPEM},
+	}
+	stale := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "agent", Name: "mspsql-agent-identity-b",
+			Labels: map[string]string{managedLabel: "true"},
+		},
+		Data: map[string][]byte{"tls.crt": staleCertificate, "tls.key": staleKey, "ca.crt": caPEM},
+	}
+	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(deployment, current, stale).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, _ client.WithWatch, list client.ObjectList,
+				_ ...client.ListOption,
+			) error {
+				if _, ok := list.(*corev1.SecretList); ok {
+					t.Fatal("identity cleanup attempted to list Secrets")
+				}
+				return nil
+			},
+		}).Build()
+	rotator := &Rotator{
+		Client: kube, Namespace: "agent", DeploymentName: "agent", MountPath: mountPath,
+		RegistrationUID: "site-uid", Now: func() time.Time { return now },
+	}
+
+	request, err := rotator.Request(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request != nil {
+		t.Fatal("healthy certificate produced a signing request")
+	}
+	var removed corev1.Secret
+	err = kube.Get(context.Background(), client.ObjectKey{Namespace: "agent", Name: stale.Name}, &removed)
+	if err == nil {
+		t.Fatal("stale identity slot was not deleted")
 	}
 }
 
@@ -202,10 +272,11 @@ func testCA(t *testing.T, now time.Time) (*x509.Certificate, *ecdsa.PrivateKey, 
 	return certificate, key, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-func testCertificate(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, uid string,
+func testCertificate(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey,
 	notBefore, notAfter time.Time,
 ) ([]byte, []byte) {
 	t.Helper()
+	const uid = "site-uid"
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)

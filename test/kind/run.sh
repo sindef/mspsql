@@ -791,6 +791,11 @@ for site in vic nsw qld; do
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \
     -n orders-postgres || true)"
   test "${can_delete_unrelated_secret}" = "no"
+  can_list_secrets="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i list secrets \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres || true)"
+  test "${can_list_secrets}" = "no"
   can_read_owned_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
     auth can-i get "secret/postgres-${site}-0-tls" \
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \

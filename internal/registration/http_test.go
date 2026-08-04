@@ -183,16 +183,25 @@ func TestGeneratedAgentRBACDoesNotGrantBroadSecretAccess(t *testing.T) {
 	if secretRuleAllows(rules, "", "get") {
 		t.Fatalf("agent ClusterRole permits broad Secret get")
 	}
+	if secretRuleAllows(rules, "", "list") {
+		t.Fatalf("agent ClusterRole permits broad Secret list")
+	}
 	if secretRuleAllows(rules, "", "delete") {
 		t.Fatalf("agent ClusterRole permits broad Secret delete")
+	}
+	if !secretRuleAllows(rules, "", "create") {
+		t.Fatalf("agent ClusterRole cannot create managed Secrets")
 	}
 	for _, name := range []string{
 		"postgres-auth",
 		"postgres-vic-0-tls",
 		"postgres-vic-0-pgbackrest-tls",
 		"etcd-vic-0-tls",
+		"minio-ca",
 		"mspsql-agent-bootstrap",
 		"mspsql-agent-identity",
+		"mspsql-agent-identity-a",
+		"mspsql-agent-identity-b",
 		"pgpool-vic-tls",
 		"vault-ca",
 	} {

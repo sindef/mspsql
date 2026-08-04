@@ -553,9 +553,11 @@ func namedRule(groups, resources, resourceNames, verbs []string) map[string]any 
 
 func agentClusterRoleRules(siteName string) []any {
 	mutate := []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+	secretMutate := []string{"get", "update", "patch", "delete"}
 	return []any{
 		rule([]string{""}, []string{"namespaces", "services", "serviceaccounts", "configmaps", "persistentvolumeclaims", "pods"}, mutate),
-		namedRule([]string{""}, []string{"secrets"}, agentSecretResourceNames(siteName), mutate),
+		rule([]string{""}, []string{"secrets"}, []string{"create"}),
+		namedRule([]string{""}, []string{"secrets"}, agentSecretResourceNames(siteName), secretMutate),
 		rule([]string{""}, []string{"serviceaccounts/token"}, []string{"create"}),
 		rule([]string{"apps"}, []string{"deployments", "statefulsets"}, mutate),
 		rule([]string{"batch"}, []string{"jobs", "cronjobs"}, mutate),
@@ -574,8 +576,11 @@ func agentClusterRoleRules(siteName string) []any {
 func agentSecretResourceNames(siteName string) []string {
 	names := []string{
 		"etcd-maintenance-client-tls",
+		"minio-ca",
 		"mspsql-agent-bootstrap",
 		"mspsql-agent-identity",
+		"mspsql-agent-identity-a",
+		"mspsql-agent-identity-b",
 		"patroni-api-client-tls",
 		"patroni-etcd-client-tls",
 		"pg-tde-vault",
