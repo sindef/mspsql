@@ -13,6 +13,8 @@ rules:
   resources: [secrets]
   resourceNames:
   - etcd-maintenance-client-tls
+  - mspsql-agent-bootstrap
+  - mspsql-agent-identity
   - patroni-api-client-tls
   - patroni-etcd-client-tls
   - pg-tde-vault
@@ -22,6 +24,7 @@ rules:
   - postgres-auth
   - postgres-auth-pending
   - postgres-auth-previous
+  - vault-ca
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [""]
   resources: [events]

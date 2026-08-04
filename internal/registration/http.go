@@ -574,6 +574,8 @@ func agentClusterRoleRules(siteName string) []any {
 func agentSecretResourceNames(siteName string) []string {
 	names := []string{
 		"etcd-maintenance-client-tls",
+		"mspsql-agent-bootstrap",
+		"mspsql-agent-identity",
 		"patroni-api-client-tls",
 		"patroni-etcd-client-tls",
 		"pg-tde-vault",
@@ -583,6 +585,7 @@ func agentSecretResourceNames(siteName string) []string {
 		"postgres-auth",
 		"postgres-auth-pending",
 		"postgres-auth-previous",
+		"vault-ca",
 	}
 	if siteName != "" {
 		names = append(names, "pgpool-"+siteName+"-tls")

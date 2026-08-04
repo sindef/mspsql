@@ -191,7 +191,10 @@ func TestGeneratedAgentRBACDoesNotGrantBroadSecretAccess(t *testing.T) {
 		"postgres-vic-0-tls",
 		"postgres-vic-0-pgbackrest-tls",
 		"etcd-vic-0-tls",
+		"mspsql-agent-bootstrap",
+		"mspsql-agent-identity",
 		"pgpool-vic-tls",
+		"vault-ca",
 	} {
 		if !secretRuleAllows(rules, name, "get") {
 			t.Fatalf("agent ClusterRole does not permit Secret get for %s", name)
