@@ -38,9 +38,7 @@ spec:
     storage:
       etcd: {storageClassName: standard, size: 1Gi}
       postgres: {storageClassName: csi-hostpath, size: 1Gi}
-    loadBalancer:
-      addressPool: database-services
-      peerSourceAddresses: [VIC_NODE_IP]
+    loadBalancer: {addressPool: database-services}
     vaultAuth:
       address: "https://vault.vault.svc:8200"
       authMount: kubernetes
@@ -60,9 +58,7 @@ spec:
     storage:
       etcd: {storageClassName: standard, size: 1Gi}
       postgres: {storageClassName: csi-hostpath, size: 1Gi}
-    loadBalancer:
-      addressPool: database-services
-      peerSourceAddresses: [NSW_NODE_IP]
+    loadBalancer: {addressPool: database-services}
     vaultAuth:
       address: "https://vault.vault.svc:8200"
       authMount: kubernetes
@@ -78,8 +74,5 @@ spec:
     namespace: orders-postgres
     role: Witness
     components: {etcdReplicas: 1, postgresReplicas: 0, pgpoolReplicas: 0}
-    loadBalancer:
-      addressPool: database-services
-      peerSourceAddresses: [QLD_NODE_IP]
     certificates:
       etcdIssuerRef: {name: test, kind: ClusterIssuer}

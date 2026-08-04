@@ -619,10 +619,7 @@ nsw_node_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddres
 qld_node_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   mspsql-qld-control-plane)"
 render_instance_manifest() {
-  sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml |
-    sed "s|VIC_NODE_IP|${vic_node_ip}|g" |
-    sed "s|NSW_NODE_IP|${nsw_node_ip}|g" |
-    sed "s|QLD_NODE_IP|${qld_node_ip}|g"
+  sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml
 }
 if validation_error="$(render_instance_manifest |
   sed 's/deletionPolicy: Retain/deletionPolicy: Destroy/' |
@@ -772,6 +769,14 @@ test "$(kubectl get crd multisitepostgres.multisite-postgres.dev \
   -o jsonpath='{.status.storedVersions[*]}')" = "v1alpha1"
 test "$(kubectl -n database-platform get multisitepostgres orders \
   -o jsonpath='{.metadata.uid}')" != ""
+kubectl -n database-platform patch multisitepostgres orders --type=json \
+  -p "$(jq -cn --arg vic "${vic_node_ip}" --arg nsw "${nsw_node_ip}" \
+    --arg qld "${qld_node_ip}" '[
+      {op:"add", path:"/spec/sites/0/loadBalancer/peerSourceAddresses", value:[$vic]},
+      {op:"add", path:"/spec/sites/1/loadBalancer/peerSourceAddresses", value:[$nsw]},
+      {op:"add", path:"/spec/sites/2/loadBalancer",
+        value:{addressPool:"database-services", peerSourceAddresses:[$qld]}}
+    ]')"
 kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
 for site in vic nsw qld; do
   site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
