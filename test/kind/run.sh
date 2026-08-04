@@ -763,6 +763,21 @@ for site in vic nsw qld; do
   done
   test -s "${registration_bundle}"
   kubectl --kubeconfig="${site_kubeconfig}" apply -f "${registration_bundle}"
+  can_read_unrelated_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i get secret tenant-password \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres)"
+  test "${can_read_unrelated_secret}" = "no"
+  can_read_owned_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i get secret "postgres-${site}-0-tls" \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres)"
+  test "${can_read_owned_secret}" = "yes"
+  can_patch_networkpolicy="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i patch networkpolicy "mspsql-etcd-${site}" \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres)"
+  test "${can_patch_networkpolicy}" = "yes"
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent rollout status \
     deployment/mspsql-agent --timeout=180s
   test "${agent_uid}" = "$(kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent \
