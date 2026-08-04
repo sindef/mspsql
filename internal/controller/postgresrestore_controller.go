@@ -41,6 +41,7 @@ const (
 	restoreNameAnnotation      = "multisite-postgres.dev/restore-name"
 	restoreSourceUIDAnnotation = "multisite-postgres.dev/restore-source-uid"
 	restorePhaseAnnotation     = "multisite-postgres.dev/restore-phase"
+	restoreDrillAnnotation     = "multisite-postgres.dev/restore-drill"
 	restoreProgressRequeue     = 10 * time.Second
 )
 
@@ -239,7 +240,37 @@ func (r *PostgresRestoreReconciler) completeRestore(ctx context.Context,
 		"RestoreCompleted", "The target instance passed restore acceptance")
 	setCondition(&restore.Status.Conditions, restore.Generation, "Completed", metav1.ConditionTrue,
 		"AcceptancePassed", "Point-in-time recovery completed at "+r.now().UTC().Format(time.RFC3339))
+	if restore.Annotations[restoreDrillAnnotation] == "true" {
+		if err := r.recordRestoreDrillEvidence(ctx, restore); err != nil {
+			return err
+		}
+	}
 	return r.Status().Update(ctx, restore)
+}
+
+func (r *PostgresRestoreReconciler) recordRestoreDrillEvidence(ctx context.Context,
+	restore *api.PostgresRestore,
+) error {
+	var source api.MultiSitePostgres
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: restore.Namespace, Name: restore.Spec.SourceInstanceRef,
+	}, &source); err != nil {
+		return err
+	}
+	verifiedAt := metav1.NewTime(r.now())
+	source.Status.RestoreDrillLastVerifiedAt = &verifiedAt
+	if restore.Spec.BackupSet != "" {
+		source.Status.RestoreDrillBackupSet = restore.Spec.BackupSet
+	} else if restore.Status.SelectedBackupSet != "" {
+		source.Status.RestoreDrillBackupSet = restore.Status.SelectedBackupSet
+	}
+	if source.Status.RecoveryWindowStart != nil &&
+		!source.Status.RestoreDrillLastVerifiedAt.Before(source.Status.RecoveryWindowStart) {
+		setCondition(&source.Status.Conditions, source.Generation,
+			"RecoveryWindowAvailable", metav1.ConditionTrue, "DisposableRestoreVerified",
+			"Archived WAL continuity and a recent disposable restore drill prove the recovery window")
+	}
+	return r.Status().Update(ctx, &source)
 }
 
 func (r *PostgresRestoreReconciler) preflight(ctx context.Context, restore *api.PostgresRestore,
@@ -249,14 +280,21 @@ func (r *PostgresRestoreReconciler) preflight(ctx context.Context, restore *api.
 		return fmt.Errorf("source has no pgBackRest repository")
 	}
 	if !conditionTrue(source.Status.Conditions, "Ready") ||
-		!conditionTrue(source.Status.Conditions, "RecoveryWindowAvailable") ||
 		source.Status.RecoveryWindowStart == nil {
 		return fmt.Errorf("source must be Ready with a verified recovery window")
 	}
-	if source.Status.RestoreDrillLastVerifiedAt == nil {
-		return fmt.Errorf("source recovery window has no disposable restore verification")
+	if restore.Annotations[restoreDrillAnnotation] == "true" {
+		if !conditionTrue(source.Status.Conditions, "BackupReady") {
+			return fmt.Errorf("source must have archived WAL metadata before a disposable restore drill")
+		}
+	} else if !conditionTrue(source.Status.Conditions, "RecoveryWindowAvailable") {
+		return fmt.Errorf("source must be Ready with a verified recovery window")
 	}
-	if source.Status.RestoreDrillLastVerifiedAt.Before(source.Status.RecoveryWindowStart) {
+	if source.Status.RestoreDrillLastVerifiedAt == nil {
+		if restore.Annotations[restoreDrillAnnotation] != "true" {
+			return fmt.Errorf("source recovery window has no disposable restore verification")
+		}
+	} else if source.Status.RestoreDrillLastVerifiedAt.Before(source.Status.RecoveryWindowStart) {
 		return fmt.Errorf("source disposable restore verification predates the recovery window")
 	}
 	if restore.Spec.TargetTime.Before(source.Status.RecoveryWindowStart) {

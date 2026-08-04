@@ -1083,6 +1083,8 @@ apiVersion: multisite-postgres.dev/v1alpha1
 kind: PostgresRestore
 metadata:
   name: orders-pitr
+  annotations:
+    multisite-postgres.dev/restore-drill: "true"
 spec:
   sourceInstanceRef: orders
   targetInstanceRef: orders-recovered
@@ -1108,6 +1110,12 @@ restored_rows="$(kubectl --kubeconfig="${restored_kubeconfig}" -n "${restored_na
   env PGPASSWORD="${restored_password}" PGSSLMODE=require \
   psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT count(*) FROM mspsql_e2e')"
 test "${restored_rows}" = "1"
+kubectl -n database-platform wait --for=condition=RecoveryWindowAvailable \
+  multisitepostgres/orders --timeout=300s
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.status.restoreDrillBackupSet}')" != ""
+test "$(kubectl -n database-platform get multisitepostgres orders \
+  -o jsonpath='{.status.restoreDrillLastVerifiedAt}')" != ""
 
 e2e_phase major_upgrade_rollback
 benchmark_tested_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

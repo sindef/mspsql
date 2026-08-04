@@ -1545,6 +1545,72 @@ func TestRestorePreflightRequiresDisposableRestoreEvidence(t *testing.T) {
 	}
 }
 
+func TestRestoreDrillCanCreateAndRecordDisposableEvidence(t *testing.T) {
+	scheme := testScheme(t)
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	window := metav1.NewTime(now.Add(-24 * time.Hour))
+	source := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("source-uid"), Generation: 4,
+		},
+		Spec: api.MultiSitePostgresSpec{
+			Backup: &api.BackupSpec{Repository: api.BackupRepositorySpec{
+				Type: "S3", Bucket: "backups", Prefix: "orders",
+			}},
+			Postgres: api.PostgresSpec{MajorVersion: 17, Image: "postgres:17"},
+			Sites: []api.PostgresSiteSpec{{
+				Name: "vic", SiteRegistrationRef: "vic", Namespace: "orders",
+				Role:       api.SiteRoleData,
+				Components: api.SiteComponents{PostgresReplicas: 1},
+			}},
+		},
+		Status: api.MultiSitePostgresStatus{
+			RecoveryWindowStart: &window,
+			Conditions: []metav1.Condition{
+				{Type: "Ready", Status: metav1.ConditionTrue},
+				{Type: "BackupReady", Status: metav1.ConditionTrue},
+				{Type: "RecoveryWindowAvailable", Status: metav1.ConditionFalse, Reason: "RestoreDrillRequired"},
+			},
+		},
+	}
+	restore := &api.PostgresRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-drill", UID: types.UID("restore-uid"),
+			Annotations: map[string]string{restoreDrillAnnotation: "true"},
+		},
+		Spec: api.PostgresRestoreSpec{
+			SourceInstanceRef: "orders", TargetInstanceRef: "orders-drill-target",
+			TargetTime: metav1.NewTime(now.Add(-time.Hour)), BackupSet: "full-20260802",
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}, &api.PostgresRestore{}).
+		WithObjects(source, restore).Build()
+	reconciler := PostgresRestoreReconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+	}
+	if err := reconciler.preflight(context.Background(), restore, source); err != nil {
+		t.Fatalf("drill preflight failed: %v", err)
+	}
+	if err := reconciler.completeRestore(context.Background(), restore); err != nil {
+		t.Fatal(err)
+	}
+	var current api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(source), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.RestoreDrillLastVerifiedAt == nil ||
+		!current.Status.RestoreDrillLastVerifiedAt.Equal(&metav1.Time{Time: now}) ||
+		current.Status.RestoreDrillBackupSet != "full-20260802" {
+		t.Fatalf("restore drill evidence = %#v", current.Status)
+	}
+	condition := statusCondition(current.Status.Conditions, "RecoveryWindowAvailable")
+	if condition == nil || condition.Status != metav1.ConditionTrue ||
+		condition.Reason != "DisposableRestoreVerified" {
+		t.Fatalf("recovery window condition = %#v", condition)
+	}
+}
+
 func TestFailedUpgradeIsTerminal(t *testing.T) {
 	scheme := testScheme(t)
 	instance := &api.MultiSitePostgres{

@@ -35,7 +35,8 @@ kubectl --context "${VIC_CTX}" -n mspsql-agent get events.events.k8s.io --sort-b
     <li>Backups require <code>MultiSitePostgres.spec.backup</code>.</li>
     <li>Repository credentials are read from Vault at each site.</li>
     <li>Use a unique repository <code>prefix</code> per instance.</li>
-    <li>Check <code>status.lastBackupTime</code>, <code>status.recoveryWindowStart</code>, and backup schedule status.</li>
+    <li>Check <code>status.lastBackupTime</code>, <code>status.recoveryWindowStart</code>, <code>status.restoreDrillLastVerifiedAt</code>, and backup schedule status.</li>
+    <li><code>RecoveryWindowAvailable=True</code> requires archived WAL metadata plus a completed disposable restore drill. Mark the isolated drill restore with <code>multisite-postgres.dev/restore-drill=true</code>; completion records the verified time and backup set on the source instance.</li>
   </ul>
   <table>
     <tr><th>Condition</th><th>Backup behavior</th><th>Topology-changing behavior</th></tr>
