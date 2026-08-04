@@ -360,6 +360,42 @@ route_site_pool() {
   done
 }
 
+wait_for_etcd_peer_source_san() {
+  local site="$1"
+  local expected_ip="$2"
+  local site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
+  local cert_text=""
+  for _ in $(seq 1 120); do
+    cert_text="$(kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres \
+      get secret "etcd-${site}-0-tls" -o jsonpath='{.data.tls\.crt}' 2>/dev/null |
+      base64 -d 2>/dev/null |
+      openssl x509 -noout -text 2>/dev/null || true)"
+    if grep -Fq "IP Address:${expected_ip}" <<<"${cert_text}"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "etcd-${site}-0-tls did not include peer source SAN ${expected_ip}" >&2
+  return 1
+}
+
+wait_for_etcd_member_ready() {
+  local site="$1"
+  local address="$2"
+  local site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
+  for _ in $(seq 1 120); do
+    if kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres \
+      exec "etcd-${site}-0-0" -c etcd -- \
+      etcdctl --endpoints="https://${address}:2379" --cacert=/tls/ca.crt \
+      --cert=/tls/tls.crt --key=/tls/tls.key endpoint health >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "etcd-${site}-0 did not become healthy at ${address}" >&2
+  return 1
+}
+
 e2e_phase site_platform_setup
 pool_offset=10
 for site in vic nsw qld; do
@@ -847,6 +883,17 @@ for site in vic nsw qld; do
   done
   test "${phase}" = "Connected"
 done
+wait_for_etcd_peer_source_san vic "${vic_node_ip}"
+wait_for_etcd_peer_source_san nsw "${nsw_node_ip}"
+wait_for_etcd_peer_source_san qld "${qld_node_ip}"
+for site in vic nsw qld; do
+  site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
+  kubectl --kubeconfig="${site_kubeconfig}" -n orders-postgres rollout status \
+    "statefulset/etcd-${site}-0" --timeout=240s
+done
+wait_for_etcd_member_ready vic "${subnet_a}.${subnet_b}.100.10"
+wait_for_etcd_member_ready nsw "${subnet_a}.${subnet_b}.100.30"
+wait_for_etcd_member_ready qld "${subnet_a}.${subnet_b}.100.50"
 kubectl -n database-platform wait --for=condition=Ready multisitepostgres/orders --timeout=300s
 test "$(kubectl --kubeconfig="${replica_kubeconfig}" -n orders-postgres exec "${replica_pod}" \
   -c postgres-patroni -- env PGPASSWORD="${replica_password}" PGSSLMODE=require \
