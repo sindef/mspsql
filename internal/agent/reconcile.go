@@ -401,9 +401,6 @@ func (r *Reconciler) reconcileCertificates(ctx context.Context, desired *plan.Si
 func (r *Reconciler) preserveIssuedEtcdPeerSourceAddresses(ctx context.Context,
 	desired *plan.SitePlan,
 ) error {
-	if desired.Site.LoadBalancer == nil {
-		return nil
-	}
 	excluded := map[string]struct{}{}
 	for member, address := range desired.MemberAddresses {
 		if strings.HasPrefix(member, "etcd-") && address != "" {
@@ -424,7 +421,10 @@ func (r *Reconciler) preserveIssuedEtcdPeerSourceAddresses(ctx context.Context,
 			excluded[migration.NewAddress] = struct{}{}
 		}
 	}
-	sourceAddresses := append([]string(nil), desired.Site.LoadBalancer.PeerSourceAddresses...)
+	var sourceAddresses []string
+	if desired.Site.LoadBalancer != nil {
+		sourceAddresses = append(sourceAddresses, desired.Site.LoadBalancer.PeerSourceAddresses...)
+	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
 		name := fmt.Sprintf("etcd-%s-%d-tls", desired.Site.Name, ordinal)
 		var secret corev1.Secret
@@ -449,7 +449,14 @@ func (r *Reconciler) preserveIssuedEtcdPeerSourceAddresses(ctx context.Context,
 		}
 	}
 	slices.Sort(sourceAddresses)
-	desired.Site.LoadBalancer.PeerSourceAddresses = slices.Compact(sourceAddresses)
+	sourceAddresses = slices.Compact(sourceAddresses)
+	if len(sourceAddresses) == 0 {
+		return nil
+	}
+	if desired.Site.LoadBalancer == nil {
+		desired.Site.LoadBalancer = &api.LoadBalancerSpec{}
+	}
+	desired.Site.LoadBalancer.PeerSourceAddresses = sourceAddresses
 	return nil
 }
 

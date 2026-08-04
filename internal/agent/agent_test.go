@@ -1018,8 +1018,7 @@ func TestReconcilerPreservesIssuedEtcdPeerSourceSANs(t *testing.T) {
 		InstanceUID: "instance",
 		Site: api.PostgresSiteSpec{
 			Name: "vic", Namespace: "orders",
-			Components:   api.SiteComponents{EtcdReplicas: 1},
-			LoadBalancer: &api.LoadBalancerSpec{AddressPool: "database-services"},
+			Components: api.SiteComponents{EtcdReplicas: 1},
 		},
 		MemberAddresses: map[string]string{
 			"etcd-vic-0": "172.18.100.10",
@@ -1033,6 +1032,9 @@ func TestReconcilerPreservesIssuedEtcdPeerSourceSANs(t *testing.T) {
 	if err := (&Reconciler{Client: kube}).preserveIssuedEtcdPeerSourceAddresses(
 		context.Background(), &desired); err != nil {
 		t.Fatal(err)
+	}
+	if desired.Site.LoadBalancer == nil {
+		t.Fatal("loadBalancer was not restored for preserved peer source SANs")
 	}
 	if !slices.Equal(desired.Site.LoadBalancer.PeerSourceAddresses, []string{"172.18.0.3"}) {
 		t.Fatalf("preserved peer source addresses = %#v",
