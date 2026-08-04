@@ -766,12 +766,12 @@ for site in vic nsw qld; do
   can_read_unrelated_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
     auth can-i get secret tenant-password \
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \
-    -n orders-postgres)"
+    -n orders-postgres || true)"
   test "${can_read_unrelated_secret}" = "no"
   can_delete_unrelated_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
     auth can-i delete secret tenant-password \
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \
-    -n orders-postgres)"
+    -n orders-postgres || true)"
   test "${can_delete_unrelated_secret}" = "no"
   can_read_owned_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
     auth can-i get secret "postgres-${site}-0-tls" \
