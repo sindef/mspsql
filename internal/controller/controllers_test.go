@@ -1035,6 +1035,15 @@ func TestBackupSchedulerIssuesOneCatchUpDirective(t *testing.T) {
 		!instance.Status.BackupSchedules[0].NextScheduledAt.After(now) {
 		t.Fatalf("backup schedule status = %#v", instance.Status.BackupSchedules[0])
 	}
+	operation := instance.Status.BackupSchedules[0].Operation
+	if operation == nil ||
+		operation.OperationUID != string(instance.UID)+"-backup-full-"+
+			strconv.FormatInt(instance.Status.BackupSchedules[0].LastScheduledAt.Unix(), 10) ||
+		operation.Phase != "ScheduledBackup" ||
+		operation.Attempt != 1 ||
+		operation.Terminal {
+		t.Fatalf("backup schedule operation = %#v", operation)
+	}
 }
 
 func TestLifecycleOperationBlocksBackupBeforeInstanceAnnotation(t *testing.T) {
@@ -2102,7 +2111,7 @@ func TestDatabaseDeletionBlocksWhenParentMissing(t *testing.T) {
 	deletingAt := metav1.NewTime(time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC))
 	database := &api.PostgresDatabase{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "platform", Name: "orders-api", Generation: 2,
+			Namespace: "platform", Name: "orders-api", UID: types.UID("database-uid"), Generation: 2,
 			Finalizers: []string{childFinalizer}, DeletionTimestamp: &deletingAt,
 		},
 		Spec: api.PostgresDatabaseSpec{
@@ -2137,7 +2146,7 @@ func TestDatabaseDeletionWithParentIssuesCleanupDirective(t *testing.T) {
 	}
 	database := &api.PostgresDatabase{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "platform", Name: "orders-api", Generation: 2,
+			Namespace: "platform", Name: "orders-api", UID: types.UID("database-uid"), Generation: 2,
 			Finalizers: []string{childFinalizer}, DeletionTimestamp: &deletingAt,
 		},
 		Spec: api.PostgresDatabaseSpec{
@@ -2172,6 +2181,12 @@ func TestDatabaseDeletionWithParentIssuesCleanupDirective(t *testing.T) {
 	}
 	if !controllerutil.ContainsFinalizer(&current, childFinalizer) {
 		t.Fatalf("database finalizer removed before cleanup completed: %#v", current.Finalizers)
+	}
+	if current.Status.Operation == nil ||
+		current.Status.Operation.OperationUID != "database-uid-2-true" ||
+		current.Status.Operation.Phase != "Deleting" ||
+		current.Status.Operation.Terminal {
+		t.Fatalf("database cleanup operation = %#v", current.Status.Operation)
 	}
 }
 

@@ -38,9 +38,10 @@ type PostgresUserSpec struct {
 }
 
 type PostgresUserStatus struct {
-	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
-	Phase              string `json:"phase,omitempty"`
-	CredentialVersion  int64  `json:"credentialVersion,omitempty"`
+	ObservedGeneration int64                    `json:"observedGeneration,omitempty"`
+	Phase              string                   `json:"phase,omitempty"`
+	CredentialVersion  int64                    `json:"credentialVersion,omitempty"`
+	Operation          *OperationProgressStatus `json:"operation,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

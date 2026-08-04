@@ -67,9 +67,10 @@ type MultiSitePostgresStatus struct {
 
 type BackupScheduleStatus struct {
 	// +kubebuilder:validation:Enum=full;diff;incr
-	Type            string       `json:"type"`
-	LastScheduledAt *metav1.Time `json:"lastScheduledAt,omitempty"`
-	NextScheduledAt *metav1.Time `json:"nextScheduledAt,omitempty"`
+	Type            string                   `json:"type"`
+	LastScheduledAt *metav1.Time             `json:"lastScheduledAt,omitempty"`
+	NextScheduledAt *metav1.Time             `json:"nextScheduledAt,omitempty"`
+	Operation       *OperationProgressStatus `json:"operation,omitempty"`
 }
 
 // +kubebuilder:object:root=true

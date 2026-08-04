@@ -78,6 +78,7 @@ func (r *MultiSitePostgresReconciler) reconcileBackupSchedules(ctx context.Conte
 			nextScheduled := metav1.NewTime(next)
 			status.LastScheduledAt = &lastScheduled
 			status.NextScheduledAt = &nextScheduled
+			status.Operation = scheduledBackupOperation(instance, configured.backupType, due)
 		}
 		statuses = append(statuses, status)
 		nextReconcile = minimumPositiveDuration(nextReconcile, status.NextScheduledAt.Sub(now))
@@ -145,7 +146,7 @@ func (r *MultiSitePostgresReconciler) reconcileBackupDirective(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	operationUID := fmt.Sprintf("%s-backup-%s-%d", instance.UID, backupType, scheduledAt.Unix())
+	operationUID := scheduledBackupOperationUID(instance, backupType, scheduledAt)
 	data := map[string]string{
 		"type": "Backup", "instanceRef": instance.Name, "deleting": "false",
 		"operationUID": operationUID, "spec.json": string(spec),
@@ -171,6 +172,23 @@ func (r *MultiSitePostgresReconciler) reconcileBackupDirective(ctx context.Conte
 		return err
 	}
 	return nil
+}
+
+func scheduledBackupOperation(instance *api.MultiSitePostgres, backupType string,
+	scheduledAt time.Time,
+) *api.OperationProgressStatus {
+	return &api.OperationProgressStatus{
+		OperationUID: scheduledBackupOperationUID(instance, backupType, scheduledAt),
+		Phase:        "ScheduledBackup",
+		Attempt:      1,
+		Terminal:     false,
+	}
+}
+
+func scheduledBackupOperationUID(instance *api.MultiSitePostgres, backupType string,
+	scheduledAt time.Time,
+) string {
+	return fmt.Sprintf("%s-backup-%s-%d", instance.UID, backupType, scheduledAt.Unix())
 }
 
 func minimumPositiveDuration(current, candidate time.Duration) time.Duration {

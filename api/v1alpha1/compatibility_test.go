@@ -72,6 +72,7 @@ func TestV1Alpha1StorageRoundTripPreservesFields(t *testing.T) {
 				RestoreDrillBackupSet:      "full-20260802",
 				BackupSchedules: []BackupScheduleStatus{{
 					Type: "full", LastScheduledAt: &now, NextScheduledAt: &now,
+					Operation: &OperationProgressStatus{OperationUID: "scheduled-backup", Attempt: 1},
 				}},
 				Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}},
 			},
@@ -124,6 +125,9 @@ func TestV1Alpha1StorageRoundTripPreservesFields(t *testing.T) {
 				InstanceRef: "orders", DatabaseName: "orders",
 				Roles: []DatabaseRole{{Name: "orders_rw"}},
 			},
+			Status: PostgresDatabaseStatus{
+				Operation: &OperationProgressStatus{OperationUID: "database", Attempt: 1},
+			},
 		},
 		&PostgresUser{
 			TypeMeta:   metav1.TypeMeta{APIVersion: SchemeGroupVersion.String(), Kind: "PostgresUser"},
@@ -132,6 +136,9 @@ func TestV1Alpha1StorageRoundTripPreservesFields(t *testing.T) {
 				InstanceRef: "orders", RoleName: "orders_writer",
 				MemberOf:         []RoleMembership{{DatabaseRef: "orders-api", Role: "orders_rw"}},
 				PasswordVaultRef: VaultSecretReference{Mount: "secret", Path: "users/orders-writer"},
+			},
+			Status: PostgresUserStatus{
+				Operation: &OperationProgressStatus{OperationUID: "user", Attempt: 1},
 			},
 		},
 	}

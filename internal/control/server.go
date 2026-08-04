@@ -713,7 +713,7 @@ func (s *Server) recordProgress(ctx context.Context, siteName string, progress *
 
 func (s *Server) recordResult(ctx context.Context, siteName string, result *controlv1.PlanResult) error {
 	if result.OperationUid != "" {
-		return s.recordDirectiveResult(ctx, result)
+		return s.recordDirectiveResult(ctx, siteName, result)
 	}
 	if err := s.updateInstanceSite(ctx, result.InstanceUid, siteName, func(site *api.SiteRevisionStatus) {
 		if result.AppliedRevision != site.DesiredRevision {
@@ -734,7 +734,9 @@ func (s *Server) recordResult(ctx context.Context, siteName string, result *cont
 	return s.triggerInstanceReconcile(ctx, result.InstanceUid)
 }
 
-func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.PlanResult) error {
+func (s *Server) recordDirectiveResult(ctx context.Context, siteName string,
+	result *controlv1.PlanResult,
+) error {
 	var configMaps corev1.ConfigMapList
 	if err := s.Client.List(ctx, &configMaps, client.HasLabels{
 		"multisite-postgres.dev/directive",
@@ -746,21 +748,21 @@ func (s *Server) recordDirectiveResult(ctx context.Context, result *controlv1.Pl
 		if configMap.Data["operationUID"] != result.OperationUid || len(configMap.OwnerReferences) == 0 {
 			continue
 		}
-		return s.recordOwnedDirectiveResult(ctx, configMap, configMap.OwnerReferences[0], result)
+		return s.recordOwnedDirectiveResult(ctx, configMap, configMap.OwnerReferences[0], siteName, result)
 	}
 	return status.Error(codes.NotFound, "directive operation was not found")
 }
 
 func (s *Server) recordOwnedDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
-	owner metav1.OwnerReference, result *controlv1.PlanResult,
+	owner metav1.OwnerReference, siteName string, result *controlv1.PlanResult,
 ) error {
 	switch owner.Kind {
 	case "MultiSitePostgres":
-		return s.recordInstanceDirectiveResult(ctx, configMap, owner.Name, result)
+		return s.recordInstanceDirectiveResult(ctx, configMap, owner.Name, siteName, result)
 	case "PostgresDatabase":
-		return s.recordDatabaseDirectiveResult(ctx, configMap, owner.Name, result)
+		return s.recordDatabaseDirectiveResult(ctx, configMap, owner.Name, siteName, result)
 	case "PostgresUser":
-		return s.recordUserDirectiveResult(ctx, configMap, owner.Name, result)
+		return s.recordUserDirectiveResult(ctx, configMap, owner.Name, siteName, result)
 	case "PostgresRestore":
 		return s.recordRestoreDirectiveResult(ctx, configMap, owner.Name, result)
 	case "PostgresUpgrade":
@@ -770,7 +772,7 @@ func (s *Server) recordOwnedDirectiveResult(ctx context.Context, configMap *core
 }
 
 func (s *Server) recordInstanceDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
-	name string, result *controlv1.PlanResult,
+	name, siteName string, result *controlv1.PlanResult,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var object api.MultiSitePostgres
@@ -786,11 +788,13 @@ func (s *Server) recordInstanceDirectiveResult(ctx context.Context, configMap *c
 		}
 		if succeeded {
 			updateBackupEvidence(&object.Status, result.Conditions)
+			markBackupScheduleOperation(&object.Status, result, siteName)
 			setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
 				metav1.ConditionTrue, "BackupVerified",
 				"pgBackRest completed a backup and verified archived WAL metadata")
 			setRecoveryWindowCondition(&object)
 		} else {
+			markBackupScheduleOperation(&object.Status, result, siteName)
 			setInstanceCondition(&object.Status.Conditions, object.Generation, "BackupReady",
 				metav1.ConditionFalse, "BackupFailed", "The scheduled pgBackRest operation failed")
 		}
@@ -799,7 +803,7 @@ func (s *Server) recordInstanceDirectiveResult(ctx context.Context, configMap *c
 }
 
 func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
-	name string, result *controlv1.PlanResult,
+	name, siteName string, result *controlv1.PlanResult,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var object api.PostgresDatabase
@@ -810,6 +814,7 @@ func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *c
 		}
 		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
 			configMap.Data["deleting"] == "true", object.Generation, result.Conditions)
+		object.Status.Operation = directiveResultOperation(result, object.Status.Phase, siteName)
 		for _, condition := range result.Conditions {
 			if condition.Status != string(metav1.ConditionTrue) {
 				continue
@@ -834,7 +839,7 @@ func (s *Server) recordDatabaseDirectiveResult(ctx context.Context, configMap *c
 }
 
 func (s *Server) recordUserDirectiveResult(ctx context.Context, configMap *corev1.ConfigMap,
-	name string, result *controlv1.PlanResult,
+	name, siteName string, result *controlv1.PlanResult,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var object api.PostgresUser
@@ -845,6 +850,7 @@ func (s *Server) recordUserDirectiveResult(ctx context.Context, configMap *corev
 		}
 		applyDirectiveStatus(&object.Status.Phase, &object.Status.Conditions,
 			configMap.Data["deleting"] == "true", object.Generation, result.Conditions)
+		object.Status.Operation = directiveResultOperation(result, object.Status.Phase, siteName)
 		for _, condition := range result.Conditions {
 			if condition.Type == "CredentialVersion" && condition.Status == string(metav1.ConditionTrue) {
 				if version, err := strconv.ParseInt(condition.Message, 10, 64); err == nil {
@@ -985,6 +991,43 @@ func directiveSucceeded(reported []*controlv1.Condition) bool {
 		}
 	}
 	return found
+}
+
+func directiveResultOperation(result *controlv1.PlanResult, phase, siteName string) *api.OperationProgressStatus {
+	operation := &api.OperationProgressStatus{
+		OperationUID: result.OperationUid,
+		Phase:        phase,
+		Attempt:      1,
+		Site:         siteName,
+		Terminal:     true,
+	}
+	if directiveSucceeded(result.Conditions) {
+		return operation
+	}
+	operation.LastErrorReason, operation.LastErrorMessage = directiveFailure(result.Conditions)
+	return operation
+}
+
+func directiveFailure(conditions []*controlv1.Condition) (string, string) {
+	for _, condition := range conditions {
+		if condition.Status == string(metav1.ConditionFalse) {
+			return condition.Reason, condition.Message
+		}
+	}
+	return "DirectiveFailed", "The site agent reported directive failure"
+}
+
+func markBackupScheduleOperation(instanceStatus *api.MultiSitePostgresStatus,
+	result *controlv1.PlanResult, siteName string,
+) {
+	for i := range instanceStatus.BackupSchedules {
+		operation := instanceStatus.BackupSchedules[i].Operation
+		if operation == nil || operation.OperationUID != result.OperationUid {
+			continue
+		}
+		instanceStatus.BackupSchedules[i].Operation = directiveResultOperation(result, "ScheduledBackup", siteName)
+		return
+	}
 }
 
 func applyDirectiveStatus(phase *string, conditions *[]metav1.Condition, deleting bool, generation int64,

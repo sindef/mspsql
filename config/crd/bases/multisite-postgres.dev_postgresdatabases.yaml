@@ -179,6 +179,34 @@ spec:
                 - type: string
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
+              operation:
+                properties:
+                  attempt:
+                    format: int32
+                    type: integer
+                  deadlineAt:
+                    format: date-time
+                    type: string
+                  lastErrorMessage:
+                    type: string
+                  lastErrorReason:
+                    type: string
+                  manualInterventionRequired:
+                    type: boolean
+                  nextRetryAt:
+                    format: date-time
+                    type: string
+                  operationUID:
+                    type: string
+                  phase:
+                    type: string
+                  site:
+                    type: string
+                  terminal:
+                    type: boolean
+                  worker:
+                    type: string
+                type: object
               orphanedDeclarations:
                 items:
                   type: string

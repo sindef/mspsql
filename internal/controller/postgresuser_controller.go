@@ -95,7 +95,13 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			"mspsql-user-"+user.Name, "User", user.Spec.InstanceRef, user.Spec, true); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
+		user.Status.ObservedGeneration = user.Generation
+		user.Status.Phase = "Deleting"
+		user.Status.Operation = directiveOperation(&user, "Deleting", true)
+		setCondition(&user.Status.Conditions, user.Generation, "DeletionBlocked",
+			metav1.ConditionTrue, "DeletionDirectiveIssued",
+			"Waiting for a site agent to delete the user declaration")
+		return ctrl.Result{}, r.Status().Update(ctx, &user)
 	}
 	observedCurrentGeneration := user.Status.ObservedGeneration == user.Generation
 	for _, membership := range user.Spec.MemberOf {
@@ -148,6 +154,7 @@ func (r *PostgresUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	user.Status.ObservedGeneration = user.Generation
 	user.Status.Phase = "Reconciling"
+	user.Status.Operation = directiveOperation(&user, "Reconciling", false)
 	setCondition(&user.Status.Conditions, user.Generation, "Ready", metav1.ConditionFalse,
 		"DeclarationIssued", "Waiting for a site agent to reconcile the login role")
 	if err := r.Status().Update(ctx, &user); err != nil {

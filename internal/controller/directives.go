@@ -27,6 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	multisitepostgresv1alpha1 "github.com/sindef/mspsql/api/v1alpha1"
 )
 
 func reconcileDirective(ctx context.Context, kube client.Client, scheme *runtime.Scheme, owner client.Object,
@@ -42,7 +44,7 @@ func reconcileDirective(ctx context.Context, kube client.Client, scheme *runtime
 		"instanceRef":  instanceRef,
 		"deleting":     boolString(deleting),
 		"spec.json":    string(encoded),
-		"operationUID": fmt.Sprintf("%s-%d-%t", owner.GetUID(), owner.GetGeneration(), deleting),
+		"operationUID": directiveOperationUID(owner, deleting),
 	}
 	var configMap corev1.ConfigMap
 	if err := kube.Get(ctx, key, &configMap); apierrors.IsNotFound(err) {
@@ -69,6 +71,19 @@ func reconcileDirective(ctx context.Context, kube client.Client, scheme *runtime
 	}
 	configMap.Data = data
 	return kube.Update(ctx, &configMap)
+}
+
+func directiveOperation(owner client.Object, phase string, deleting bool) *multisitepostgresv1alpha1.OperationProgressStatus {
+	return &multisitepostgresv1alpha1.OperationProgressStatus{
+		OperationUID: directiveOperationUID(owner, deleting),
+		Phase:        phase,
+		Attempt:      1,
+		Terminal:     false,
+	}
+}
+
+func directiveOperationUID(owner client.Object, deleting bool) string {
+	return fmt.Sprintf("%s-%d-%t", owner.GetUID(), owner.GetGeneration(), deleting)
 }
 
 func mapsEqual(left, right map[string]string) bool {

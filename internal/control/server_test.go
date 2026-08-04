@@ -154,6 +154,126 @@ func TestDirectiveOwnerMustMatchAuthoritativeObject(t *testing.T) {
 	}
 }
 
+func TestDirectiveResultRecordsDeclarationOperation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	database := &api.PostgresDatabase{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-api", UID: types.UID("database-uid"), Generation: 2,
+		},
+		Spec: api.PostgresDatabaseSpec{InstanceRef: "orders", DatabaseName: "orders"},
+	}
+	controller := true
+	directive := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: database.Namespace, Name: "mspsql-database-" + database.Name,
+			Labels: map[string]string{"multisite-postgres.dev/directive": "Database"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: api.GroupVersion.String(), Kind: "PostgresDatabase",
+				Name: database.Name, UID: database.UID, Controller: &controller,
+			}},
+		},
+		Data: map[string]string{
+			"type": "Database", "instanceRef": "orders", "deleting": "false",
+			"operationUID": "database-uid-2-false",
+		},
+	}
+	server := &Server{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.PostgresDatabase{}).
+		WithObjects(database, directive).Build()}
+	err := server.recordResult(context.Background(), "vic", &controlv1.PlanResult{
+		OperationUid: "database-uid-2-false", InstanceUid: "instance",
+		Conditions: []*controlv1.Condition{{
+			Type: "Succeeded", Status: string(metav1.ConditionFalse),
+			Reason: "SQLFailed", Message: "permission denied",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current api.PostgresDatabase
+	if err := server.Client.Get(context.Background(), client.ObjectKeyFromObject(database), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Operation == nil ||
+		current.Status.Operation.OperationUID != "database-uid-2-false" ||
+		current.Status.Operation.Phase != "Failed" ||
+		current.Status.Operation.Site != "vic" ||
+		!current.Status.Operation.Terminal ||
+		current.Status.Operation.LastErrorReason != "SQLFailed" ||
+		current.Status.Operation.LastErrorMessage != "permission denied" {
+		t.Fatalf("database operation = %#v", current.Status.Operation)
+	}
+}
+
+func TestDirectiveResultRecordsScheduledBackupOperation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance-uid"), Generation: 4,
+		},
+		Status: api.MultiSitePostgresStatus{BackupSchedules: []api.BackupScheduleStatus{{
+			Type: "full",
+			Operation: &api.OperationProgressStatus{
+				OperationUID: "instance-uid-backup-full-1785844800",
+				Phase:        "ScheduledBackup",
+			},
+		}}},
+	}
+	controller := true
+	directive := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: instance.Namespace, Name: "mspsql-backup-full-1785844800",
+			Labels: map[string]string{"multisite-postgres.dev/directive": "Backup"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: api.GroupVersion.String(), Kind: "MultiSitePostgres",
+				Name: instance.Name, UID: instance.UID, Controller: &controller,
+			}},
+		},
+		Data: map[string]string{
+			"type": "Backup", "instanceRef": "orders", "deleting": "false",
+			"operationUID": "instance-uid-backup-full-1785844800",
+		},
+	}
+	server := &Server{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}).
+		WithObjects(instance, directive).Build()}
+	err := server.recordResult(context.Background(), "vic", &controlv1.PlanResult{
+		OperationUid: "instance-uid-backup-full-1785844800", InstanceUid: string(instance.UID),
+		Conditions: []*controlv1.Condition{{
+			Type: "Succeeded", Status: string(metav1.ConditionTrue),
+			Reason: "BackupCompleted", Message: "ok",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current api.MultiSitePostgres
+	if err := server.Client.Get(context.Background(), client.ObjectKeyFromObject(instance), &current); err != nil {
+		t.Fatal(err)
+	}
+	operation := current.Status.BackupSchedules[0].Operation
+	if operation == nil ||
+		operation.OperationUID != "instance-uid-backup-full-1785844800" ||
+		operation.Phase != "ScheduledBackup" ||
+		operation.Site != "vic" ||
+		!operation.Terminal ||
+		operation.LastErrorReason != "" {
+		t.Fatalf("backup schedule operation = %#v", operation)
+	}
+}
+
 func TestPlanResultDoesNotSetAggregateReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := api.AddToScheme(scheme); err != nil {

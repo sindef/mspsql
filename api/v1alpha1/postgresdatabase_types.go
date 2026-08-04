@@ -40,11 +40,12 @@ type PostgresDatabaseSpec struct {
 }
 
 type PostgresDatabaseStatus struct {
-	ObservedGeneration   int64             `json:"observedGeneration,omitempty"`
-	Phase                string            `json:"phase,omitempty"`
-	TDEVerified          bool              `json:"tdeVerified,omitempty"`
-	ObservedSize         resource.Quantity `json:"observedSize,omitempty"`
-	OrphanedDeclarations []string          `json:"orphanedDeclarations,omitempty"`
+	ObservedGeneration   int64                    `json:"observedGeneration,omitempty"`
+	Phase                string                   `json:"phase,omitempty"`
+	TDEVerified          bool                     `json:"tdeVerified,omitempty"`
+	ObservedSize         resource.Quantity        `json:"observedSize,omitempty"`
+	OrphanedDeclarations []string                 `json:"orphanedDeclarations,omitempty"`
+	Operation            *OperationProgressStatus `json:"operation,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
