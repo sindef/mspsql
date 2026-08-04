@@ -118,10 +118,12 @@ type VaultAuthSpec struct {
 }
 
 type SiteCertificateSpec struct {
-	EtcdIssuerRef     IssuerReference `json:"etcdIssuerRef"`
-	PostgresIssuerRef IssuerReference `json:"postgresIssuerRef,omitempty"`
-	PgpoolIssuerRef   IssuerReference `json:"pgpoolIssuerRef,omitempty"`
-	BackupIssuerRef   IssuerReference `json:"backupIssuerRef,omitempty"`
+	EtcdIssuerRef       IssuerReference `json:"etcdIssuerRef"`
+	EtcdPeerIssuerRef   IssuerReference `json:"etcdPeerIssuerRef,omitempty"`
+	EtcdClientIssuerRef IssuerReference `json:"etcdClientIssuerRef,omitempty"`
+	PostgresIssuerRef   IssuerReference `json:"postgresIssuerRef,omitempty"`
+	PgpoolIssuerRef     IssuerReference `json:"pgpoolIssuerRef,omitempty"`
+	BackupIssuerRef     IssuerReference `json:"backupIssuerRef,omitempty"`
 }
 
 type PostgresSiteSpec struct {

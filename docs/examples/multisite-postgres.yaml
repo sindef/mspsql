@@ -34,6 +34,8 @@ spec:
         caBundleSecretRef: {name: vault-ca, key: ca.crt}
       certificates:
         etcdIssuerRef: {name: etcd-vault, kind: ClusterIssuer}
+        etcdPeerIssuerRef: {name: etcd-peer-vault, kind: ClusterIssuer}
+        etcdClientIssuerRef: {name: etcd-client-vault, kind: ClusterIssuer}
         postgresIssuerRef: {name: postgres-vault, kind: ClusterIssuer}
         pgpoolIssuerRef: {name: client-vault, kind: ClusterIssuer}
         backupIssuerRef: {name: backup-vault, kind: ClusterIssuer}

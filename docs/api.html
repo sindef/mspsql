@@ -60,7 +60,7 @@
     <tr><td><code>sites[].storage</code></td><td>No</td><td>PVC class and size for etcd, PostgreSQL, and restore workspace.</td></tr>
     <tr><td><code>sites[].loadBalancer.addressPool</code></td><td>No</td><td>MetalLB pool name. Must be allowed by the site.</td></tr>
     <tr><td><code>sites[].vaultAuth</code></td><td>No</td><td>Vault address, Kubernetes auth mount, role, and optional CA bundle.</td></tr>
-    <tr><td><code>sites[].certificates</code></td><td>Yes</td><td>cert-manager issuers for local TLS material.</td></tr>
+    <tr><td><code>sites[].certificates</code></td><td>Yes</td><td>cert-manager issuers for local TLS material. <code>etcdPeerIssuerRef</code> and <code>etcdClientIssuerRef</code> can split etcd peer/client trust; they fall back to <code>etcdIssuerRef</code> when omitted.</td></tr>
     <tr><td><code>credentials.postgresVaultRef</code></td><td>Yes</td><td>Vault secret reference for PostgreSQL superuser credentials.</td></tr>
     <tr><td><code>credentials.pgpoolVaultRef</code></td><td>No</td><td>Vault secret reference for Pgpool credentials.</td></tr>
     <tr><td><code>backup</code></td><td>No</td><td>S3 pgBackRest repository, schedules, and retention.</td></tr>

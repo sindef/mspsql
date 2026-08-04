@@ -1051,6 +1051,8 @@ func (in *SecretKeyReference) DeepCopy() *SecretKeyReference {
 func (in *SiteCertificateSpec) DeepCopyInto(out *SiteCertificateSpec) {
 	*out = *in
 	out.EtcdIssuerRef = in.EtcdIssuerRef
+	out.EtcdPeerIssuerRef = in.EtcdPeerIssuerRef
+	out.EtcdClientIssuerRef = in.EtcdClientIssuerRef
 	out.PostgresIssuerRef = in.PostgresIssuerRef
 	out.PgpoolIssuerRef = in.PgpoolIssuerRef
 	out.BackupIssuerRef = in.BackupIssuerRef

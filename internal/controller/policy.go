@@ -42,6 +42,14 @@ func validateSitePolicy(site api.PostgresSiteSpec, registration *api.SiteRegistr
 	if !issuerAllowed(registration.Spec.PermittedIssuers.Etcd, site.Certificates.EtcdIssuerRef) {
 		return fmt.Errorf("etcd issuer %q is not permitted", site.Certificates.EtcdIssuerRef.Name)
 	}
+	if site.Certificates.EtcdPeerIssuerRef.Name != "" &&
+		!issuerAllowed(registration.Spec.PermittedIssuers.Etcd, site.Certificates.EtcdPeerIssuerRef) {
+		return fmt.Errorf("etcd peer issuer %q is not permitted", site.Certificates.EtcdPeerIssuerRef.Name)
+	}
+	if site.Certificates.EtcdClientIssuerRef.Name != "" &&
+		!issuerAllowed(registration.Spec.PermittedIssuers.Etcd, site.Certificates.EtcdClientIssuerRef) {
+		return fmt.Errorf("etcd client issuer %q is not permitted", site.Certificates.EtcdClientIssuerRef.Name)
+	}
 	if site.Role == api.SiteRoleData {
 		if !issuerAllowed(registration.Spec.PermittedIssuers.Postgres, site.Certificates.PostgresIssuerRef) {
 			return fmt.Errorf("PostgreSQL issuer %q is not permitted", site.Certificates.PostgresIssuerRef.Name)

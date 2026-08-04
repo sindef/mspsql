@@ -47,7 +47,9 @@ func TestV1Alpha1StorageRoundTripPreservesFields(t *testing.T) {
 					LoadBalancer: &LoadBalancerSpec{AddressPool: "default"},
 					VaultAuth:    &VaultAuthSpec{Address: "https://vault", AuthMount: "k8s", AuthRole: "vic"},
 					Certificates: SiteCertificateSpec{
-						EtcdIssuerRef: IssuerReference{Name: "etcd"},
+						EtcdIssuerRef:       IssuerReference{Name: "etcd"},
+						EtcdPeerIssuerRef:   IssuerReference{Name: "etcd-peer"},
+						EtcdClientIssuerRef: IssuerReference{Name: "etcd-client"},
 					},
 				}},
 				TDE: TDESpec{Enabled: true, Vault: &TDEVaultSpec{

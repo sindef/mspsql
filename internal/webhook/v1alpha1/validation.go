@@ -92,6 +92,8 @@ func defaultInstance(obj *api.MultiSitePostgres) {
 	}
 	for i := range obj.Spec.Sites {
 		defaultIssuer(&obj.Spec.Sites[i].Certificates.EtcdIssuerRef)
+		defaultIssuer(&obj.Spec.Sites[i].Certificates.EtcdPeerIssuerRef)
+		defaultIssuer(&obj.Spec.Sites[i].Certificates.EtcdClientIssuerRef)
 		defaultIssuer(&obj.Spec.Sites[i].Certificates.PostgresIssuerRef)
 		defaultIssuer(&obj.Spec.Sites[i].Certificates.PgpoolIssuerRef)
 		if obj.Spec.Sites[i].Certificates.BackupIssuerRef.Name == "" {

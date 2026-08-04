@@ -131,6 +131,9 @@ namespace Secret contract as the Vault CA reference.
 coordinator identities. Every data site's issuer must publish the same CA
 bundle; the hub compares bundle fingerprints and blocks readiness and backup
 scheduling on a mismatch.
+For etcd, `etcdPeerIssuerRef` and `etcdClientIssuerRef` can split peer and
+client trust roots. Omitting either field preserves compatibility by falling
+back to `etcdIssuerRef`.
 
 Major upgrades require both `targetImage` and `upgradeImage` pinned by digest.
 The upgrade image runs as its non-root default user and provides a POSIX shell,

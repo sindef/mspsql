@@ -469,6 +469,35 @@ func assertRenderedContainersDenyPrivilegeEscalation(t *testing.T, object client
 	}
 }
 
+func TestRendererSplitsEtcdPeerAndClientIssuers(t *testing.T) {
+	desired := plan.SitePlan{
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders", Role: api.SiteRoleData,
+			Components: api.SiteComponents{EtcdReplicas: 2},
+			Certificates: api.SiteCertificateSpec{
+				EtcdIssuerRef:       api.IssuerReference{Name: "etcd-root"},
+				EtcdPeerIssuerRef:   api.IssuerReference{Name: "etcd-peer-root"},
+				EtcdClientIssuerRef: api.IssuerReference{Name: "etcd-client-root"},
+			},
+		},
+	}
+	issuers := map[string]string{}
+	for _, object := range (Renderer{}).Certificates(desired) {
+		certificate := object.(*unstructured.Unstructured)
+		issuerName, _, err := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name")
+		if err != nil {
+			t.Fatal(err)
+		}
+		issuers[certificate.GetName()] = issuerName
+	}
+	if issuers["etcd-vic-0"] != "etcd-peer-root" ||
+		issuers["etcd-vic-1"] != "etcd-peer-root" ||
+		issuers["etcd-maintenance-client"] != "etcd-client-root" ||
+		issuers["patroni-etcd-client"] != "etcd-client-root" {
+		t.Fatalf("etcd certificate issuers = %#v", issuers)
+	}
+}
+
 func assertLoadBalancerService(t *testing.T, service *corev1.Service) {
 	t.Helper()
 	isMember := strings.HasPrefix(service.Name, "etcd-") || strings.HasPrefix(service.Name, "postgres-")

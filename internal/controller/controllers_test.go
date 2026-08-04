@@ -359,6 +359,33 @@ func TestRevokedRegistrationFailsSitePolicy(t *testing.T) {
 	}
 }
 
+func TestSitePolicyValidatesSplitEtcdIssuers(t *testing.T) {
+	issuer := func(name string) api.IssuerReference {
+		return api.IssuerReference{Name: name, Kind: "ClusterIssuer", Group: "cert-manager.io"}
+	}
+	site := api.PostgresSiteSpec{
+		Name: "vic",
+		Certificates: api.SiteCertificateSpec{
+			EtcdIssuerRef:       issuer("etcd-root"),
+			EtcdPeerIssuerRef:   issuer("etcd-peer-root"),
+			EtcdClientIssuerRef: issuer("etcd-client-root"),
+		},
+	}
+	registration := &api.SiteRegistration{Spec: api.SiteRegistrationSpec{
+		PermittedIssuers: api.IssuerPolicy{Etcd: []api.IssuerReference{
+			issuer("etcd-root"), issuer("etcd-peer-root"), issuer("etcd-client-root"),
+		}},
+	}}
+	if err := validateSitePolicy(site, registration); err != nil {
+		t.Fatalf("split etcd issuers were rejected: %v", err)
+	}
+	registration.Spec.PermittedIssuers.Etcd = registration.Spec.PermittedIssuers.Etcd[:2]
+	err := validateSitePolicy(site, registration)
+	if err == nil || !strings.Contains(err.Error(), `etcd client issuer "etcd-client-root" is not permitted`) {
+		t.Fatalf("policy error = %v", err)
+	}
+}
+
 func TestRegistrationStatusMergePreservesConcurrentHeartbeat(t *testing.T) {
 	scheme := testScheme(t)
 	now := time.Date(2026, 7, 17, 7, 0, 0, 0, time.UTC)

@@ -96,19 +96,23 @@ func (r Renderer) LoadBalancers(desired plan.SitePlan) []client.Object {
 
 func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	labels := resourceLabels(desired)
+	etcdPeerIssuer := effectiveIssuer(desired.Site.Certificates.EtcdPeerIssuerRef,
+		desired.Site.Certificates.EtcdIssuerRef)
+	etcdClientIssuer := effectiveIssuer(desired.Site.Certificates.EtcdClientIssuerRef,
+		desired.Site.Certificates.EtcdIssuerRef)
 	objects := []client.Object{
 		clientCertificate(desired.Site.Namespace, "etcd-maintenance-client",
-			"etcd-maintenance-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels),
+			"etcd-maintenance-client-tls", etcdClientIssuer, labels),
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
 		name := fmt.Sprintf("etcd-%s-%d", desired.Site.Name, ordinal)
 		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
-			desired.Site.Certificates.EtcdIssuerRef, labels, certificateAddresses(desired, name),
+			etcdPeerIssuer, labels, certificateAddresses(desired, name),
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 	}
 	if desired.Site.Role == api.SiteRoleData {
 		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-etcd-client",
-			"patroni-etcd-client-tls", desired.Site.Certificates.EtcdIssuerRef, labels))
+			"patroni-etcd-client-tls", etcdClientIssuer, labels))
 		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-api-client",
 			"patroni-api-client-tls", desired.Site.Certificates.PostgresIssuerRef, labels))
 		if backupWorkloadsEnabled(desired) {
@@ -135,6 +139,13 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
 	}
 	return objects
+}
+
+func effectiveIssuer(preferred, fallback api.IssuerReference) api.IssuerReference {
+	if preferred.Name != "" {
+		return preferred
+	}
+	return fallback
 }
 
 func backupWorkloadsEnabled(desired plan.SitePlan) bool {
