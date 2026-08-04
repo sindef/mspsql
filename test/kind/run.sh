@@ -768,11 +768,26 @@ for site in vic nsw qld; do
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \
     -n orders-postgres)"
   test "${can_read_unrelated_secret}" = "no"
+  can_delete_unrelated_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i delete secret tenant-password \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres)"
+  test "${can_delete_unrelated_secret}" = "no"
   can_read_owned_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
     auth can-i get secret "postgres-${site}-0-tls" \
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \
     -n orders-postgres)"
   test "${can_read_owned_secret}" = "yes"
+  can_update_owned_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i update secret "postgres-${site}-0-tls" \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres)"
+  test "${can_update_owned_secret}" = "yes"
+  can_delete_owned_secret="$(kubectl --kubeconfig="${site_kubeconfig}" \
+    auth can-i delete secret "postgres-${site}-0-tls" \
+    --as=system:serviceaccount:mspsql-agent:mspsql-agent \
+    -n orders-postgres)"
+  test "${can_delete_owned_secret}" = "yes"
   can_patch_networkpolicy="$(kubectl --kubeconfig="${site_kubeconfig}" \
     auth can-i patch networkpolicy "mspsql-etcd-${site}" \
     --as=system:serviceaccount:mspsql-agent:mspsql-agent \
