@@ -25,7 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -306,12 +306,13 @@ func TestSendDirectivesAppliesBackpressureLimit(t *testing.T) {
 			}},
 		},
 	}
-	objects := []client.Object{&corev1.Secret{
+	objects := make([]client.Object, 0, 5)
+	objects = append(objects, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "mspsql-system", Name: "mspsql-plan-signing-key"},
 		Data: map[string][]byte{
 			"privateKey": []byte(base64.RawStdEncoding.EncodeToString(privateKey)),
 		},
-	}}
+	})
 	controller := true
 	baseTime := time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)
 	for i := range 3 {
@@ -700,11 +701,8 @@ func BenchmarkSendDirectivesAtFleetScale(b *testing.B) {
 		b.ReportMetric(expectedDirectives, "directives_queued")
 	}
 	b.StopTimer()
-	sort.Float64s(perDirectiveLatency)
-	p99Index := int(float64(len(perDirectiveLatency))*0.99) - 1
-	if p99Index < 0 {
-		p99Index = 0
-	}
+	slices.Sort(perDirectiveLatency)
+	p99Index := max(int(float64(len(perDirectiveLatency))*0.99)-1, 0)
 	b.ReportMetric(perDirectiveLatency[p99Index], "p99_ns_per_directive")
 }
 
