@@ -142,6 +142,9 @@ func (r *Reconciler) reconcile(ctx context.Context, desired, previous plan.SiteP
 			return result, err
 		}
 	} else {
+		if err := r.preserveIssuedEtcdPeerSourceAddresses(ctx, &desired); err != nil {
+			return result, err
+		}
 		versions, hashErr := r.certificateHashes(ctx, r.Renderer.Certificates(desired))
 		if hashErr != nil {
 			setLocalCondition(&result.Conditions, "CertificatesReady", metav1.ConditionFalse,
@@ -346,6 +349,9 @@ func (r *Reconciler) setCredentialConditions(ctx context.Context, desired plan.S
 func (r *Reconciler) reconcileCertificates(ctx context.Context, desired *plan.SitePlan,
 	result *ApplyResult,
 ) (bool, error) {
+	if err := r.preserveIssuedEtcdPeerSourceAddresses(ctx, desired); err != nil {
+		return false, err
+	}
 	certificates := r.Renderer.Certificates(*desired)
 	for _, object := range certificates {
 		if err := r.apply(ctx, object); err != nil {
@@ -392,6 +398,61 @@ func (r *Reconciler) reconcileCertificates(ctx context.Context, desired *plan.Si
 	return true, nil
 }
 
+func (r *Reconciler) preserveIssuedEtcdPeerSourceAddresses(ctx context.Context,
+	desired *plan.SitePlan,
+) error {
+	if desired.Site.LoadBalancer == nil {
+		return nil
+	}
+	excluded := map[string]struct{}{}
+	for member, address := range desired.MemberAddresses {
+		if strings.HasPrefix(member, "etcd-") && address != "" {
+			excluded[address] = struct{}{}
+		}
+	}
+	for member, address := range desired.AddressCandidates {
+		if strings.HasPrefix(member, "etcd-") && address != "" {
+			excluded[address] = struct{}{}
+		}
+	}
+	if migration := desired.AddressMigration; migration != nil &&
+		strings.HasPrefix(migration.Member, "etcd-") {
+		if migration.OldAddress != "" {
+			excluded[migration.OldAddress] = struct{}{}
+		}
+		if migration.NewAddress != "" {
+			excluded[migration.NewAddress] = struct{}{}
+		}
+	}
+	sourceAddresses := append([]string(nil), desired.Site.LoadBalancer.PeerSourceAddresses...)
+	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
+		name := fmt.Sprintf("etcd-%s-%d-tls", desired.Site.Name, ordinal)
+		var secret corev1.Secret
+		err := r.Client.Get(ctx, client.ObjectKey{Namespace: desired.Site.Namespace, Name: name}, &secret)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		certificate, err := parseLeafCertificate(secret.Data[corev1.TLSCertKey])
+		if err != nil {
+			return fmt.Errorf("parse issued etcd peer certificate %s/%s: %w",
+				secret.Namespace, secret.Name, err)
+		}
+		for _, ip := range certificate.IPAddresses {
+			address := ip.String()
+			if _, found := excluded[address]; found {
+				continue
+			}
+			sourceAddresses = append(sourceAddresses, address)
+		}
+	}
+	slices.Sort(sourceAddresses)
+	desired.Site.LoadBalancer.PeerSourceAddresses = slices.Compact(sourceAddresses)
+	return nil
+}
+
 func (r *Reconciler) certificateHashes(ctx context.Context, certificates []client.Object) (map[string]string, error) {
 	versions := make(map[string]string, len(certificates))
 	for _, object := range certificates {
@@ -416,6 +477,14 @@ func (r *Reconciler) certificateHashes(ctx context.Context, certificates []clien
 		versions[secretName] = hex.EncodeToString(sum.Sum(nil))
 	}
 	return versions, nil
+}
+
+func parseLeafCertificate(data []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("missing PEM certificate")
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 func (r *Reconciler) reconcileAddressMigration(ctx context.Context, desired plan.SitePlan,

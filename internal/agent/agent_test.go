@@ -1005,6 +1005,59 @@ func TestRendererRollsWorkloadsForConsumedConfigAndCertificates(t *testing.T) {
 	}
 }
 
+func TestReconcilerPreservesIssuedEtcdPeerSourceSANs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	tlsSecret := testTLSSecret(t, "orders", "etcd-vic-0-tls",
+		[]string{"etcd-vic-0", "etcd-vic-0.orders.svc"},
+		[]net.IP{net.ParseIP("172.18.100.10"), net.ParseIP("172.18.0.3")})
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tlsSecret).Build()
+	desired := plan.SitePlan{
+		InstanceUID: "instance",
+		Site: api.PostgresSiteSpec{
+			Name: "vic", Namespace: "orders",
+			Components:   api.SiteComponents{EtcdReplicas: 1},
+			LoadBalancer: &api.LoadBalancerSpec{AddressPool: "database-services"},
+		},
+		MemberAddresses: map[string]string{
+			"etcd-vic-0": "172.18.100.10",
+			"etcd-nsw-0": "172.18.100.30",
+			"etcd-qld-0": "172.18.100.50",
+		},
+		AddressCandidates: map[string]string{
+			"etcd-vic-0": "172.18.100.10",
+		},
+	}
+	if err := (&Reconciler{Client: kube}).preserveIssuedEtcdPeerSourceAddresses(
+		context.Background(), &desired); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(desired.Site.LoadBalancer.PeerSourceAddresses, []string{"172.18.0.3"}) {
+		t.Fatalf("preserved peer source addresses = %#v",
+			desired.Site.LoadBalancer.PeerSourceAddresses)
+	}
+	var certificate *unstructured.Unstructured
+	for _, object := range (Renderer{}).Certificates(desired) {
+		if object.GetName() == "etcd-vic-0" {
+			certificate = object.(*unstructured.Unstructured)
+			break
+		}
+	}
+	if certificate == nil {
+		t.Fatal("etcd certificate was not rendered")
+	}
+	addresses, found, err := unstructured.NestedStringSlice(certificate.Object, "spec", "ipAddresses")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || !slices.Contains(addresses, "172.18.100.10") ||
+		!slices.Contains(addresses, "172.18.0.3") {
+		t.Fatalf("rendered etcd peer SANs = %#v, found=%t", addresses, found)
+	}
+}
+
 func TestRendererRestoresOnlyTheSeedMember(t *testing.T) {
 	desired := plan.SitePlan{
 		SiteUID: "site", InstanceUID: "target", Revision: 1,
