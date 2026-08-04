@@ -46,9 +46,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	api "github.com/sindef/mspsql/api/v1alpha1"
 	"github.com/sindef/mspsql/internal/plan"
@@ -256,6 +259,70 @@ func TestApplyReportsFieldOwnershipConflict(t *testing.T) {
 				t.Fatalf("conflict error lacks object identity: %v", err)
 			}
 		})
+	}
+}
+
+func TestApplyReportsLiveAPIServerFieldOwnershipConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	environment := &envtest.Environment{}
+	config, err := environment.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if stopErr := environment.Stop(); stopErr != nil {
+			t.Fatalf("stop envtest: %v", stopErr)
+		}
+	}()
+	kube, err := client.New(config, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orders"}}
+	if err := kube.Create(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+	external := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres"},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "external"},
+			Ports: []corev1.ServicePort{{
+				Name: "postgres", Port: 5432, TargetPort: intstr.FromInt(5432),
+			}},
+		},
+	}
+	encoded, err := encodeApplyObject(external, scheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Patch(ctx, external, client.RawPatch(types.ApplyPatchType, encoded),
+		client.FieldOwner("external-controller")); err != nil {
+		t.Fatal(err)
+	}
+	desired := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "orders", Name: "postgres"},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "mspsql"},
+			Ports: []corev1.ServicePort{{
+				Name: "postgres", Port: 5432, TargetPort: intstr.FromInt(5432),
+			}},
+		},
+	}
+	reconciler := Reconciler{Client: kube}
+	err = reconciler.apply(ctx, desired)
+	if !errors.Is(err, ErrFieldOwnershipConflict) {
+		t.Fatalf("error = %v", err)
+	}
+	var current corev1.Service
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "orders", Name: "postgres"}, &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Spec.Selector["app"] != "external" {
+		t.Fatalf("service selector was force-owned: %#v", current.Spec.Selector)
 	}
 }
 
