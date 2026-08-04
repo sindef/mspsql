@@ -612,13 +612,26 @@ test "$(kubectl -n mspsql-system exec "${active_gateway}" -c wireguard -- \
 
 e2e_phase initial_provision
 kubectl create namespace database-platform
-if validation_error="$(sed 's/deletionPolicy: Retain/deletionPolicy: Destroy/' \
-  test/kind/instance.yaml | kubectl apply -f - 2>&1)"; then
+vic_node_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  mspsql-vic-control-plane)"
+nsw_node_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  mspsql-nsw-control-plane)"
+qld_node_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  mspsql-qld-control-plane)"
+render_instance_manifest() {
+  sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml |
+    sed "s|VIC_NODE_IP|${vic_node_ip}|g" |
+    sed "s|NSW_NODE_IP|${nsw_node_ip}|g" |
+    sed "s|QLD_NODE_IP|${qld_node_ip}|g"
+}
+if validation_error="$(render_instance_manifest |
+  sed 's/deletionPolicy: Retain/deletionPolicy: Destroy/' |
+  kubectl apply -f - 2>&1)"; then
   echo "invalid deletionPolicy was accepted" >&2
   exit 1
 fi
 grep -q 'Unsupported value.*Destroy' <<<"${validation_error}"
-sed "s|MINIO_ENDPOINT|${minio_ip}|g" test/kind/instance.yaml | kubectl apply -f -
+render_instance_manifest | kubectl apply -f -
 
 for site in vic nsw qld; do
   site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"

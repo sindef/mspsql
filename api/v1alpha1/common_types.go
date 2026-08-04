@@ -103,6 +103,9 @@ type SiteStorage struct {
 
 type LoadBalancerSpec struct {
 	AddressPool string `json:"addressPool"`
+	// PeerSourceAddresses lists SNAT or node egress addresses that strict peer
+	// TLS should accept when traffic reaches the load balancer from this site.
+	PeerSourceAddresses []string `json:"peerSourceAddresses,omitempty"`
 }
 
 type SecretKeyReference struct {

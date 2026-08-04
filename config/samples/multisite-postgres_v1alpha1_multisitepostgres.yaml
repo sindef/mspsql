@@ -29,7 +29,9 @@ spec:
     storage:
       etcd: {storageClassName: premium-rwo, size: 20Gi}
       postgres: {storageClassName: premium-rwo, size: 500Gi}
-    loadBalancer: {addressPool: database-services}
+    loadBalancer:
+      addressPool: database-services
+      peerSourceAddresses: [10.10.0.10]
     vaultAuth:
       address: https://vault.example.internal:8200
       authMount: kubernetes-vic

@@ -306,6 +306,13 @@ spec:
                       properties:
                         addressPool:
                           type: string
+                        peerSourceAddresses:
+                          description: |-
+                            PeerSourceAddresses lists SNAT or node egress addresses that strict peer
+                            TLS should accept when traffic reaches the load balancer from this site.
+                          items:
+                            type: string
+                          type: array
                       required:
                       - addressPool
                       type: object

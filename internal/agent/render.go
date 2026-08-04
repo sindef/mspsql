@@ -525,6 +525,9 @@ func certificateWithCommonName(namespace, name, secretName string, issuer api.Is
 
 func certificateAddresses(desired plan.SitePlan, member string) []string {
 	addresses := []string{desired.MemberAddresses[member], desired.AddressCandidates[member]}
+	if strings.HasPrefix(member, "etcd-") && desired.Site.LoadBalancer != nil {
+		addresses = append(addresses, desired.Site.LoadBalancer.PeerSourceAddresses...)
+	}
 	if migration := desired.AddressMigration; migration != nil && migration.Member == member &&
 		migration.OldAddress != "" && migration.OldAddress != migration.NewAddress {
 		addresses = append(addresses, migration.OldAddress)

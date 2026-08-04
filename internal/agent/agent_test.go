@@ -350,6 +350,10 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 				Etcd:     &api.StorageRequest{StorageClassName: "standard"},
 				Postgres: &api.StorageRequest{StorageClassName: "standard"},
 			},
+			LoadBalancer: &api.LoadBalancerSpec{
+				AddressPool:         "database-services",
+				PeerSourceAddresses: []string{"172.18.0.3"},
+			},
 		},
 		Postgres: api.PostgresSpec{Image: "postgres:17"},
 		MemberAddresses: map[string]string{
@@ -377,6 +381,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertEtcdPeerCertificateCommonName(t, desired, certificate)
+		assertEtcdPeerCertificateSourceAddresses(t, certificate)
 		clientSecrets[secretName] = true
 	}
 	requireMapKeys(t, clientSecrets,
@@ -614,6 +619,20 @@ func assertEtcdPeerCertificateCommonName(t *testing.T, desired plan.SitePlan,
 	}
 	if !found || commonName != etcdPeerCommonName(desired) {
 		t.Fatalf("etcd peer commonName = %q, found=%t", commonName, found)
+	}
+}
+
+func assertEtcdPeerCertificateSourceAddresses(t *testing.T, certificate *unstructured.Unstructured) {
+	t.Helper()
+	if !strings.HasPrefix(certificate.GetName(), "etcd-vic-") {
+		return
+	}
+	addresses, found, err := unstructured.NestedStringSlice(certificate.Object, "spec", "ipAddresses")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || !slices.Contains(addresses, "172.18.0.3") {
+		t.Fatalf("etcd peer source IP SANs = %#v, found=%t", addresses, found)
 	}
 }
 
