@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"testing"
 	"time"
 
@@ -598,18 +599,29 @@ func BenchmarkSendDirectivesAtFleetScale(b *testing.B) {
 		objects = append(objects, instance)
 	}
 	server := &Server{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
+	perDirectiveLatency := make([]float64, 0, b.N)
 	b.ResetTimer()
 	for range b.N {
 		stream := &countingHubStream{}
+		start := time.Now()
 		if err := server.sendDirectives(context.Background(), stream, "site-000", "site-uid", map[string]struct{}{}); err != nil {
 			b.Fatal(err)
 		}
+		elapsed := time.Since(start)
 		if stream.sent == 0 || stream.sent > expectedDirectives {
 			b.Fatalf("sent directives = %d", stream.sent)
 		}
+		perDirectiveLatency = append(perDirectiveLatency, float64(elapsed.Nanoseconds())/float64(stream.sent))
 		b.ReportMetric(float64(stream.sent), "directives_sent")
 		b.ReportMetric(expectedDirectives, "directives_queued")
 	}
+	b.StopTimer()
+	sort.Float64s(perDirectiveLatency)
+	p99Index := int(float64(len(perDirectiveLatency))*0.99) - 1
+	if p99Index < 0 {
+		p99Index = 0
+	}
+	b.ReportMetric(perDirectiveLatency[p99Index], "p99_ns_per_directive")
 }
 
 type countingHubStream struct {
