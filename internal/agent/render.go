@@ -230,6 +230,11 @@ func (r Renderer) NetworkPolicies(desired plan.SitePlan) []client.Object {
 				{Port: ptr(intstr.FromInt32(8008))},
 				{Port: ptr(intstr.FromInt32(8432))},
 			},
+		}, {
+			From: []networkingv1.NetworkPolicyPeer{siteAgentPeer()},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Port: ptr(intstr.FromInt32(8008))},
+			},
 		}}))
 	if desired.Site.Components.PgpoolReplicas > 0 {
 		objects = append(objects, networkPolicy(desired.Site.Namespace, "mspsql-pgpool-"+desired.Site.Name, labels,
@@ -258,6 +263,17 @@ func networkPolicy(namespace, name string, labels, selector map[string]string,
 
 func sameInstancePeer(labels map[string]string) networkingv1.NetworkPolicyPeer {
 	return networkingv1.NetworkPolicyPeer{PodSelector: &metav1.LabelSelector{MatchLabels: stableWorkloadLabels(labels)}}
+}
+
+func siteAgentPeer() networkingv1.NetworkPolicyPeer {
+	return networkingv1.NetworkPolicyPeer{
+		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+			"kubernetes.io/metadata.name": "mspsql-agent",
+		}},
+		PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+			"app.kubernetes.io/name": "mspsql-agent",
+		}},
+	}
 }
 
 func (r Renderer) postgresWorkloads(workloadPlan, desired plan.SitePlan,

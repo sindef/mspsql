@@ -406,7 +406,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		t.Fatalf("statefulSets=%d deployments=%d", statefulSets, deployments)
 	}
 	assertNetworkPolicyAllowsOnlyInstancePeers(t, policies["mspsql-etcd-vic"], "etcd", 2379, 2380)
-	assertNetworkPolicyAllowsOnlyInstancePeers(t, policies["mspsql-postgres-vic"], "postgres", 5432, 8008, 8432)
+	assertPostgresNetworkPolicy(t, policies["mspsql-postgres-vic"])
 	assertPgpoolNetworkPolicy(t, policies["mspsql-pgpool-vic"])
 	for _, object := range objects {
 		assertPatroniEtcdHosts(t, object)
@@ -551,6 +551,49 @@ func assertNetworkPolicyAllowsOnlyInstancePeers(t *testing.T, policy *networking
 	}
 	if !slices.Equal(gotPorts, ports) {
 		t.Fatalf("%s ports = %v, want %v", policy.Name, gotPorts, ports)
+	}
+}
+
+func assertPostgresNetworkPolicy(t *testing.T, policy *networkingv1.NetworkPolicy) {
+	t.Helper()
+	if policy == nil {
+		t.Fatal("missing postgres NetworkPolicy")
+	}
+	if policy.Spec.PodSelector.MatchLabels["multisite-postgres.dev/component"] != "postgres" {
+		t.Fatalf("postgres selector = %#v", policy.Spec.PodSelector.MatchLabels)
+	}
+	if !slices.Equal(policy.Spec.PolicyTypes, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}) {
+		t.Fatalf("postgres policy types = %v", policy.Spec.PolicyTypes)
+	}
+	if len(policy.Spec.Ingress) != 2 {
+		t.Fatalf("postgres ingress = %#v", policy.Spec.Ingress)
+	}
+	sameInstance := policy.Spec.Ingress[0]
+	if len(sameInstance.From) != 1 || sameInstance.From[0].PodSelector == nil ||
+		sameInstance.From[0].PodSelector.MatchLabels["multisite-postgres.dev/instance-uid"] != "instance" {
+		t.Fatalf("postgres same-instance peer = %#v", sameInstance.From)
+	}
+	gotPorts := make([]int32, 0, len(sameInstance.Ports))
+	for _, port := range sameInstance.Ports {
+		if port.Port == nil {
+			t.Fatal("postgres same-instance rule includes an open unnamed port")
+		}
+		gotPorts = append(gotPorts, port.Port.IntVal)
+	}
+	if !slices.Equal(gotPorts, []int32{5432, 8008, 8432}) {
+		t.Fatalf("postgres same-instance ports = %v", gotPorts)
+	}
+	agent := policy.Spec.Ingress[1]
+	if len(agent.From) != 1 || len(agent.Ports) != 1 ||
+		agent.Ports[0].Port == nil || agent.Ports[0].Port.IntVal != 8008 {
+		t.Fatalf("postgres agent ingress = %#v", agent)
+	}
+	peer := agent.From[0]
+	if peer.NamespaceSelector == nil ||
+		peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "mspsql-agent" ||
+		peer.PodSelector == nil ||
+		peer.PodSelector.MatchLabels["app.kubernetes.io/name"] != "mspsql-agent" {
+		t.Fatalf("postgres agent peer = %#v", peer)
 	}
 }
 
