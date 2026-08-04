@@ -280,6 +280,90 @@ func TestDirectiveResultRecordsScheduledBackupOperation(t *testing.T) {
 	}
 }
 
+func TestSendDirectivesAppliesBackpressureLimit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance-uid"),
+		},
+		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{{
+			Name: "vic", SiteRegistrationRef: "production-vic", Role: api.SiteRoleData,
+		}}},
+		Status: api.MultiSitePostgresStatus{
+			Primary: "postgres-vic-0",
+			Sites: []api.SiteRevisionStatus{{
+				Name: "vic", Addresses: map[string]string{"postgres-vic-0": "10.0.0.10"},
+			}},
+		},
+	}
+	objects := []client.Object{&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "mspsql-system", Name: "mspsql-plan-signing-key"},
+		Data: map[string][]byte{
+			"privateKey": []byte(base64.RawStdEncoding.EncodeToString(privateKey)),
+		},
+	}}
+	controller := true
+	baseTime := time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)
+	for i := range 3 {
+		scheduledAt := baseTime.Add(time.Duration(i) * time.Minute)
+		instance.Status.BackupSchedules = append(instance.Status.BackupSchedules,
+			api.BackupScheduleStatus{
+				Type:            "full",
+				LastScheduledAt: &metav1.Time{Time: scheduledAt},
+			})
+		operationUID := fmt.Sprintf("%s-backup-full-%d", instance.UID, scheduledAt.Unix())
+		objects = append(objects, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "platform",
+				Name:      fmt.Sprintf("mspsql-backup-full-%d", scheduledAt.Unix()),
+				Labels: map[string]string{
+					"multisite-postgres.dev/directive": "Backup",
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: api.GroupVersion.String(), Kind: "MultiSitePostgres",
+					Name: instance.Name, UID: instance.UID, Controller: &controller,
+				}},
+			},
+			Data: map[string]string{
+				"type": "Backup", "instanceRef": instance.Name, "deleting": "false",
+				"operationUID": operationUID,
+				"spec.json": fmt.Sprintf(`{"backupType":"full","scheduledAt":%q}`,
+					scheduledAt.UTC().Format(time.RFC3339)),
+			},
+		})
+	}
+	objects = append(objects, instance)
+	server := &Server{
+		Client:               fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
+		MaxDirectivesPerSync: 2,
+	}
+	sent := map[string]struct{}{}
+	firstStream := &countingHubStream{}
+	if err := server.sendDirectives(context.Background(), firstStream, "production-vic", "site-uid", sent); err != nil {
+		t.Fatal(err)
+	}
+	if firstStream.sent != 2 || len(sent) != 2 {
+		t.Fatalf("first sync sent=%d tracked=%d", firstStream.sent, len(sent))
+	}
+	secondStream := &countingHubStream{}
+	if err := server.sendDirectives(context.Background(), secondStream, "production-vic", "site-uid", sent); err != nil {
+		t.Fatal(err)
+	}
+	if secondStream.sent != 1 || len(sent) != 3 {
+		t.Fatalf("second sync sent=%d tracked=%d", secondStream.sent, len(sent))
+	}
+}
+
 func TestPlanResultDoesNotSetAggregateReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := api.AddToScheme(scheme); err != nil {

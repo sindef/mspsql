@@ -56,13 +56,15 @@ import (
 
 type Server struct {
 	controlv1.UnimplementedAgentControlServer
-	Client          client.Client
-	Now             func() time.Time
-	SystemNamespace string
-	SignCertificate func(context.Context, *api.SiteRegistration, []byte) ([]byte, []byte, error)
+	Client               client.Client
+	Now                  func() time.Time
+	SystemNamespace      string
+	MaxDirectivesPerSync int
+	SignCertificate      func(context.Context, *api.SiteRegistration, []byte) ([]byte, []byte, error)
 }
 
 const InstanceUIDField = ".metadata.uid"
+const defaultMaxDirectivesPerSync = 100
 
 type lockedControlStream struct {
 	controlv1.AgentControl_ConnectServer
@@ -233,6 +235,8 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 		return err
 	}
 	var privateKey ed25519.PrivateKey
+	sentThisSync := 0
+	limit := s.maxDirectivesPerSync()
 	for i := range configMaps.Items {
 		configMap := &configMaps.Items[i]
 		operationUID := configMap.Data["operationUID"]
@@ -305,8 +309,19 @@ func (s *Server) sendDirectives(ctx context.Context, stream controlv1.AgentContr
 			return err
 		}
 		sent[operationUID] = struct{}{}
+		sentThisSync++
+		if sentThisSync >= limit {
+			return nil
+		}
 	}
 	return nil
+}
+
+func (s *Server) maxDirectivesPerSync() int {
+	if s.MaxDirectivesPerSync > 0 {
+		return s.MaxDirectivesPerSync
+	}
+	return defaultMaxDirectivesPerSync
 }
 
 func (s *Server) directiveOwnerTrusted(ctx context.Context, configMap *corev1.ConfigMap,
