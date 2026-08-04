@@ -174,6 +174,16 @@ func (r *MultiSitePostgresReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		instance.Status.Phase = "Upgrading"
 		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
 	}
+	if disconnectedControlSites > 0 && topologyChangingOperationPending(restorePlan, upgradePlan, majorUpgradePlan) {
+		setCondition(&instance.Status.Conditions, instance.Generation, "TopologyAuthoritative",
+			metav1.ConditionFalse, "ControlPlaneDegraded",
+			"Topology-changing restore and upgrade plans require every observer site to be connected")
+		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
+			metav1.ConditionFalse, "ControlPlaneDegraded",
+			"Topology-changing operation is blocked until disconnected observer sites recover")
+		instance.Status.Phase = "Blocked"
+		return ctrl.Result{}, r.updateInstanceStatus(ctx, &instance)
+	}
 	if missing := missingPlanCapabilities(&instance, registrations, majorUpgradePlan); len(missing) > 0 {
 		setCondition(&instance.Status.Conditions, instance.Generation, "Ready",
 			metav1.ConditionFalse, "AgentCapabilityMissing",
@@ -319,6 +329,12 @@ func dataSitesApplied(instance *multisitepostgresv1alpha1.MultiSitePostgres) boo
 		}
 	}
 	return true
+}
+
+func topologyChangingOperationPending(restorePlan *plan.RestorePlan, upgradePlan *plan.UpgradePlan,
+	majorUpgradePlan *plan.MajorUpgradePlan,
+) bool {
+	return restorePlan != nil || upgradePlan != nil || majorUpgradePlan != nil
 }
 
 func (r *MultiSitePostgresReconciler) lifecycleOperationActive(ctx context.Context,

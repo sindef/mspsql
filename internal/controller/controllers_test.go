@@ -970,6 +970,117 @@ func TestBackupSchedulingUsesDataSiteReadinessDuringControlDegradation(t *testin
 	}
 }
 
+func TestTopologyChangingOperationDecisionTable(t *testing.T) {
+	tests := []struct {
+		name         string
+		restorePlan  *plan.RestorePlan
+		upgradePlan  *plan.UpgradePlan
+		majorUpgrade *plan.MajorUpgradePlan
+		want         bool
+	}{
+		{name: "steady reconciliation"},
+		{name: "restore", restorePlan: &plan.RestorePlan{}, want: true},
+		{name: "minor upgrade", upgradePlan: &plan.UpgradePlan{}, want: true},
+		{name: "major upgrade", majorUpgrade: &plan.MajorUpgradePlan{}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := topologyChangingOperationPending(test.restorePlan, test.upgradePlan, test.majorUpgrade)
+			if got != test.want {
+				t.Fatalf("topologyChangingOperationPending = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWitnessDisconnectBlocksTopologyChangingPlan(t *testing.T) {
+	scheme := testScheme(t)
+	issuer := api.IssuerReference{Name: "issuer", Kind: "ClusterIssuer", Group: "cert-manager.io"}
+	instance := &api.MultiSitePostgres{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders", UID: types.UID("instance-uid"), Generation: 3,
+			Finalizers: []string{instanceFinalizer},
+			Annotations: map[string]string{
+				upgradeNameAnnotation:   "orders-minor",
+				upgradePhaseAnnotation:  string(plan.UpgradePhaseMember),
+				upgradeMemberAnnotation: "postgres-vic-0",
+				upgradeFromAnnotation:   "postgres-vic-0",
+			},
+		},
+		Spec: api.MultiSitePostgresSpec{
+			Postgres: api.PostgresSpec{MajorVersion: 17, Image: "postgres:17"},
+			Sites: []api.PostgresSiteSpec{
+				{
+					Name: "vic", SiteRegistrationRef: "vic", Role: api.SiteRoleData,
+					Certificates: api.SiteCertificateSpec{
+						EtcdIssuerRef: issuer, PostgresIssuerRef: issuer, PgpoolIssuerRef: issuer,
+					},
+				},
+				{
+					Name: "qld", SiteRegistrationRef: "qld", Role: api.SiteRoleData,
+					Certificates: api.SiteCertificateSpec{
+						EtcdIssuerRef: issuer, PostgresIssuerRef: issuer, PgpoolIssuerRef: issuer,
+					},
+				},
+				{
+					Name: "nsw", SiteRegistrationRef: "nsw", Role: api.SiteRoleWitness,
+					Certificates: api.SiteCertificateSpec{
+						EtcdIssuerRef: issuer, PostgresIssuerRef: issuer, PgpoolIssuerRef: issuer,
+					},
+				},
+			},
+		},
+	}
+	upgrade := &api.PostgresUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "platform", Name: "orders-minor", UID: types.UID("upgrade-uid"),
+		},
+		Spec: api.PostgresUpgradeSpec{InstanceRef: "orders", TargetImage: "postgres:17.6"},
+	}
+	registration := func(name, phase string) *api.SiteRegistration {
+		return &api.SiteRegistration{
+			ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name + "-uid")},
+			Spec: api.SiteRegistrationSpec{PermittedIssuers: api.IssuerPolicy{
+				Etcd: []api.IssuerReference{issuer}, Postgres: []api.IssuerReference{issuer},
+				Pgpool: []api.IssuerReference{issuer},
+			}},
+			Status: api.SiteRegistrationStatus{Phase: phase},
+		}
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.MultiSitePostgres{}).
+		WithObjects(instance, upgrade,
+			registration("vic", "Connected"),
+			registration("qld", "Connected"),
+			registration("nsw", "Pending"),
+		).Build()
+	reconciler := &MultiSitePostgresReconciler{Client: kube, Scheme: scheme}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(instance),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var observed api.MultiSitePostgres
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &observed); err != nil {
+		t.Fatal(err)
+	}
+	ready := meta.FindStatusCondition(observed.Status.Conditions, "Ready")
+	topology := meta.FindStatusCondition(observed.Status.Conditions, "TopologyAuthoritative")
+	if observed.Status.Phase != "Blocked" ||
+		ready == nil || ready.Reason != "ControlPlaneDegraded" ||
+		topology == nil || topology.Status != metav1.ConditionFalse {
+		t.Fatalf("status = %#v", observed.Status)
+	}
+	var plans corev1.ConfigMapList
+	if err := kube.List(context.Background(), &plans, client.InNamespace("platform"),
+		client.MatchingLabels{"multisite-postgres.dev/instance-uid": string(instance.UID)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(plans.Items) != 0 {
+		t.Fatalf("plans were issued while topology was degraded: %#v", plans.Items)
+	}
+}
+
 func TestMajorUpgradeRequiresAgentCapability(t *testing.T) {
 	instance := &api.MultiSitePostgres{
 		Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{
