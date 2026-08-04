@@ -18,12 +18,17 @@ package control
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -509,6 +514,118 @@ func TestAggregateConditionsExcludesWitnessFromPatroni(t *testing.T) {
 	if patroni == nil || patroni.Status != metav1.ConditionTrue || patroni.ObservedGeneration != 4 {
 		t.Fatalf("PatroniReady = %#v", patroni)
 	}
+}
+
+func BenchmarkSendDirectivesAtFleetScale(b *testing.B) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		b.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
+		b.Fatal(err)
+	}
+	const (
+		siteCount          = 100
+		instanceCount      = 1000
+		directivesPerInst  = 10
+		expectedDirectives = instanceCount * directivesPerInst
+	)
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	objects := make([]client.Object, 0, 1+(directivesPerInst+1)*instanceCount)
+	objects = append(objects, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "mspsql-system", Name: "mspsql-plan-signing-key"},
+		Data: map[string][]byte{
+			"privateKey": []byte(base64.RawStdEncoding.EncodeToString(privateKey)),
+		},
+	})
+	for i := range instanceCount {
+		siteIndex := i % siteCount
+		siteName := fmt.Sprintf("site-%03d", siteIndex)
+		namespace := fmt.Sprintf("platform-%04d", i)
+		instanceName := fmt.Sprintf("orders-%04d", i)
+		instanceUID := types.UID(fmt.Sprintf("instance-%04d", i))
+		instance := &api.MultiSitePostgres{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: namespace, Name: instanceName, UID: instanceUID,
+			},
+			Spec: api.MultiSitePostgresSpec{Sites: []api.PostgresSiteSpec{{
+				Name: siteName, SiteRegistrationRef: siteName, Role: api.SiteRoleData,
+			}}},
+			Status: api.MultiSitePostgresStatus{
+				Primary: fmt.Sprintf("postgres-%s-0", siteName),
+				Sites: []api.SiteRevisionStatus{{
+					Name: siteName,
+					Addresses: map[string]string{
+						fmt.Sprintf("postgres-%s-0", siteName): fmt.Sprintf("10.%d.%d.%d",
+							siteIndex/256, siteIndex%256, i%250+1),
+					},
+				}},
+			},
+		}
+		controller := true
+		baseTime := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+		for directiveIndex := range directivesPerInst {
+			scheduledAt := baseTime.Add(time.Duration(directiveIndex) * time.Minute)
+			instance.Status.BackupSchedules = append(instance.Status.BackupSchedules,
+				api.BackupScheduleStatus{
+					Type:            "full",
+					LastScheduledAt: &metav1.Time{Time: scheduledAt},
+				})
+			operationUID := fmt.Sprintf("%s-backup-full-%d", instanceUID, scheduledAt.Unix())
+			spec := fmt.Sprintf(`{"backupType":"full","scheduledAt":%q}`,
+				scheduledAt.UTC().Format(time.RFC3339))
+			objects = append(objects, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+					Name:      fmt.Sprintf("mspsql-backup-full-%d", scheduledAt.Unix()),
+					Labels: map[string]string{
+						"multisite-postgres.dev/directive": "Backup",
+					},
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: api.GroupVersion.String(), Kind: "MultiSitePostgres",
+						Name: instanceName, UID: instanceUID, Controller: &controller,
+					}},
+				},
+				Data: map[string]string{
+					"type": "Backup", "instanceRef": instanceName, "deleting": "false",
+					"operationUID": operationUID, "spec.json": spec,
+				},
+			})
+		}
+		objects = append(objects, instance)
+	}
+	server := &Server{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
+	b.ResetTimer()
+	for range b.N {
+		stream := &countingHubStream{}
+		if err := server.sendDirectives(context.Background(), stream, "site-000", "site-uid", map[string]struct{}{}); err != nil {
+			b.Fatal(err)
+		}
+		if stream.sent == 0 || stream.sent > expectedDirectives {
+			b.Fatalf("sent directives = %d", stream.sent)
+		}
+		b.ReportMetric(float64(stream.sent), "directives_sent")
+		b.ReportMetric(expectedDirectives, "directives_queued")
+	}
+}
+
+type countingHubStream struct {
+	grpc.ServerStream
+	sent int
+}
+
+func (s *countingHubStream) Send(message *controlv1.HubMessage) error {
+	if message.GetDirective() != nil {
+		s.sent++
+	}
+	return nil
+}
+
+func (s *countingHubStream) Recv() (*controlv1.AgentMessage, error) {
+	return nil, io.EOF
 }
 
 func TestSQLDirectivesTargetObservedPrimarySite(t *testing.T) {
