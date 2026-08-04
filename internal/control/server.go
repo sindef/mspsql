@@ -62,6 +62,8 @@ type Server struct {
 	SignCertificate func(context.Context, *api.SiteRegistration, []byte) ([]byte, []byte, error)
 }
 
+const InstanceUIDField = ".metadata.uid"
+
 type lockedControlStream struct {
 	controlv1.AgentControl_ConnectServer
 	sendMu sync.Mutex
@@ -1056,12 +1058,12 @@ func (s *Server) updateInstanceSite(ctx context.Context, instanceUID, siteName s
 	update func(*api.SiteRevisionStatus),
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var instances api.MultiSitePostgresList
-		if err := s.Client.List(ctx, &instances); err != nil {
+		instances, err := s.instancesByUID(ctx, instanceUID)
+		if err != nil {
 			return err
 		}
-		for i := range instances.Items {
-			instance := &instances.Items[i]
+		for i := range instances {
+			instance := &instances[i]
 			if string(instance.UID) != instanceUID {
 				continue
 			}
@@ -1174,12 +1176,12 @@ func siteRole(instance *api.MultiSitePostgres, siteName string) api.SiteRole {
 
 func (s *Server) triggerInstanceReconcile(ctx context.Context, instanceUID string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var instances api.MultiSitePostgresList
-		if err := s.Client.List(ctx, &instances); err != nil {
+		instances, err := s.instancesByUID(ctx, instanceUID)
+		if err != nil {
 			return err
 		}
-		for i := range instances.Items {
-			instance := &instances.Items[i]
+		for i := range instances {
+			instance := &instances[i]
 			if string(instance.UID) != instanceUID {
 				continue
 			}
@@ -1193,6 +1195,18 @@ func (s *Server) triggerInstanceReconcile(ctx context.Context, instanceUID strin
 		}
 		return status.Error(codes.NotFound, "instance UID was not found")
 	})
+}
+
+func (s *Server) instancesByUID(ctx context.Context, instanceUID string) ([]api.MultiSitePostgres, error) {
+	var indexed api.MultiSitePostgresList
+	if err := s.Client.List(ctx, &indexed, client.MatchingFields{InstanceUIDField: instanceUID}); err == nil {
+		return indexed.Items, nil
+	}
+	var fallback api.MultiSitePostgresList
+	if err := s.Client.List(ctx, &fallback); err != nil {
+		return nil, err
+	}
+	return fallback.Items, nil
 }
 
 func validatePeerIdentity(ctx context.Context, registrationUID string) (*x509.Certificate, error) {

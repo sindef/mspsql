@@ -406,6 +406,9 @@ func TestUpdateInstanceSiteSkipsUnchangedStatusWrite(t *testing.T) {
 	}
 	statusUpdates := 0
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance).
+		WithIndex(&api.MultiSitePostgres{}, InstanceUIDField, func(object client.Object) []string {
+			return []string{string(object.GetUID())}
+		}).
 		WithObjects(instance).WithInterceptorFuncs(interceptor.Funcs{
 		SubResourceUpdate: func(ctx context.Context, underlying client.Client, subresource string,
 			object client.Object, options ...client.SubResourceUpdateOption,
@@ -451,6 +454,9 @@ func BenchmarkUpdateInstanceSiteSkipsUnchangedStatusWriteAtFleetScale(b *testing
 	statusUpdates := 0
 	kube := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&api.MultiSitePostgres{}).
+		WithIndex(&api.MultiSitePostgres{}, InstanceUIDField, func(object client.Object) []string {
+			return []string{string(object.GetUID())}
+		}).
 		WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
 		SubResourceUpdate: func(ctx context.Context, underlying client.Client, subresource string,
 			object client.Object, options ...client.SubResourceUpdateOption,
