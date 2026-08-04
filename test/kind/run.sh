@@ -422,15 +422,33 @@ registry_ip="$(docker inspect mspsql-registry \
   --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
 test -n "${registry_port}"
 test -n "${registry_ip}"
+for _ in $(seq 1 30); do
+  registry_status="$(curl -fsS -o /dev/null -w '%{http_code}' \
+    "http://localhost:${registry_port}/v2/" 2>/dev/null || true)"
+  [[ "${registry_status}" == "200" ]] && break
+  sleep 1
+done
+test "${registry_status}" = "200"
 docker tag "${upgrade_image}" "localhost:${registry_port}/mspsql-postgres-upgrade:17-to-18"
-upgrade_push="$(docker push "localhost:${registry_port}/mspsql-postgres-upgrade:17-to-18")"
+for _ in $(seq 1 5); do
+  if upgrade_push="$(docker push \
+    "localhost:${registry_port}/mspsql-postgres-upgrade:17-to-18")"; then
+    break
+  fi
+  sleep 2
+done
 upgrade_digest="$(awk '/digest:/ {print $3}' <<<"${upgrade_push}")"
 [[ "${upgrade_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
 upgrade_ref="${registry_ip}:5000/mspsql-postgres-upgrade@${upgrade_digest}"
 docker tag "${failed_upgrade_image}" \
   "localhost:${registry_port}/mspsql-postgres-upgrade:injected-failure"
-failed_upgrade_push="$(docker push \
-  "localhost:${registry_port}/mspsql-postgres-upgrade:injected-failure")"
+for _ in $(seq 1 5); do
+  if failed_upgrade_push="$(docker push \
+    "localhost:${registry_port}/mspsql-postgres-upgrade:injected-failure")"; then
+    break
+  fi
+  sleep 2
+done
 failed_upgrade_digest="$(awk '/digest:/ {print $3}' <<<"${failed_upgrade_push}")"
 [[ "${failed_upgrade_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
 failed_upgrade_ref="${registry_ip}:5000/mspsql-postgres-upgrade@${failed_upgrade_digest}"
