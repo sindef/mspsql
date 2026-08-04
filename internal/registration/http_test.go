@@ -203,6 +203,12 @@ func TestGeneratedAgentRBACDoesNotGrantBroadSecretAccess(t *testing.T) {
 	if secretRuleAllows(rules, "tenant-password", "get") {
 		t.Fatalf("agent ClusterRole permits unrelated named Secret")
 	}
+	if !ruleAllows(rules, "networking.k8s.io", "networkpolicies", "patch") {
+		t.Fatal("agent ClusterRole does not permit NetworkPolicy patch")
+	}
+	if !ruleAllows(rules, "networking.k8s.io", "networkpolicies", "delete") {
+		t.Fatal("agent ClusterRole does not permit NetworkPolicy delete")
+	}
 }
 
 func secretRuleAllows(rules []any, resourceName, verb string) bool {
@@ -217,6 +223,18 @@ func secretRuleAllows(rules []any, resourceName, verb string) bool {
 			return resourceName == ""
 		}
 		return resourceName != "" && containsString(names, resourceName)
+	}
+	return false
+}
+
+func ruleAllows(rules []any, group, resourceName, verb string) bool {
+	for _, item := range rules {
+		rule, ok := item.(map[string]any)
+		if ok && containsString(rule["apiGroups"], group) &&
+			containsString(rule["resources"], resourceName) &&
+			containsString(rule["verbs"], verb) {
+			return true
+		}
 	}
 	return false
 }

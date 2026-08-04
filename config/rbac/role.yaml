@@ -26,6 +26,16 @@ rules:
   - create
   - patch
 - apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - multisite-postgres.dev
   resources:
   - multisitepostgres

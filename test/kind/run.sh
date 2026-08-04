@@ -746,8 +746,23 @@ for site in vic nsw qld; do
   site_kubeconfig="${temp_dir}/mspsql-${site}.kubeconfig"
   agent_uid="$(kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent \
     get deployment mspsql-agent -o jsonpath='{.metadata.uid}')"
-  kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent set image \
-    deployment/mspsql-agent site-agent="${agent_image}"
+  registration_url=""
+  for _ in $(seq 1 60); do
+    registration_url="$(kubectl get siteregistration "${site}" -o jsonpath='{.status.registrationURL}')"
+    [[ -n "${registration_url}" ]] && break
+    sleep 1
+  done
+  test -n "${registration_url}"
+  registration_bundle="${temp_dir}/${site}-upgrade-registration.yaml"
+  for _ in $(seq 1 120); do
+    if curl -fsS --connect-timeout 2 --max-time 10 "${registration_url}" \
+      -o "${registration_bundle}" && test -s "${registration_bundle}"; then
+      break
+    fi
+    sleep 1
+  done
+  test -s "${registration_bundle}"
+  kubectl --kubeconfig="${site_kubeconfig}" apply -f "${registration_bundle}"
   kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent rollout status \
     deployment/mspsql-agent --timeout=180s
   test "${agent_uid}" = "$(kubectl --kubeconfig="${site_kubeconfig}" -n mspsql-agent \

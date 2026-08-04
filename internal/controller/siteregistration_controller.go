@@ -54,6 +54,7 @@ const siteHeartbeatTimeout = 150 * time.Second
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=multisite-postgres.dev,resources=siteregistrations/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 
 func (r *SiteRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var site multisitepostgresv1alpha1.SiteRegistration

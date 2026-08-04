@@ -64,6 +64,10 @@ kustomize build /tmp/mspsql-config/tun-device-plugin &gt; rendered/20-tun-device
     <tr><td>N</td><td>N-1</td><td>Safe reconciliation can continue. Major upgrades are blocked with <code>AgentCapabilityMissing</code> until every target site advertises <code>major-upgrade-sync-before-writes</code>.</td></tr>
     <tr><td>N-1</td><td>N</td><td>Agents accept signed <code>v1alpha1</code> plans and ignore unknown optional fields. New required operations must wait until the hub is upgraded.</td></tr>
   </table>
+  <p>After upgrading the hub, reapply each site's current generated registration bundle before rolling the site-agent image. The bundle refreshes the site-specific ClusterRole, ClusterRoleBinding, bootstrap Secret, NetworkPolicy, and Deployment without changing the bound <code>SiteRegistration</code> UID.</p>
+  <pre><code>SITE_URL="$(kubectl --context "${HUB_CTX}" get site production-vic -o jsonpath='{.status.registrationURL}')"
+kubectl --context "${VIC_CTX}" apply -f "${SITE_URL}"
+kubectl --context "${VIC_CTX}" -n mspsql-agent rollout status deploy/mspsql-agent</code></pre>
   <p>Rollback is supported within a single <code>v1alpha1</code> storage window. Do not downgrade after applying a CRD storage-version migration or a required-capability operation that the older hub cannot produce or repair.</p>
 
   <h2>Install Hub</h2>
