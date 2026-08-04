@@ -70,6 +70,7 @@ func TestV1Alpha1StorageRoundTripPreservesFields(t *testing.T) {
 				RecoveryWindowStart:        &now,
 				RestoreDrillLastVerifiedAt: &now,
 				RestoreDrillBackupSet:      "full-20260802",
+				Operation:                  &OperationProgressStatus{OperationUID: "instance-delete", Attempt: 1},
 				BackupSchedules: []BackupScheduleStatus{{
 					Type: "full", LastScheduledAt: &now, NextScheduledAt: &now,
 					Operation: &OperationProgressStatus{OperationUID: "scheduled-backup", Attempt: 1},

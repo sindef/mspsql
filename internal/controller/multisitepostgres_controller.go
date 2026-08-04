@@ -632,6 +632,9 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 	}
 	if len(children) > 0 {
 		instance.Status.Phase = "Deleting"
+		instance.Status.Operation = instanceDeletionOperation(instance, "DeletionBlocked")
+		instance.Status.Operation.LastErrorReason = "ChildDeclarationsPresent"
+		instance.Status.Operation.LastErrorMessage = "Child declarations still reference the instance"
 		setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
 			metav1.ConditionTrue, "ChildDeclarationsPresent",
 			"Delete or force-orphan child declarations before deleting the parent: "+
@@ -642,6 +645,9 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 		if instance.Spec.DeletionPolicy == multisitepostgresv1alpha1.DeletionPolicyDelete &&
 			!conditionTrue(instance.Status.Conditions, "BackupReady") {
 			instance.Status.Phase = "Deleting"
+			instance.Status.Operation = instanceDeletionOperation(instance, "DeletionBlocked")
+			instance.Status.Operation.LastErrorReason = "BackupNotVerified"
+			instance.Status.Operation.LastErrorMessage = "Delete policy requires a verified backup"
 			setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
 				metav1.ConditionTrue, "BackupNotVerified",
 				"Delete policy requires a verified backup before remote cleanup begins")
@@ -660,6 +666,7 @@ func (r *MultiSitePostgresReconciler) finalize(ctx context.Context,
 	}
 	if len(waiting) > 0 {
 		instance.Status.Phase = "Deleting"
+		instance.Status.Operation = instanceDeletionOperation(instance, "AwaitingSites")
 		setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
 			metav1.ConditionTrue, "AwaitingSites", "Waiting for deletion acknowledgement from: "+
 				strings.Join(waiting, ", "))
@@ -772,9 +779,25 @@ func (r *MultiSitePostgresReconciler) issueDeletionPlans(ctx context.Context,
 	instance.Status.Sites = statuses
 	instance.Status.PlanFingerprint = "deleting"
 	instance.Status.Phase = "Deleting"
+	instance.Status.Operation = instanceDeletionOperation(instance, "AwaitingSites")
 	setCondition(&instance.Status.Conditions, instance.Generation, "DeletionBlocked",
 		metav1.ConditionTrue, "AwaitingSites", "Waiting for all sites to acknowledge remote cleanup")
 	return r.updateInstanceStatus(ctx, instance)
+}
+
+func instanceDeletionOperation(instance *multisitepostgresv1alpha1.MultiSitePostgres,
+	phase string,
+) *multisitepostgresv1alpha1.OperationProgressStatus {
+	return &multisitepostgresv1alpha1.OperationProgressStatus{
+		OperationUID: instanceDeletionOperationUID(instance),
+		Phase:        phase,
+		Attempt:      1,
+		Terminal:     false,
+	}
+}
+
+func instanceDeletionOperationUID(instance *multisitepostgresv1alpha1.MultiSitePostgres) string {
+	return fmt.Sprintf("%s-delete-%d", instance.UID, instance.Generation)
 }
 
 func (r *MultiSitePostgresReconciler) deletePlanConfigMaps(ctx context.Context,
@@ -841,6 +864,9 @@ func mergeReconciledStatus(current, desired *multisitepostgresv1alpha1.MultiSite
 	current.Phase = desired.Phase
 	current.Primary = desired.Primary
 	current.SynchronousStandbys = append([]string(nil), desired.SynchronousStandbys...)
+	if desired.Operation != nil {
+		current.Operation = desired.Operation.DeepCopy()
+	}
 	current.BackupSchedules = append([]multisitepostgresv1alpha1.BackupScheduleStatus(nil),
 		desired.BackupSchedules...)
 	for _, condition := range desired.Conditions {

@@ -645,6 +645,15 @@ func TestInstanceIssuesOneSignedPlanPerSite(t *testing.T) {
 	if desired.Deletion == nil || desired.Deletion.Policy != api.DeletionPolicyRetain {
 		t.Fatalf("deletion plan = %#v", desired.Deletion)
 	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(instance), &active); err != nil {
+		t.Fatal(err)
+	}
+	if active.Status.Operation == nil ||
+		active.Status.Operation.OperationUID != string(active.UID)+"-delete-"+strconv.FormatInt(active.Generation, 10) ||
+		active.Status.Operation.Phase != "AwaitingSites" ||
+		active.Status.Operation.Terminal {
+		t.Fatalf("instance deletion operation = %#v", active.Status.Operation)
+	}
 }
 
 func TestPlanFingerprintIgnoresEmptyObservedAddresses(t *testing.T) {
@@ -2294,6 +2303,12 @@ func TestInstanceDeletionBlocksWhileChildDeclarationsExist(t *testing.T) {
 	if blocked == nil || blocked.Reason != "ChildDeclarationsPresent" ||
 		!strings.Contains(blocked.Message, "PostgresDatabase/orders-api") {
 		t.Fatalf("parent deletion condition = %#v", blocked)
+	}
+	if current.Status.Operation == nil ||
+		current.Status.Operation.OperationUID != "orders-uid-delete-4" ||
+		current.Status.Operation.Phase != "DeletionBlocked" ||
+		current.Status.Operation.LastErrorReason != "ChildDeclarationsPresent" {
+		t.Fatalf("parent deletion operation = %#v", current.Status.Operation)
 	}
 	if !controllerutil.ContainsFinalizer(&current, instanceFinalizer) {
 		t.Fatalf("parent finalized before child deletion: %#v", current.Finalizers)
