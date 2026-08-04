@@ -376,15 +376,7 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if certificate.GetName() == "etcd-vic-0" {
-			commonName, found, err := unstructured.NestedString(certificate.Object, "spec", "commonName")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !found || commonName != etcdPeerCommonName(desired) {
-				t.Fatalf("etcd peer commonName = %q, found=%t", commonName, found)
-			}
-		}
+		assertEtcdPeerCertificateCommonName(t, desired, certificate)
 		clientSecrets[secretName] = true
 	}
 	requireMapKeys(t, clientSecrets,
@@ -606,6 +598,22 @@ func assertEtcdSupportsLoadBalancedPeers(t *testing.T, statefulSet *appsv1.State
 	probe := statefulSet.Spec.Template.Spec.Containers[0].ReadinessProbe.Exec.Command
 	if !slices.Contains(probe, "--endpoints=https://10.0.0.1:2379") {
 		t.Fatalf("etcd readiness does not verify the issued service identity: %v", probe)
+	}
+}
+
+func assertEtcdPeerCertificateCommonName(t *testing.T, desired plan.SitePlan,
+	certificate *unstructured.Unstructured,
+) {
+	t.Helper()
+	if certificate.GetName() != "etcd-vic-0" {
+		return
+	}
+	commonName, found, err := unstructured.NestedString(certificate.Object, "spec", "commonName")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || commonName != etcdPeerCommonName(desired) {
+		t.Fatalf("etcd peer commonName = %q, found=%t", commonName, found)
 	}
 }
 
