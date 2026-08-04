@@ -376,6 +376,15 @@ func TestRendererCreatesMemberLoadBalancersAndWorkloads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if certificate.GetName() == "etcd-vic-0" {
+			commonName, found, err := unstructured.NestedString(certificate.Object, "spec", "commonName")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !found || commonName != etcdPeerCommonName(desired) {
+				t.Fatalf("etcd peer commonName = %q, found=%t", commonName, found)
+			}
+		}
 		clientSecrets[secretName] = true
 	}
 	requireMapKeys(t, clientSecrets,
@@ -590,6 +599,9 @@ func assertEtcdSupportsLoadBalancedPeers(t *testing.T, statefulSet *appsv1.State
 	if slices.Contains(args, "--peer-skip-client-san-verification=true") ||
 		!slices.Contains(args, "--peer-client-cert-auth=true") {
 		t.Fatalf("etcd peer authentication is not strict: %v", args)
+	}
+	if !slices.Contains(args, "--peer-cert-allowed-cn=mspsql-etcd-peer-5e8c03a94c7835b8") {
+		t.Fatalf("etcd peer CN allowlist is missing: %v", args)
 	}
 	probe := statefulSet.Spec.Template.Spec.Containers[0].ReadinessProbe.Exec.Command
 	if !slices.Contains(probe, "--endpoints=https://10.0.0.1:2379") {

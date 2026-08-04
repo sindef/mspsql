@@ -106,9 +106,9 @@ func (r Renderer) Certificates(desired plan.SitePlan) []client.Object {
 	}
 	for ordinal := int32(0); ordinal < desired.Site.Components.EtcdReplicas; ordinal++ {
 		name := fmt.Sprintf("etcd-%s-%d", desired.Site.Name, ordinal)
-		objects = append(objects, certificate(desired.Site.Namespace, name, name+"-tls",
+		objects = append(objects, certificateWithCommonName(desired.Site.Namespace, name, name+"-tls",
 			etcdPeerIssuer, labels, certificateAddresses(desired, name),
-			[]string{name, name + "." + desired.Site.Namespace + ".svc"}))
+			[]string{name, name + "." + desired.Site.Namespace + ".svc"}, etcdPeerCommonName(desired)))
 	}
 	if desired.Site.Role == api.SiteRoleData {
 		objects = append(objects, clientCertificate(desired.Site.Namespace, "patroni-etcd-client",
@@ -480,6 +480,12 @@ func loadBalancerService(namespace, name string, labels, selector map[string]str
 func certificate(namespace, name, secretName string, issuer api.IssuerReference,
 	labels map[string]string, addresses []string, dnsNames []string,
 ) *unstructured.Unstructured {
+	return certificateWithCommonName(namespace, name, secretName, issuer, labels, addresses, dnsNames, "")
+}
+
+func certificateWithCommonName(namespace, name, secretName string, issuer api.IssuerReference,
+	labels map[string]string, addresses []string, dnsNames []string, commonName string,
+) *unstructured.Unstructured {
 	for _, address := range addresses {
 		if address != "" && net.ParseIP(address) == nil {
 			dnsNames = append(dnsNames, address)
@@ -494,6 +500,9 @@ func certificate(namespace, name, secretName string, issuer api.IssuerReference,
 		},
 		"dnsNames": dnsNames,
 		"usages":   []any{"digital signature", "key encipherment", "server auth", "client auth"},
+	}
+	if commonName != "" {
+		spec["commonName"] = commonName
 	}
 	var ipAddresses []any
 	for _, address := range addresses {
@@ -522,6 +531,11 @@ func certificateAddresses(desired plan.SitePlan, member string) []string {
 	}
 	slices.Sort(addresses)
 	return slices.Compact(addresses)
+}
+
+func etcdPeerCommonName(desired plan.SitePlan) string {
+	sum := sha256.Sum256([]byte(desired.InstanceUID))
+	return "mspsql-etcd-peer-" + fmt.Sprintf("%x", sum[:8])
 }
 
 func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialCluster string,
@@ -564,6 +578,7 @@ func (r Renderer) etcdStatefulSet(desired plan.SitePlan, name, address, initialC
 							"--trusted-ca-file=/tls/ca.crt", "--client-cert-auth=true",
 							"--peer-cert-file=/tls/tls.crt", "--peer-key-file=/tls/tls.key",
 							"--peer-trusted-ca-file=/tls/ca.crt", "--peer-client-cert-auth=true",
+							"--peer-cert-allowed-cn=" + etcdPeerCommonName(desired),
 							"--auto-compaction-retention=1h",
 						},
 						Ports: []corev1.ContainerPort{{Name: "client", ContainerPort: 2379}, {Name: "peer", ContainerPort: 2380}},
