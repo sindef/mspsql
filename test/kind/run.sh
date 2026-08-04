@@ -1282,6 +1282,12 @@ kubectl -n database-platform delete multisitepostgres orders --wait=false
 kubectl -n database-platform wait --for=condition=DeletionBlocked \
   multisitepostgres/orders --timeout=300s
 kubectl -n database-platform get multisitepostgres orders >/dev/null
+deletion_operation="$(kubectl -n database-platform get multisitepostgres orders -o json | \
+  jq -r '.status.operation | [.operationUID, .phase, (.terminal | tostring)] | @tsv')"
+case "${deletion_operation}" in
+  *$'\t'AwaitingSites$'\t'false) ;;
+  *) echo "unexpected deletion operation ${deletion_operation@Q}" >&2; exit 1 ;;
+esac
 docker unpause mspsql-qld-control-plane >/dev/null
 for _ in $(seq 1 120); do
   kubectl --kubeconfig="${temp_dir}/mspsql-qld.kubeconfig" get --raw=/readyz >/dev/null 2>&1 && break
